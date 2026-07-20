@@ -169,7 +169,12 @@
       "Bash(echo \"TSC: $?\")",
       "Bash(NEXTAUTH_SECRET=test-secret-123 node -e ' *)",
       "Bash(pkill -f \"http.server 8199\")",
-      "Bash(python -c \"import yaml,sys; d=yaml.safe_load\\(open\\('.github/workflows/ci-cd.yml'\\)\\); print\\('jobs:', list\\(d['jobs'].keys\\(\\)\\)\\); print\\('YAML OK'\\)\")"
+      "Bash(python -c \"import yaml,sys; d=yaml.safe_load\\(open\\('.github/workflows/ci-cd.yml'\\)\\); print\\('jobs:', list\\(d['jobs'].keys\\(\\)\\)\\); print\\('YAML OK'\\)\")",
+      "Bash(tee /tmp/tsc_now.log)",
+      "mcp__861faebf-71a3-42b9-aade-8f0f23fed2e0__list_projects",
+      "mcp__861faebf-71a3-42b9-aade-8f0f23fed2e0__get_advisors",
+      "Bash(grep -rln 'graphDirectory\\\\|searchDirectory\\\\|/users?$search\\\\|graph.microsoft.com/v1.0/users' pages/api lib)",
+      "Bash(tee /tmp/tsc2.log)"
     ]
   }
 }

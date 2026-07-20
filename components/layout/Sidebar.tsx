@@ -28,6 +28,8 @@ import {
   ChevronDown,
   ChevronsLeft,
   ChevronsRight,
+  Scale,
+  Landmark,
 } from 'lucide-react';
 import { useRef } from 'react';
 
@@ -137,6 +139,25 @@ const navSections: NavSection[] = [
         requiredPermissions: ['finance.view_reports'],
         requireAny: true,
         icon: <BarChart3 {...iconProps} />,
+      },
+    ],
+  },
+  {
+    title: 'Legal',
+    items: [
+      {
+        href: '/legal',
+        label: 'Legal Home',
+        requiredPermissions: ['legal.access', 'bgm.meetings.view', 'bgm.directors.view'],
+        requireAny: true,
+        icon: <Scale {...iconProps} />,
+      },
+      {
+        href: '/legal/board',
+        label: 'Board Governance',
+        requiredPermissions: ['bgm.meetings.view', 'bgm.directors.view', 'legal.access'],
+        requireAny: true,
+        icon: <Landmark {...iconProps} />,
       },
     ],
   },
@@ -264,7 +285,7 @@ interface SidebarProps {
 export default function Sidebar({ isOpen, onClose, collapsed = false, onToggleCollapse }: SidebarProps) {
   const router = useRouter();
   const { hasPermission, hasAnyPermission, hasAllPermissions, loading: rbacLoading } = useRBAC();
-  const [expandedSections, setExpandedSections] = useState<string[]>(['Requests', 'Finance', 'Audit', 'Administrator', 'Support']);
+  const [expandedSections, setExpandedSections] = useState<string[]>(['Requests', 'Finance', 'Legal', 'Audit', 'Administrator', 'Support']);
   const navRef = useRef<HTMLElement>(null);
 
   // Preserve the nav scroll position across page navigations. The sidebar
