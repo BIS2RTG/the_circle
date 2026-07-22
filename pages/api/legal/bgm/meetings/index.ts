@@ -129,6 +129,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         time_zone: b.time_zone || 'Africa/Harare',
         location: b.location || null,
         is_virtual: !!b.is_virtual,
+        virtual_platform: b.is_virtual ? (b.virtual_platform || 'zoom') : null,
         virtual_link: b.virtual_link || null,
         agenda: b.agenda || null,
         calendar_year: start.getUTCFullYear(),

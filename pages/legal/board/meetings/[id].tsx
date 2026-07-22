@@ -7,15 +7,17 @@ import { authOptions } from '../../../api/auth/[...nextauth]';
 import { getUserRBACProfile, hasAnyPermission } from '@/lib/rbac';
 import { AppLayout } from '../../../../components/layout';
 import { Card, Button, Modal } from '../../../../components/ui';
+import ConfirmDialog from '../../../../components/ui/ConfirmDialog';
 import Loader from '@/components/Loader';
 import { useToast } from '../../../../components/ui/ToastProvider';
 import { useRBAC } from '../../../../contexts/RBACContext';
 import { AssociatesField, Associate } from '../../../../components/requests/AssociatesField';
 import {
   ATTENDANCE_STATUSES, ATTENDANCE_LABELS, AttendanceStatus,
-  RSVP_STATUSES, RSVP_LABELS, RsvpStatus, CHECK_IN_METHOD_LABELS,
+  RSVP_STATUSES, RSVP_LABELS, RsvpStatus, CHECK_IN_METHOD_LABELS, VIRTUAL_PLATFORM_LABELS,
 } from '@/lib/bgm';
-import { ArrowLeft, MapPin, Video, CalendarClock, Send, Ban, Save, Lock, LockOpen, UserPlus, X, ShieldCheck } from 'lucide-react';
+import QrCheckInModal from '../../../../components/legal/bgm/QrCheckInModal';
+import { ArrowLeft, MapPin, Video, CalendarClock, Send, Ban, Save, Lock, LockOpen, UserPlus, X, ShieldCheck, QrCode, FileText } from 'lucide-react';
 
 function fmtRange(start: string, end: string | null, tz?: string) {
   try {
@@ -44,6 +46,9 @@ export default function MeetingDetail() {
   const [inviting, setInviting] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [qrUrl, setQrUrl] = useState<string | null>(null);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
   const finalized = !!meeting?.finalized_at;
   const editable = canManageAttendance && !finalized && meeting?.status !== 'cancelled';
@@ -111,10 +116,12 @@ export default function MeetingDetail() {
   };
 
   const cancelMeeting = async () => {
-    if (!confirm('Cancel this meeting? Invited attendees will be notified if an Outlook invitation was sent.')) return;
-    const res = await fetch(`/api/legal/bgm/meetings/${id}`, { method: 'DELETE' });
-    if (res.ok) { addToast({ type: 'success', message: 'Meeting cancelled.' }); load(); }
-    else addToast({ type: 'error', message: 'Failed to cancel meeting.' });
+    setCancelling(true);
+    try {
+      const res = await fetch(`/api/legal/bgm/meetings/${id}`, { method: 'DELETE' });
+      if (res.ok) { addToast({ type: 'success', message: 'Meeting cancelled.' }); setCancelOpen(false); load(); }
+      else addToast({ type: 'error', message: 'Failed to cancel meeting.' });
+    } finally { setCancelling(false); }
   };
 
   const toggleFinalize = async () => {
@@ -126,6 +133,13 @@ export default function MeetingDetail() {
       addToast({ type: 'success', message: finalized ? 'Register re-opened for editing.' : `Register finalized. Quorum ${data.quorum?.met ? 'met' : 'not met'} (${data.quorum?.attended}/${data.quorum?.required}).` });
       load();
     } else addToast({ type: 'error', message: data.error || 'Failed' });
+  };
+
+  const openQr = async () => {
+    const res = await fetch(`/api/legal/bgm/meetings/${id}/checkin-token`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const data = await res.json();
+    if (res.ok) setQrUrl(data.url);
+    else addToast({ type: 'error', message: data.error || 'Could not generate QR.' });
   };
 
   const removeInvitee = async (kind: 'director' | 'guest', keyId: string) => {
@@ -158,7 +172,7 @@ export default function MeetingDetail() {
               <div className="mt-2 space-y-1 text-sm text-neutral-600">
                 <p className="flex items-center gap-2"><CalendarClock className="w-4 h-4 text-neutral-400" /> {fmtRange(meeting.scheduled_start, meeting.scheduled_end, meeting.time_zone)}</p>
                 {meeting.is_virtual ? (
-                  <p className="flex items-center gap-2"><Video className="w-4 h-4 text-neutral-400" /> Virtual {meeting.virtual_link && <a href={meeting.virtual_link} target="_blank" rel="noreferrer" className="text-primary-600 hover:underline">· Join link</a>}</p>
+                  <p className="flex items-center gap-2"><Video className="w-4 h-4 text-neutral-400" /> {meeting.virtual_platform ? VIRTUAL_PLATFORM_LABELS[meeting.virtual_platform as keyof typeof VIRTUAL_PLATFORM_LABELS] : 'Virtual'} {meeting.virtual_link && <a href={meeting.virtual_link} target="_blank" rel="noreferrer" className="text-primary-600 hover:underline">· Join link</a>}</p>
                 ) : meeting.location ? (
                   <p className="flex items-center gap-2"><MapPin className="w-4 h-4 text-neutral-400" /> {meeting.location}</p>
                 ) : null}
@@ -179,7 +193,7 @@ export default function MeetingDetail() {
                     {finalized ? <><LockOpen className="w-4 h-4 mr-1.5" /> Re-open register</> : <><Lock className="w-4 h-4 mr-1.5" /> Finalize register</>}
                   </Button>
                 )}
-                {!finalized && <Button variant="outline" onClick={cancelMeeting}><Ban className="w-4 h-4 mr-1.5" /> Cancel meeting</Button>}
+                {!finalized && <Button variant="outline" onClick={() => setCancelOpen(true)}><Ban className="w-4 h-4 mr-1.5" /> Cancel meeting</Button>}
               </div>
             )}
           </div>
@@ -198,7 +212,11 @@ export default function MeetingDetail() {
               <ShieldCheck className="w-3.5 h-3.5" /> Quorum {attended}/{quorum} {quorumMet ? '— met' : '— not met'}
             </span>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            <Link href={`/legal/board/meetings/${id}/report`}>
+              <Button variant="outline"><FileText className="w-4 h-4 mr-1.5" /> Attendance report</Button>
+            </Link>
+            {editable && <Button variant="outline" onClick={openQr}><QrCode className="w-4 h-4 mr-1.5" /> QR check-in</Button>}
             {editable && <Button variant="outline" onClick={() => setAddOpen(true)}><UserPlus className="w-4 h-4 mr-1.5" /> Add attendees</Button>}
             {editable && <Button variant="primary" onClick={save} isLoading={saving} disabled={!dirty}><Save className="w-4 h-4 mr-1.5" /> Save</Button>}
           </div>
@@ -258,6 +276,21 @@ export default function MeetingDetail() {
           onAdded={() => { setAddOpen(false); load(); }}
         />
       )}
+
+      {qrUrl && <QrCheckInModal meetingId={String(id)} url={qrUrl} title={meeting.title} onClose={() => setQrUrl(null)} />}
+
+      <ConfirmDialog
+        isOpen={cancelOpen}
+        title="Cancel this meeting?"
+        message={meeting.invitations_sent_at
+          ? 'Invited attendees will be notified that the meeting is cancelled (if an Outlook invitation was sent). The attendance register is kept.'
+          : 'The meeting will be marked cancelled. The attendance register is kept.'}
+        confirmLabel="Cancel meeting"
+        cancelLabel="Keep meeting"
+        busy={cancelling}
+        onConfirm={cancelMeeting}
+        onCancel={() => setCancelOpen(false)}
+      />
     </AppLayout>
   );
 }

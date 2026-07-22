@@ -4,7 +4,6 @@ import { isAuthorizedCron } from './reminders';
 import { sendAppGraphMail } from '@/lib/graphAppMail';
 import { sendEmail } from '@/lib/email';
 import { brandedEmailShell } from '@/lib/emailShell';
-import { distributeMeetingInvitation } from '@/lib/graphCalendar';
 
 /**
  * GET/POST /api/cron/bgm-reminders — automated board/committee meeting reminders
@@ -20,9 +19,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const now = new Date();
   const in8Days = new Date(now.getTime() + 8 * 24 * 60 * 60 * 1000);
-
-  // --- 0. Scheduled invitation sends (BGM-01: "schedule when invites go out") ---
-  const scheduledSent = await processScheduledInvites(now);
 
   // Candidate meetings: scheduled, in the future, within the next 8 days.
   const { data: meetings, error } = await supabaseAdmin
@@ -90,69 +86,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     results.push({ meeting: m.id, milestone, recipients: recipients.length });
   }
 
-  return res.status(200).json({ ok: true, sent, scheduled_invites: scheduledSent, meetings: results });
-}
-
-/** Send invitations for meetings whose scheduled send time has arrived. */
-async function processScheduledInvites(now: Date): Promise<any[]> {
-  const { data: due } = await supabaseAdmin
-    .from('board_meetings')
-    .select('id, title, scheduled_start, scheduled_end, time_zone, location, is_virtual, virtual_link, agenda, meeting_type, created_by')
-    .eq('status', 'scheduled')
-    .is('invitations_sent_at', null)
-    .not('invitations_scheduled_for', 'is', null)
-    .lte('invitations_scheduled_for', now.toISOString());
-
-  const out: any[] = [];
-  for (const m of due || []) {
-    if (!m.created_by) continue;
-
-    // Directors + guests with emails.
-    const { data: reg } = await supabaseAdmin
-      .from('meeting_attendance')
-      .select('director:directors(full_name, email)')
-      .eq('meeting_id', m.id);
-    const { data: guests } = await supabaseAdmin
-      .from('meeting_guests')
-      .select('full_name, email')
-      .eq('meeting_id', m.id);
-
-    const attendees = [
-      ...(reg || []).map((r: any) => r.director).filter((d: any) => d?.email).map((d: any) => ({ email: d.email, name: d.full_name })),
-      ...(guests || []).filter((g: any) => g.email).map((g: any) => ({ email: g.email, name: g.full_name })),
-    ];
-    if (attendees.length === 0) continue;
-
-    const end = m.scheduled_end || new Date(new Date(m.scheduled_start).getTime() + 2 * 60 * 60 * 1000).toISOString();
-    const outcome = await distributeMeetingInvitation({
-      organiserUserId: m.created_by,
-      uid: m.id,
-      event: {
-        subject: m.title,
-        start: m.scheduled_start,
-        end,
-        timeZone: m.time_zone || 'Africa/Harare',
-        location: m.location,
-        isOnline: m.is_virtual,
-        onlineLink: m.virtual_link,
-        bodyHtml: m.agenda ? `<p>${escapeHtml(m.agenda)}</p>` : '',
-        attendees,
-      },
-    });
-
-    if (outcome.transport !== 'none') {
-      await supabaseAdmin
-        .from('board_meetings')
-        .update({
-          outlook_event_id: outcome.eventId ?? null,
-          outlook_web_link: outcome.webLink ?? null,
-          invitations_sent_at: now.toISOString(),
-        })
-        .eq('id', m.id);
-    }
-    out.push({ meeting: m.id, transport: outcome.transport, invited: attendees.length });
-  }
-  return out;
+  return res.status(200).json({ ok: true, sent, meetings: results });
 }
 
 /** Try the service mailbox (Graph app), fall back to Resend. */

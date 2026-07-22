@@ -174,7 +174,10 @@
       "mcp__861faebf-71a3-42b9-aade-8f0f23fed2e0__list_projects",
       "mcp__861faebf-71a3-42b9-aade-8f0f23fed2e0__get_advisors",
       "Bash(grep -rln 'graphDirectory\\\\|searchDirectory\\\\|/users?$search\\\\|graph.microsoft.com/v1.0/users' pages/api lib)",
-      "Bash(tee /tmp/tsc2.log)"
+      "Bash(tee /tmp/tsc2.log)",
+      "Bash(tee /tmp/tsc3.log)",
+      "Bash(tee /tmp/tsc4.log)",
+      "Bash(tee /tmp/tsc6.log)"
     ]
   }
 }

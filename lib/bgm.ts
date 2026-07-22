@@ -61,6 +61,25 @@ export type MeetingType = (typeof MEETING_TYPES)[number];
 export const INVITE_SCOPES = ['all_board', 'committee', 'custom'] as const;
 export type InviteScope = (typeof INVITE_SCOPES)[number];
 
+// ---- Virtual meeting platform ----
+// RTG boards run on Zoom (single licence; link created manually by IT), but
+// Teams / Google Meet / Other are supported. Only Teams can be auto-created via
+// Graph; every other platform uses a pasted link.
+export const VIRTUAL_PLATFORMS = ['zoom', 'teams', 'google_meet', 'other'] as const;
+export type VirtualPlatform = (typeof VIRTUAL_PLATFORMS)[number];
+
+export const VIRTUAL_PLATFORM_LABELS: Record<VirtualPlatform, string> = {
+  zoom: 'Zoom',
+  teams: 'Microsoft Teams',
+  google_meet: 'Google Meet',
+  other: 'Other',
+};
+
+/** Platforms whose join link the user pastes in (i.e. not auto-provisioned). */
+export function platformNeedsManualLink(p: VirtualPlatform | null | undefined): boolean {
+  return p !== 'teams';
+}
+
 export const MEETING_STATUSES = ['scheduled', 'completed', 'cancelled'] as const;
 export type MeetingStatus = (typeof MEETING_STATUSES)[number];
 

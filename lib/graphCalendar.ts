@@ -13,9 +13,10 @@
  * decides how to surface partial failures; nothing here throws for delivery.
  */
 
-import { sendGraphMail } from './graphMail';
 import { getValidMsAccessToken } from './msTokenStore';
 import { brandedEmailShell } from './emailShell';
+import { sendAppGraphMail, isGraphAppMailConfigured } from './graphAppMail';
+import { sendEmail as sendResendEmail } from './email';
 
 export interface MeetingAttendeeInput {
   email: string;
@@ -145,69 +146,42 @@ export async function distributeMeetingInvitation(params: {
     `,
   });
 
-  const attachment = {
+  const icsAttachment = {
     name: 'invite.ics',
     contentType: 'text/calendar; method=REQUEST',
-    contentBytes: Buffer.from(ics, 'utf8').toString('base64'),
+    content: Buffer.from(ics, 'utf8'),
   };
+  const subject = `Invitation: ${event.subject}`;
 
-  try {
-    const token = await getValidMsAccessToken(organiserUserId);
-    if (token) {
-      // Reuse the delegated mailbox for a branded email carrying the .ics.
-      await sendGraphMailWithAttachment(token, {
-        to: recipients.map((r) => ({ email: r.email, name: r.name || undefined })),
-        subject: `Invitation: ${event.subject}`,
-        html,
-        attachment,
-      });
-      return { transport: 'ics_email' };
+  // Send per-recipient via the APP transport (service mailbox → Resend) so
+  // invitations still go out even when the organiser has no delegated Graph
+  // token (the common case on staging / preview). Never throws.
+  let anySent = false;
+  let lastError: string | undefined;
+  const graphReady = isGraphAppMailConfigured();
+  for (const r of recipients) {
+    if (graphReady) {
+      try {
+        const res = await sendAppGraphMail({ to: r.email, subject, html, attachments: [icsAttachment] });
+        if (res.success) { anySent = true; continue; }
+        lastError = res.error;
+      } catch (err) {
+        lastError = (err as Error).message;
+      }
     }
-  } catch (err) {
-    console.error('[bgm] .ics email fallback failed:', err);
-    return { transport: 'none', error: (err as Error).message };
+    // Resend fallback (no attachment support in the wrapper; the join link and
+    // details are in the branded body, so the invite is still actionable).
+    try {
+      await sendResendEmail({ to: r.email, subject, html });
+      anySent = true;
+    } catch (err) {
+      lastError = (err as Error).message;
+    }
   }
 
-  return { transport: 'none', error: 'no_transport' };
-}
-
-// ------------------------------------------------------------
-// Internal helpers
-// ------------------------------------------------------------
-
-async function sendGraphMailWithAttachment(
-  accessToken: string,
-  opts: {
-    to: { email: string; name?: string }[];
-    subject: string;
-    html: string;
-    attachment: { name: string; contentType: string; contentBytes: string };
-  }
-): Promise<void> {
-  const message = {
-    subject: opts.subject,
-    body: { contentType: 'HTML', content: opts.html },
-    toRecipients: opts.to.map((t) => ({ emailAddress: { address: t.email, name: t.name } })),
-    attachments: [
-      {
-        '@odata.type': '#microsoft.graph.fileAttachment',
-        name: opts.attachment.name,
-        contentType: opts.attachment.contentType,
-        contentBytes: opts.attachment.contentBytes,
-      },
-    ],
-  };
-  const resp = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, saveToSentItems: true }),
-  });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    throw new Error(`Graph sendMail(attachment) failed (${resp.status}): ${text || resp.statusText}`);
-  }
-  // silence unused import if tree-shaken differently
-  void sendGraphMail;
+  return anySent
+    ? { transport: 'ics_email' }
+    : { transport: 'none', error: lastError || 'no_mail_transport' };
 }
 
 /** Graph wants 'YYYY-MM-DDTHH:mm:ss' with no timezone suffix (tz sent separately). */

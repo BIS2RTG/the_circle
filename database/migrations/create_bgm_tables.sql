@@ -288,60 +288,11 @@ BEGIN
         (v_org, 'HR Governance and Nominations',          'hr-governance-nominations',     false)
     ON CONFLICT (organization_id, slug) DO NOTHING;
 
-    -- Directors (names as recorded in the SRS; emails to be captured by Legal)
-    INSERT INTO directors (organization_id, full_name, salutation) VALUES
-        (v_org, 'Mr. Kenzias Chibota',   'Mr.'),
-        (v_org, 'Dr. G. Taputaira',      'Dr.'),
-        (v_org, 'Mrs. C. Mafunga',       'Mrs.'),
-        (v_org, 'Mr. Kumbirai Gundani',  'Mr.'),
-        (v_org, 'Mr. Douglas Hoto',      'Mr.'),
-        (v_org, 'Mr. Douglas Mavhembu',  'Mr.'),
-        (v_org, 'Dr. Langton Mabhanga',  'Dr.'),
-        (v_org, 'Mrs. Cynthia Malaba',   'Mrs.'),
-        (v_org, 'Mr. A. Bvumbe',         'Mr.')
-    ON CONFLICT (organization_id, full_name) DO NOTHING;
+    -- NOTE: Directors (board members) are intentionally NOT seeded here — they
+    -- are real people / PII and must differ by environment. Seed them separately:
+    --   * staging / preview → database/seeds/bgm_demo_board.sql (fictional)
+    --   * production        → entered via the Legal UI, or database/seeds/bgm_rtg_board.sql
+    -- Committee *structure* above is non-PII governance config and is shared.
 
-    -- Committee memberships (chair flagged)
-    WITH seed(committee_slug, director_name, is_chair) AS (
-        VALUES
-            -- Audit, Risk and Sustainability
-            ('audit-risk-sustainability',   'Mr. Kenzias Chibota',  true),
-            ('audit-risk-sustainability',   'Dr. G. Taputaira',     false),
-            ('audit-risk-sustainability',   'Mrs. C. Mafunga',      false),
-            -- Strategy, Growth and Investments
-            ('strategy-growth-investments', 'Mr. Kumbirai Gundani', true),
-            ('strategy-growth-investments', 'Mrs. C. Mafunga',      false),
-            ('strategy-growth-investments', 'Mr. Douglas Hoto',     false),
-            ('strategy-growth-investments', 'Mr. Douglas Mavhembu', false),
-            -- Commercial and Operations
-            ('commercial-operations',       'Dr. Langton Mabhanga', true),
-            ('commercial-operations',       'Mrs. Cynthia Malaba',  false),
-            ('commercial-operations',       'Mr. Kenzias Chibota',  false),
-            -- Technology & Business Reengineering
-            ('technology-business-reeng',   'Mrs. Cynthia Malaba',  true),
-            ('technology-business-reeng',   'Dr. G. Taputaira',     false),
-            ('technology-business-reeng',   'Mr. A. Bvumbe',        false),
-            -- HR Governance and Nominations
-            ('hr-governance-nominations',   'Mr. Douglas Mavhembu', true),
-            ('hr-governance-nominations',   'Mr. Douglas Hoto',     false),
-            ('hr-governance-nominations',   'Dr. Langton Mabhanga', false),
-            -- Main Board and AGM (chair = Hoto; all directors are members)
-            ('main-board-agm',              'Mr. Douglas Hoto',     true),
-            ('main-board-agm',              'Mr. Kenzias Chibota',  false),
-            ('main-board-agm',              'Dr. G. Taputaira',     false),
-            ('main-board-agm',              'Mrs. C. Mafunga',      false),
-            ('main-board-agm',              'Mr. Kumbirai Gundani', false),
-            ('main-board-agm',              'Mr. Douglas Mavhembu', false),
-            ('main-board-agm',              'Dr. Langton Mabhanga', false),
-            ('main-board-agm',              'Mrs. Cynthia Malaba',  false),
-            ('main-board-agm',              'Mr. A. Bvumbe',        false)
-    )
-    INSERT INTO committee_memberships (committee_id, director_id, is_chair)
-    SELECT c.id, d.id, s.is_chair
-    FROM seed s
-    JOIN committees c ON c.organization_id = v_org AND c.slug = s.committee_slug
-    JOIN directors  d ON d.organization_id = v_org AND d.full_name = s.director_name
-    ON CONFLICT (committee_id, director_id) DO UPDATE SET is_chair = EXCLUDED.is_chair;
-
-    RAISE NOTICE 'BGM schema + board structure seeded for org %', v_org;
+    RAISE NOTICE 'BGM schema + committee structure seeded for org %', v_org;
 END $$;

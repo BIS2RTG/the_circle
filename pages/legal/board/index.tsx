@@ -13,6 +13,7 @@ import DirectorFormModal from '../../../components/legal/bgm/DirectorFormModal';
 import { ATTENDANCE_LABELS, ATTENDANCE_STATUSES } from '@/lib/bgm';
 import {
   CalendarDays, ListChecks, ClipboardCheck, Users, Plus, MapPin, Video, Crown, ChevronRight,
+  Search, ShieldCheck, Send, Clock,
 } from 'lucide-react';
 import { useRBAC } from '../../../contexts/RBACContext';
 
@@ -43,6 +44,14 @@ export default function BoardGovernanceHub() {
   const [year, setYear] = useState<number>(new Date().getFullYear());
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [directorFormOpen, setDirectorFormOpen] = useState(false);
+
+  // Meetings tab filters/sorting
+  const [searchQ, setSearchQ] = useState('');
+  const [filterType, setFilterType] = useState<'all' | 'board' | 'committee'>('all');
+  const [filterCommittee, setFilterCommittee] = useState('');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'scheduled' | 'completed' | 'cancelled'>('all');
+  const [filterMonth, setFilterMonth] = useState('');
+  const [sortBy, setSortBy] = useState<'date_asc' | 'date_desc' | 'title'>('date_asc');
 
   const [committees, setCommittees] = useState<any[]>([]);
   const [meetings, setMeetings] = useState<any[]>([]);
@@ -93,6 +102,30 @@ export default function BoardGovernanceHub() {
       (map[mo] = map[mo] || []).push(m);
     }
     return map;
+  }, [meetings]);
+
+  const filteredMeetings = useMemo(() => {
+    const q = searchQ.trim().toLowerCase();
+    const out = meetings.filter((m) => {
+      if (q && !(`${m.title} ${m.committee?.name || ''} ${m.location || ''}`.toLowerCase().includes(q))) return false;
+      if (filterType !== 'all' && m.meeting_type !== filterType) return false;
+      if (filterCommittee && m.committee_id !== filterCommittee) return false;
+      if (filterStatus !== 'all' && m.status !== filterStatus) return false;
+      if (filterMonth !== '' && new Date(m.scheduled_start).getMonth() !== Number(filterMonth)) return false;
+      return true;
+    });
+    out.sort((a, b) => {
+      if (sortBy === 'title') return a.title.localeCompare(b.title);
+      const d = new Date(a.scheduled_start).getTime() - new Date(b.scheduled_start).getTime();
+      return sortBy === 'date_desc' ? -d : d;
+    });
+    return out;
+  }, [meetings, searchQ, filterType, filterCommittee, filterStatus, filterMonth, sortBy]);
+
+  const statusCounts = useMemo(() => {
+    const c = { scheduled: 0, completed: 0, cancelled: 0 } as Record<string, number>;
+    for (const m of meetings) c[m.status] = (c[m.status] || 0) + 1;
+    return c;
   }, [meetings]);
 
   return (
@@ -175,12 +208,44 @@ export default function BoardGovernanceHub() {
 
             {/* ---- Meetings ---- */}
             {tab === 'meetings' && (
-              <div className="space-y-2">
-                {meetings.length === 0 ? (
-                  <EmptyState label={`No meetings scheduled for ${year}.`} />
-                ) : (
-                  meetings.map((m) => <MeetingRow key={m.id} m={m} expanded />)
-                )}
+              <div>
+                {/* Year + status summary */}
+                <div className="flex flex-wrap items-center gap-2 mb-4">
+                  {years.map((y) => (
+                    <button key={y} onClick={() => setYear(y)}
+                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${y === year ? 'bg-primary-600 text-white' : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200'}`}>
+                      {y}
+                    </button>
+                  ))}
+                  <span className="ml-1 text-xs text-neutral-500">
+                    {statusCounts.scheduled || 0} scheduled · {statusCounts.completed || 0} completed · {statusCounts.cancelled || 0} cancelled
+                  </span>
+                </div>
+
+                {/* Filter / sort bar */}
+                <Card variant="default" padding="sm" className="mb-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="relative flex-1 min-w-[180px]">
+                      <Search className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input value={searchQ} onChange={(e) => setSearchQ(e.target.value)} placeholder="Search meetings…"
+                        className="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
+                    </div>
+                    <FilterSelect value={filterType} onChange={(v) => setFilterType(v as any)} options={[['all', 'All types'], ['board', 'Board'], ['committee', 'Committee']]} />
+                    <FilterSelect value={filterCommittee} onChange={setFilterCommittee} options={[['', 'All committees'], ...committees.map((c) => [c.id, c.name] as [string, string])]} />
+                    <FilterSelect value={filterStatus} onChange={(v) => setFilterStatus(v as any)} options={[['all', 'Any status'], ['scheduled', 'Scheduled'], ['completed', 'Completed'], ['cancelled', 'Cancelled']]} />
+                    <FilterSelect value={filterMonth} onChange={setFilterMonth} options={[['', 'All months'], ...MONTHS.map((mo, i) => [String(i), mo] as [string, string])]} />
+                    <FilterSelect value={sortBy} onChange={(v) => setSortBy(v as any)} options={[['date_asc', 'Date ↑'], ['date_desc', 'Date ↓'], ['title', 'Title A–Z']]} />
+                  </div>
+                </Card>
+
+                <p className="text-xs text-neutral-500 mb-2">{filteredMeetings.length} of {meetings.length} meeting(s)</p>
+                <div className="space-y-2">
+                  {filteredMeetings.length === 0 ? (
+                    <EmptyState label={meetings.length === 0 ? `No meetings scheduled for ${year}.` : 'No meetings match these filters.'} />
+                  ) : (
+                    filteredMeetings.map((m) => <MeetingRow key={m.id} m={m} expanded />)
+                  )}
+                </div>
               </div>
             )}
 
@@ -298,14 +363,21 @@ function MeetingRow({ m, expanded }: { m: any; expanded?: boolean }) {
               {m.meeting_type === 'committee' && committeeName ? ` · ${committeeName}` : ' · Board'}
             </p>
             {expanded && (
-              <div className="flex flex-wrap items-center gap-3 mt-2 text-xs text-neutral-500">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-2 text-xs text-neutral-500">
                 {m.is_virtual ? (
-                  <span className="inline-flex items-center gap-1"><Video className="w-3.5 h-3.5" /> Virtual</span>
+                  <span className="inline-flex items-center gap-1"><Video className="w-3.5 h-3.5" /> {m.virtual_platform ? m.virtual_platform.replace('_', ' ') : 'Virtual'}</span>
                 ) : m.location ? (
                   <span className="inline-flex items-center gap-1"><MapPin className="w-3.5 h-3.5" /> {m.location}</span>
                 ) : null}
-                <span>{m.attendance_tally?.recorded || 0}/{m.attendance_tally?.invited || 0} attendance recorded</span>
-                {m.invitations_sent_at && <span className="text-emerald-600">Invitations sent</span>}
+                <span className="inline-flex items-center gap-1"><Users className="w-3.5 h-3.5" /> {m.attendance_tally?.invited || 0} invited</span>
+                <span className="inline-flex items-center gap-1"><ShieldCheck className="w-3.5 h-3.5" /> {m.attendance_tally?.present || 0} attended</span>
+                <span>{m.attendance_tally?.recorded || 0}/{m.attendance_tally?.invited || 0} recorded</span>
+                {m.invitations_sent_at
+                  ? <span className="inline-flex items-center gap-1 text-emerald-600"><Send className="w-3.5 h-3.5" /> Invitations sent</span>
+                  : m.invitations_scheduled_for
+                    ? <span className="inline-flex items-center gap-1 text-sky-600"><Clock className="w-3.5 h-3.5" /> Send {fmtDateTime(m.invitations_scheduled_for, m.time_zone)}</span>
+                    : null}
+                {m.finalized_at && <span className="text-indigo-600">Finalized</span>}
               </div>
             )}
           </div>
@@ -330,6 +402,15 @@ function EmptyState({ label }: { label: string }) {
     <Card variant="default" padding="lg" className="text-center">
       <p className="text-sm text-neutral-500">{label}</p>
     </Card>
+  );
+}
+
+function FilterSelect({ value, onChange, options }: { value: string; onChange: (v: string) => void; options: [string, string][] }) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)}
+      className="px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm text-neutral-700 focus:outline-none focus:ring-2 focus:ring-brand-500">
+      {options.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+    </select>
   );
 }
 

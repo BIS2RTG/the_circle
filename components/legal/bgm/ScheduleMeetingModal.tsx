@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Modal, Button, Input } from '../../ui';
 import { useToast } from '../../ui/ToastProvider';
 import { AssociatesField, Associate } from '../../requests/AssociatesField';
-import { MeetingType } from '@/lib/bgm';
+import { MeetingType, VIRTUAL_PLATFORMS, VIRTUAL_PLATFORM_LABELS, VirtualPlatform, platformNeedsManualLink } from '@/lib/bgm';
 import { Users, UserCheck, CalendarClock, History } from 'lucide-react';
 
 interface DirectorOption {
@@ -31,6 +31,7 @@ type SendMode = 'manual' | 'now' | 'schedule';
 export default function ScheduleMeetingModal({ isOpen, onClose, committees, directors, onCreated }: ScheduleMeetingModalProps) {
   const { addToast } = useToast();
   const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
 
   const [pastMode, setPastMode] = useState(false);
   const [type, setType] = useState<MeetingType>('board');
@@ -41,6 +42,7 @@ export default function ScheduleMeetingModal({ isOpen, onClose, committees, dire
   const [endTime, setEndTime] = useState('11:00');
   const [location, setLocation] = useState('');
   const [isVirtual, setIsVirtual] = useState(false);
+  const [platform, setPlatform] = useState<VirtualPlatform>('zoom');
   const [virtualLink, setVirtualLink] = useState('');
   const [agenda, setAgenda] = useState('');
 
@@ -66,7 +68,7 @@ export default function ScheduleMeetingModal({ isOpen, onClose, committees, dire
   const reset = () => {
     setPastMode(false); setType('board'); setCommitteeId(''); setTitle(''); setDate('');
     setStartTime('09:00'); setEndTime('11:00'); setLocation(''); setIsVirtual(false);
-    setVirtualLink(''); setAgenda(''); setInviteMode('all'); setSelectedDirs(new Set());
+    setPlatform('zoom'); setVirtualLink(''); setAgenda(''); setInviteMode('all'); setSelectedDirs(new Set());
     setGuests([]); setSendMode('manual'); setSendAt('');
   };
   const handleClose = () => { if (!saving) { reset(); onClose(); } };
@@ -84,25 +86,26 @@ export default function ScheduleMeetingModal({ isOpen, onClose, committees, dire
   };
 
   const submit = async () => {
-    if (!title.trim()) return addToast({ type: 'error', message: 'Please enter a meeting title.' });
-    if (!date) return addToast({ type: 'error', message: 'Please choose a date.' });
-    if (type === 'committee' && !committeeId) return addToast({ type: 'error', message: 'Please select a committee.' });
+    setFormError(null);
+    if (!title.trim()) return setFormError('Please enter a meeting title.');
+    if (!date) return setFormError('Please choose a date.');
+    if (type === 'committee' && !committeeId) return setFormError('Please select a committee.');
 
     const start = new Date(`${date}T${startTime}`);
     const end = new Date(`${date}T${endTime}`);
-    if (isNaN(start.getTime())) return addToast({ type: 'error', message: 'Invalid date/time.' });
+    if (isNaN(start.getTime())) return setFormError('That date or time is not valid.');
     if (!pastMode && start.getTime() < Date.now()) {
-      return addToast({ type: 'error', message: 'That date is in the past. Use “Record a past meeting” to backfill attendance.' });
+      return setFormError('That date/time is in the past. Switch to “Record a past meeting” to backfill attendance.');
     }
 
     const director_ids = inviteMode === 'custom' ? Array.from(selectedDirs) : undefined;
     if (inviteMode === 'custom' && director_ids && director_ids.length === 0 && guests.length === 0) {
-      return addToast({ type: 'error', message: 'Select at least one director or guest.' });
+      return setFormError('Select at least one director or guest to invite.');
     }
 
     let invitations_scheduled_for: string | undefined;
     if (!pastMode && sendMode === 'schedule') {
-      if (!sendAt) return addToast({ type: 'error', message: 'Choose when to send the invitations.' });
+      if (!sendAt) return setFormError('Choose when to send the invitations.');
       invitations_scheduled_for = new Date(sendAt).toISOString();
     }
 
@@ -119,6 +122,7 @@ export default function ScheduleMeetingModal({ isOpen, onClose, committees, dire
           scheduled_end: end > start ? end.toISOString() : null,
           location: location || null,
           is_virtual: isVirtual,
+          virtual_platform: isVirtual ? platform : null,
           virtual_link: isVirtual ? virtualLink || null : null,
           agenda: agenda || null,
           director_ids,
@@ -147,7 +151,7 @@ export default function ScheduleMeetingModal({ isOpen, onClose, committees, dire
       reset();
       onCreated(data.id);
     } catch (err) {
-      addToast({ type: 'error', message: (err as Error).message });
+      setFormError((err as Error).message);
     } finally {
       setSaving(false);
     }
@@ -210,7 +214,30 @@ export default function ScheduleMeetingModal({ isOpen, onClose, committees, dire
             className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
           <label htmlFor="is-virtual" className="text-sm text-gray-700">Virtual / hybrid meeting</label>
         </div>
-        {isVirtual && <Input label="Meeting link" value={virtualLink} onChange={(e) => setVirtualLink(e.target.value)} placeholder="Teams / Zoom link" />}
+        {isVirtual && (
+          <div className="rounded-xl border border-gray-200 p-3 space-y-3">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Platform</label>
+              <div className="grid grid-cols-4 gap-2">
+                {VIRTUAL_PLATFORMS.map((p) => (
+                  <button key={p} type="button" onClick={() => setPlatform(p)}
+                    className={`px-2 py-2 rounded-lg border text-xs font-medium transition-colors ${platform === p ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+                    {VIRTUAL_PLATFORM_LABELS[p]}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <Input
+              label={platform === 'teams' ? 'Join link (optional — a Teams link is auto-created if left blank)' : 'Join link'}
+              value={virtualLink}
+              onChange={(e) => setVirtualLink(e.target.value)}
+              placeholder={platform === 'zoom' ? 'Paste the Zoom link created by IT' : platform === 'google_meet' ? 'Paste the Google Meet link' : 'Paste the meeting link'}
+            />
+            {platform === 'zoom' && (
+              <p className="text-[11px] text-gray-500">RTG has a single Zoom licence — ask IT to create the meeting, then paste the link here so it rides on the Outlook invite.</p>
+            )}
+          </div>
+        )}
         <Input label="Location" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="e.g. Boardroom, Head Office" />
 
         {/* Invitees */}
@@ -289,6 +316,9 @@ export default function ScheduleMeetingModal({ isOpen, onClose, committees, dire
           </div>
         )}
 
+        {formError && (
+          <p className="text-sm text-rose-600 bg-rose-50 border border-rose-100 rounded-lg px-3 py-2">{formError}</p>
+        )}
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="ghost" onClick={handleClose} disabled={saving}>Cancel</Button>
           <Button variant="primary" onClick={submit} isLoading={saving}>{pastMode ? 'Record meeting' : 'Schedule meeting'}</Button>

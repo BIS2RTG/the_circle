@@ -28,7 +28,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const { data: register } = await supabaseAdmin
       .from('meeting_attendance')
-      .select('id, director_id, status, rsvp_status, rsvp_note, note, checked_in_at, check_in_method, confirmed_by_director, recorded_at, director:directors(id, full_name, salutation, email, status)')
+      .select('id, director_id, status, rsvp_status, rsvp_note, note, checked_in_at, check_in_method, check_in_signature, confirmed_by_director, recorded_at, director:directors(id, full_name, salutation, email, status)')
       .eq('meeting_id', id);
 
     const rows = (register || [])
@@ -41,6 +41,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         note: r.note,
         checked_in_at: r.checked_in_at,
         check_in_method: r.check_in_method,
+        check_in_signature: r.check_in_signature,
         confirmed_by_director: r.confirmed_by_director,
         recorded_at: r.recorded_at,
         full_name: r.director?.full_name,
@@ -51,7 +52,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const { data: guests } = await supabaseAdmin
       .from('meeting_guests')
-      .select('id, full_name, email, organization, role, app_user_id, rsvp_status, status, note, checked_in_at')
+      .select('id, full_name, email, organization, role, app_user_id, rsvp_status, status, note, checked_in_at, check_in_signature')
       .eq('meeting_id', id)
       .order('full_name');
 
@@ -66,7 +67,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const b = req.body || {};
     const patch: Record<string, any> = {};
-    for (const f of ['title', 'location', 'virtual_link', 'agenda', 'time_zone', 'status']) {
+    for (const f of ['title', 'location', 'virtual_link', 'virtual_platform', 'agenda', 'time_zone', 'status']) {
       if (f in b) patch[f] = b[f] === '' ? null : b[f];
     }
     if ('is_virtual' in b) patch.is_virtual = !!b.is_virtual;

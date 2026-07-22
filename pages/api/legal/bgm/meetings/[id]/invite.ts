@@ -56,9 +56,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const end = meeting.scheduled_end || new Date(new Date(meeting.scheduled_start).getTime() + 2 * 60 * 60 * 1000).toISOString();
   const committeeName = (meeting.committee as any)?.name;
+
+  // Only Teams meetings are auto-provisioned by Graph; Zoom / Google Meet /
+  // Other use the link the organiser pasted (created manually by IT).
+  const platform = meeting.virtual_platform as string | null;
+  const teamsAuto = meeting.is_virtual && platform === 'teams' && !meeting.virtual_link;
+  const platformLabel = platform ? ({ zoom: 'Zoom', teams: 'Microsoft Teams', google_meet: 'Google Meet', other: 'Online' } as Record<string, string>)[platform] : 'Online';
+  const joinBlock = meeting.is_virtual && meeting.virtual_link
+    ? `<p><strong>Join (${escapeHtml(platformLabel)}):</strong> <a href="${escapeHtml(meeting.virtual_link)}">${escapeHtml(meeting.virtual_link)}</a></p>`
+    : '';
   const bodyHtml = [
     meeting.agenda ? `<p><strong>Agenda</strong></p><p>${escapeHtml(meeting.agenda)}</p>` : '',
     committeeName ? `<p>Committee: ${escapeHtml(committeeName)}</p>` : '',
+    joinBlock,
   ].join('');
 
   const outcome = await distributeMeetingInvitation({
@@ -70,8 +80,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       start: meeting.scheduled_start,
       end,
       timeZone: meeting.time_zone || 'Africa/Harare',
-      location: meeting.location,
-      isOnline: meeting.is_virtual,
+      location: meeting.is_virtual ? (meeting.virtual_link || platformLabel) : meeting.location,
+      isOnline: teamsAuto,
       onlineLink: meeting.virtual_link,
       bodyHtml,
       attendees,
