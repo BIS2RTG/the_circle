@@ -9,7 +9,7 @@ export function TravelConfig({ getSetting, queueChange }: ConfigTabProps) {
   const [reqConditions, setReqConditions] = useState(requireConditionsAccept);
 
   const defaultLocations = [
-    { code: 'MRC', name: 'Montclaire Resort and Conferencing', city: 'Nyanga', enabled: true },
+    { code: 'MRC', name: 'Montclair Resort and Conferencing', city: 'Nyanga', enabled: true },
     { code: 'NAH', name: 'New Ambassador Hotel', city: 'Harare', enabled: true },
     { code: 'RTH', name: 'Rainbow Towers Hotel', city: 'Harare', enabled: true },
     { code: 'KHCC', name: 'KHCC Conference Centre', city: 'Kadoma', enabled: true },
