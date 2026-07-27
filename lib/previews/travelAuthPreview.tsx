@@ -133,6 +133,13 @@ export interface TravelAuthPreviewInput {
     /** Traveller (requestor) name + saved-signature URL for the conditions block. */
     travellerName?: string;
     travellerSignatureUrl?: string | null;
+    /**
+     * True when the request was filed on behalf of someone. The principal never
+     * personally signed, so the conditions block shows the acceptance tick ONLY —
+     * the entire "Signature of Traveller" sub-block (label, signature line, name)
+     * is omitted.
+     */
+    onBehalf?: boolean;
 
     /** Itinerary rows; structure matches form state. */
     itinerary?: Array<{
@@ -215,6 +222,7 @@ export function buildTravelAuthPreviewSections(input: TravelAuthPreviewInput): P
         acceptConditions,
         travellerName,
         travellerSignatureUrl,
+        onBehalf,
         itinerary = [],
         budget = {},
         grandTotal,
@@ -313,20 +321,25 @@ export function buildTravelAuthPreviewSections(input: TravelAuthPreviewInput): P
                             </span>
                             <span>I have read these conditions and accept them.</span>
                         </div>
-                        <div style={{ minWidth: 180 }}>
-                            <div style={{ fontSize: 9, fontWeight: 700, color: '#555', textTransform: 'uppercase' }}>Signature of Traveller</div>
-                            <div style={{ borderBottom: '1px solid #666', minHeight: 30, display: 'flex', alignItems: 'center' }}>
-                                {travellerSignatureUrl ? (
-                                    <img
-                                        src={travellerSignatureUrl}
-                                        alt="Traveller signature"
-                                        style={{ maxHeight: 30, maxWidth: 160, display: 'block' }}
-                                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                                    />
-                                ) : null}
+                        {/* Filed on behalf of someone → the principal never personally
+                            signed, so show the acceptance tick ONLY, with no signature
+                            block. Self-filed → render the "Signature of Traveller" block. */}
+                        {!onBehalf && (
+                            <div style={{ minWidth: 180 }}>
+                                <div style={{ fontSize: 9, fontWeight: 700, color: '#555', textTransform: 'uppercase' }}>Signature of Traveller</div>
+                                <div style={{ borderBottom: '1px solid #666', minHeight: 30, display: 'flex', alignItems: 'center' }}>
+                                    {travellerSignatureUrl ? (
+                                        <img
+                                            src={travellerSignatureUrl}
+                                            alt="Traveller signature"
+                                            style={{ maxHeight: 30, maxWidth: 160, display: 'block' }}
+                                            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                                        />
+                                    ) : null}
+                                </div>
+                                {travellerName ? <div style={{ fontSize: 10, marginTop: 2 }}>{travellerName}</div> : null}
                             </div>
-                            {travellerName ? <div style={{ fontSize: 10, marginTop: 2 }}>{travellerName}</div> : null}
-                        </div>
+                        )}
                     </div>
                 </div>
             ),
@@ -535,7 +548,11 @@ export function buildTravelAuthPreviewSections(input: TravelAuthPreviewInput): P
 // ──────────────────────────────────────────────────────────────────────
 export function travelAuthInputFromRequest(request: any): TravelAuthPreviewInput {
     const metadata = request?.metadata || {};
-    const creator = request?.creator || {};
+    // When filed on behalf of someone, THAT person is the traveller/requestor —
+    // their name, department, business unit and signature go on the document,
+    // not the assistant's. `onBehalfProfile` is resolved server-side.
+    const onBehalf = !!request?.onBehalfProfile;
+    const creator = request?.onBehalfProfile || request?.creator || {};
     const steps: any[] = Array.isArray(request?.request_steps) ? request.request_steps : [];
 
     // Private bucket: render saved signatures through the authenticated proxy.
@@ -594,8 +611,12 @@ export function travelAuthInputFromRequest(request: any): TravelAuthPreviewInput
     return {
         employee: {
             name: creator.display_name,
-            department: metadata.department || creator.department?.name,
-            businessUnit: metadata.businessUnit || metadata.business_unit_name || creator.business_unit?.name,
+            // On-behalf: the stored metadata.department/businessUnit belong to the
+            // ASSISTANT who filed, so prefer the principal's resolved unit names.
+            department: onBehalf ? creator.department?.name : (metadata.department || creator.department?.name),
+            businessUnit: onBehalf
+                ? creator.business_unit?.name
+                : (metadata.businessUnit || metadata.business_unit_name || creator.business_unit?.name),
         },
         requestTimestamp: request?.created_at
             ? new Date(request.created_at).toLocaleString('en-GB', {
@@ -612,7 +633,12 @@ export function travelAuthInputFromRequest(request: any): TravelAuthPreviewInput
         emergencyReason: metadata.emergencyReason,
         acceptConditions: !!metadata.acceptConditions,
         travellerName: creator.display_name || undefined,
-        travellerSignatureUrl: creator.id ? sigUrlFor(creator.id) : null,
+        // On-behalf: the principal never personally signed — the assistant filed
+        // for them — so the conditions block shows the acceptance tick only, with
+        // no signature block at all. Signatures render only when the traveller
+        // filed for themselves.
+        travellerSignatureUrl: onBehalf ? null : (creator.id ? sigUrlFor(creator.id) : null),
+        onBehalf,
         itinerary: metadata.itinerary,
         budget: metadata.budget,
         grandTotal: metadata.grandTotal,

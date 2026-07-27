@@ -144,6 +144,45 @@ export default function TravelAuthPage() {
     const [supportingDocs, setSupportingDocs] = useState<SupportingDoc[]>([]);
     const [onBehalfOf, setOnBehalfOf] = useState<OnBehalfOf | null>(null);
 
+    // When filing on behalf of a principal, the document must read as if THEY
+    // filled it — so the preview needs the principal's department/business unit,
+    // not the assistant's. Resolve them from HRIMS by the principal's email.
+    const [onBehalfProfile, setOnBehalfProfile] = useState<{ department?: string; businessUnit?: string } | null>(null);
+    const [onBehalfProfileLoading, setOnBehalfProfileLoading] = useState(false);
+    useEffect(() => {
+        const email = onBehalfOf?.email;
+        if (!email) { setOnBehalfProfile(null); setOnBehalfProfileLoading(false); return; }
+        let cancelled = false;
+        setOnBehalfProfileLoading(true);
+        (async () => {
+            try {
+                const res = await fetch(`/api/hrims/employee-by-email?email=${encodeURIComponent(email)}`);
+                const data = await res.json().catch(() => ({}));
+                if (cancelled) return;
+                setOnBehalfProfile({
+                    department: data?.department?.name || undefined,
+                    businessUnit: data?.businessUnit?.name || undefined,
+                });
+            } catch {
+                if (!cancelled) setOnBehalfProfile(null);
+            } finally {
+                if (!cancelled) setOnBehalfProfileLoading(false);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [onBehalfOf?.email]);
+
+    // Requestor identity shown on the form + document. When filing on behalf of a
+    // principal, these resolve to the PRINCIPAL (autofilled on selection) so the
+    // form reads as if they filled it themselves; otherwise they resolve to the
+    // signed-in user's own HRIMS profile.
+    const isOnBehalf = !!onBehalfOf?.userId;
+    const requestorName = isOnBehalf
+        ? (onBehalfOf?.name || undefined)
+        : (user?.display_name || session?.user?.name || undefined);
+    const requestorDepartment = isOnBehalf ? (onBehalfProfile?.department || undefined) : (departmentName || undefined);
+    const requestorBusinessUnit = isOnBehalf ? (onBehalfProfile?.businessUnit || undefined) : (businessUnitName || undefined);
+
     // AA Rates Calculator state (simplified)
     const [aaCalculator, setAACalculator] = useState<AACalculatorData>({
         engineCapacity: '1.6L-2.0L',
@@ -430,6 +469,33 @@ export default function TravelAuthPage() {
         return misc.reduce((sum, m) => sum + (parseFloat(m.totalCost) || 0), 0);
     };
 
+    // ── Cost allocation ──
+    // The requestor simply TICKS the unit(s) that carry the trip cost. A single
+    // ticked unit carries the whole grand total (no figure needed). Ticking more
+    // than one puts it into "split" mode where each unit's share is entered and
+    // must add up to the full grand total (every cent allocated) before submit.
+    // Defined AFTER calculateMiscTotal because it calls calculateGrandTotal,
+    // which depends on it (avoids a temporal-dead-zone error at render).
+    const allocationGrandTotal = parseFloat(calculateGrandTotal()) || 0;
+    const allocationCodes = Object.keys(costAllocation);
+    const isSplitAllocation = allocationCodes.length > 1;
+    const allocationEnteredTotal = allocationCodes.reduce(
+        (sum, code) => sum + (parseFloat(costAllocation[code]) || 0), 0
+    );
+    const allocationRemaining = allocationGrandTotal - allocationEnteredTotal;
+    const allocationFullyAllocated = !isSplitAllocation || Math.abs(allocationRemaining) < 0.01;
+
+    // Finalised allocation to persist / preview: one unit → full total; a split
+    // → the entered figures, rounded to cents.
+    const finalizeCostAllocation = (): Record<string, string> => {
+        const codes = Object.keys(costAllocation);
+        if (codes.length === 0) return {};
+        if (codes.length === 1) return { [codes[0]]: allocationGrandTotal.toFixed(2) };
+        const out: Record<string, string> = {};
+        for (const code of codes) out[code] = (parseFloat(costAllocation[code]) || 0).toFixed(2);
+        return out;
+    };
+
     // Tollgate management functions
     const addTollgateRow = () => {
         setTravelData(prev => ({
@@ -559,9 +625,20 @@ export default function TravelAuthPage() {
                 // Pre-fill form with existing data
                 setTravelData(originalData);
 
-                // Restore the requestor's cost allocation across edits.
+                // Restore the requestor's cost allocation across edits — normalise
+                // legacy/lowercase unit keys (the old HRD scheme used "mrc",
+                // "azam", …) to the canonical codes and drop zero/empty entries so
+                // a single funded unit doesn't render as an all-units "split".
                 if (metadata.costAllocation && typeof metadata.costAllocation === 'object') {
-                    setCostAllocation(metadata.costAllocation);
+                    const canon = new Map<string, string>(ALLOCATION_UNITS.map(u => [u.code.toLowerCase(), u.code]));
+                    canon.set('azam', 'AZRL');
+                    const cleaned: Record<string, string> = {};
+                    for (const [k, v] of Object.entries(metadata.costAllocation as Record<string, any>)) {
+                        const code = canon.get(String(k).toLowerCase());
+                        const num = parseFloat(String(v ?? ''));
+                        if (code && Number.isFinite(num) && num > 0) cleaned[code] = String(v);
+                    }
+                    setCostAllocation(cleaned);
                 }
 
                 // Preserve the on-behalf beneficiary across edits.
@@ -707,6 +784,14 @@ export default function TravelAuthPage() {
         const hasValidItinerary = travelData.itinerary.some(row => row.date || row.from || row.to);
         if (!hasValidItinerary) errors.push('At least one travel itinerary row is required');
 
+        // Cost-allocation split must account for every cent of the grand total.
+        if (!isInternational && isSplitAllocation && !allocationFullyAllocated) {
+            errors.push(
+                `Cost allocation must total USD ${allocationGrandTotal.toFixed(2)} — every cent must be allocated ` +
+                `(currently USD ${allocationEnteredTotal.toFixed(2)}).`
+            );
+        }
+
         {
             const b = travelData.budget;
             const tollgatesTotal = calculateTollgatesTotal();
@@ -716,10 +801,16 @@ export default function TravelAuthPage() {
             if (!hasValidBudget) errors.push('At least one travel budget item is required');
         }
 
-        if (!selectedApprovers.line_manager) errors.push('Please select an approver for Line Manager');
-        if (!selectedApprovers.functional_head) errors.push('Please select an approver for Functional Head');
-        if (!selectedApprovers.hrd) errors.push('Please select an approver for Chief Human Capital Officer');
-        if (!selectedApprovers.ceo) errors.push('Please select an approver for CEO');
+        // Approvers are optional per step — the requestor need not fill every
+        // role — but at least one is required so the request has an approval
+        // chain to route through.
+        const anyApproverSelected = [
+            selectedApprovers.line_manager,
+            selectedApprovers.functional_head,
+            selectedApprovers.hrd,
+            selectedApprovers.ceo,
+        ].some(Boolean);
+        if (!anyApproverSelected) errors.push('Please select at least one approver');
 
         return errors;
     };
@@ -800,7 +891,7 @@ export default function TravelAuthPage() {
                         itinerary: travelData.itinerary,
                         budget: travelData.budget,
                         grandTotal: calculateGrandTotal(),
-                        costAllocation,
+                        costAllocation: finalizeCostAllocation(),
                         approvers: approversArray,
                         approverRoles: selectedApprovers,
                         useParallelApprovals: false,
@@ -872,11 +963,17 @@ export default function TravelAuthPage() {
             approverDisplay[r.key] = { name: u?.display_name };
         }
 
+        // Filing on behalf of a principal: the document must read as if the
+        // principal filled it themselves — their name/department/business unit go
+        // on the header (see requestor* derivations above), and the conditions
+        // block shows the acceptance checkbox only, with no signature, because
+        // the principal never personally signed. When filing for oneself, the
+        // current user's own signature renders as before.
         return buildTravelAuthPreviewSections({
             employee: {
-                name: user?.display_name || session?.user?.name || undefined,
-                department: departmentName || undefined,
-                businessUnit: businessUnitName || undefined,
+                name: requestorName,
+                department: requestorDepartment,
+                businessUnit: requestorBusinessUnit,
             },
             requestTimestamp,
             dateOfIntendedTravel: travelData.dateOfIntendedTravel,
@@ -888,12 +985,15 @@ export default function TravelAuthPage() {
             isEmergencyRequest,
             emergencyReason,
             acceptConditions: travelData.acceptConditions,
-            travellerName: user?.display_name || session?.user?.name || undefined,
-            travellerSignatureUrl: user?.id ? `/api/signature/view?userId=${encodeURIComponent(user.id)}` : null,
+            travellerName: requestorName,
+            travellerSignatureUrl: isOnBehalf
+                ? null
+                : (user?.id ? `/api/signature/view?userId=${encodeURIComponent(user.id)}` : null),
+            onBehalf: isOnBehalf,
             itinerary: travelData.itinerary,
             budget: travelData.budget,
             grandTotal: calculateGrandTotal(),
-            costAllocation,
+            costAllocation: finalizeCostAllocation(),
             approvers: approverDisplay,
         });
     };
@@ -953,7 +1053,7 @@ export default function TravelAuthPage() {
                         itinerary: travelData.itinerary,
                         budget: travelData.budget,
                         grandTotal: calculateGrandTotal(),
-                        costAllocation,
+                        costAllocation: finalizeCostAllocation(),
                         isEmergencyRequest: isTravelWithin7Days() ? isEmergencyRequest : false,
                         emergencyReason: isTravelWithin7Days() && isEmergencyRequest ? emergencyReason : '',
                         approvers: approversArray,
@@ -1003,7 +1103,7 @@ export default function TravelAuthPage() {
                         itinerary: travelData.itinerary,
                         budget: travelData.budget,
                         grandTotal: calculateGrandTotal(),
-                        costAllocation,
+                        costAllocation: finalizeCostAllocation(),
                         approvers: approversArray,
                         approverRoles: selectedApprovers,
                         useParallelApprovals: false,
@@ -1072,14 +1172,22 @@ export default function TravelAuthPage() {
                         <OnBehalfOfField value={onBehalfOf} onChange={setOnBehalfOf} disabled={isApproverEditing} />
                     </Card>
 
-                    {/* Requestor Information */}
+                    {/* Requestor Information — when filing on behalf of a principal,
+                        this section shows THAT person's details (name, business unit,
+                        department), autofilled the moment they're selected above, so
+                        the form reads as if they filled it themselves. */}
                     <Card className="p-6">
                         <h3 className="text-sm font-semibold text-gray-700 mb-4 uppercase border-b pb-2">Requestor Information</h3>
+                        {isOnBehalf && (
+                            <p className="text-xs text-primary-700 bg-primary-50 border border-primary-200 rounded-lg px-3 py-2 mb-4">
+                                Showing details for <strong>{onBehalfOf?.name}</strong>, on whose behalf you are filing this request.
+                            </p>
+                        )}
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                             <div>
                                 <label className="block text-sm font-semibold text-gray-700 mb-1 uppercase">Name</label>
                                 <div className="px-4 py-2 rounded-xl border border-gray-200 bg-gray-50 text-gray-600">
-                                    {user?.display_name || session?.user?.name || (hrimsLoading
+                                    {requestorName || ((isOnBehalf ? onBehalfProfileLoading : hrimsLoading)
                                         ? <span className="inline-block h-4 w-32 bg-gray-200 rounded animate-pulse align-middle" />
                                         : '—')}
                                 </div>
@@ -1087,7 +1195,7 @@ export default function TravelAuthPage() {
                             <div>
                                 <label className="block text-sm font-semibold text-gray-700 mb-1 uppercase">Business Unit</label>
                                 <div className="px-4 py-2 rounded-xl border border-gray-200 bg-gray-50 text-gray-600">
-                                    {businessUnitName || (hrimsLoading
+                                    {requestorBusinessUnit || ((isOnBehalf ? onBehalfProfileLoading : hrimsLoading)
                                         ? <span className="inline-block h-4 w-24 bg-gray-200 rounded animate-pulse align-middle" />
                                         : '—')}
                                 </div>
@@ -1095,7 +1203,7 @@ export default function TravelAuthPage() {
                             <div>
                                 <label className="block text-sm font-semibold text-gray-700 mb-1 uppercase">Department</label>
                                 <div className="px-4 py-2 rounded-xl border border-gray-200 bg-gray-50 text-gray-600">
-                                    {departmentName || (hrimsLoading
+                                    {requestorDepartment || ((isOnBehalf ? onBehalfProfileLoading : hrimsLoading)
                                         ? <span className="inline-block h-4 w-28 bg-gray-200 rounded animate-pulse align-middle" />
                                         : '—')}
                                 </div>
@@ -1556,28 +1664,29 @@ export default function TravelAuthPage() {
                             </table>
                         </div>
 
-                        {/* Cost Allocation — entered by the requestor: tick the
-                            relevant business unit(s) and indicate the cost. */}
+                        {/* Cost Allocation — the requestor ticks the unit(s) that
+                            carry the cost. One unit → whole cost. Tick 2+ to split,
+                            which reveals figure inputs + a "fully allocated" control. */}
                         {!isInternational && (
                         <div className="mt-6 pt-6 border-t border-gray-200">
                             <h4 className="font-semibold text-gray-700 uppercase text-sm mb-1">Allocation Cost to Unit</h4>
                             <p className="text-xs text-gray-500 mb-3">
-                                Tick the relevant business unit(s) and indicate the cost to allocate to each.
+                                Tick the business unit that carries this cost. Tick more than one to split the cost —
+                                then enter each amount so the full total is allocated.
                             </p>
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                                 {ALLOCATION_UNITS.map((u) => {
-                                    const value = costAllocation[u.code] || '';
-                                    const ticked = value !== '';
+                                    const selected = u.code in costAllocation;
                                     return (
-                                        <div key={u.code} className={`flex items-center gap-2 p-2 rounded-lg border ${ticked ? 'border-primary-300 bg-primary-50/40' : 'border-gray-200'}`}>
+                                        <div key={u.code} className={`flex items-center gap-2 p-2 rounded-lg border ${selected ? 'border-primary-300 bg-primary-50/40' : 'border-gray-200'}`}>
                                             <input
                                                 type="checkbox"
-                                                checked={ticked}
+                                                checked={selected}
                                                 disabled={isApproverEditing}
                                                 onChange={(e) => {
                                                     setCostAllocation((prev) => {
                                                         const next = { ...prev };
-                                                        if (e.target.checked) next[u.code] = next[u.code] || '';
+                                                        if (e.target.checked) next[u.code] = '';
                                                         else delete next[u.code];
                                                         return next;
                                                     });
@@ -1589,28 +1698,46 @@ export default function TravelAuthPage() {
                                                 <span className="font-medium">{u.code}</span>
                                                 <span className="text-gray-400 text-xs block truncate">{u.label}</span>
                                             </label>
-                                            <div className="relative w-28 flex-shrink-0">
-                                                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-xs">$</span>
-                                                <input
-                                                    type="number"
-                                                    step="0.01"
-                                                    min="0"
-                                                    inputMode="decimal"
-                                                    disabled={isApproverEditing}
-                                                    value={value}
-                                                    placeholder="0.00"
-                                                    onChange={(e) => {
-                                                        const v = e.target.value;
-                                                        setCostAllocation((prev) => ({ ...prev, [u.code]: v }));
-                                                        setIsDirty(true);
-                                                    }}
-                                                    className="w-full pl-5 pr-2 py-1.5 rounded-lg border border-gray-300 text-sm text-right focus:outline-none focus:ring-1 focus:ring-primary-500"
-                                                />
-                                            </div>
+                                            {/* Split mode: enter this unit's share. Single unit: show full total. */}
+                                            {selected && isSplitAllocation ? (
+                                                <div className="relative w-28 flex-shrink-0">
+                                                    <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-xs">$</span>
+                                                    <input
+                                                        type="number"
+                                                        step="0.01"
+                                                        min="0"
+                                                        inputMode="decimal"
+                                                        disabled={isApproverEditing}
+                                                        value={costAllocation[u.code]}
+                                                        placeholder="0.00"
+                                                        onChange={(e) => {
+                                                            const v = e.target.value;
+                                                            setCostAllocation((prev) => ({ ...prev, [u.code]: v }));
+                                                            setIsDirty(true);
+                                                        }}
+                                                        className="w-full pl-5 pr-2 py-1.5 rounded-lg border border-gray-300 text-sm text-right focus:outline-none focus:ring-1 focus:ring-primary-500"
+                                                    />
+                                                </div>
+                                            ) : selected ? (
+                                                <span className="w-28 flex-shrink-0 text-right text-xs font-medium text-primary-700">
+                                                    USD {allocationGrandTotal.toFixed(2)}
+                                                </span>
+                                            ) : null}
                                         </div>
                                     );
                                 })}
                             </div>
+                            {/* Split control — every cent must be allocated. */}
+                            {isSplitAllocation && (
+                                <div className={`mt-3 flex flex-wrap items-center justify-between gap-2 text-sm px-3 py-2 rounded-lg border ${allocationFullyAllocated ? 'border-green-200 bg-green-50 text-green-700' : 'border-amber-300 bg-amber-50 text-amber-700'}`}>
+                                    <span>Allocated <strong>USD {allocationEnteredTotal.toFixed(2)}</strong> of USD {allocationGrandTotal.toFixed(2)}</span>
+                                    <span className="font-medium">
+                                        {allocationFullyAllocated
+                                            ? 'Fully allocated ✓'
+                                            : `USD ${Math.abs(allocationRemaining).toFixed(2)} ${allocationRemaining > 0 ? 'remaining' : 'over-allocated'}`}
+                                    </span>
+                                </div>
+                            )}
                         </div>
                         )}
                     </Card>

@@ -865,12 +865,14 @@ export default function VoucherRequestPage() {
             errors.push('Reason for complimentary is required');
         }
 
-        // Required: All 2 approvers
-        if (!selectedApprovers.commercial_director) {
-            errors.push('Please select an approver for Commercial Director');
-        }
-        if (!selectedApprovers.ceo) {
-            errors.push('Please select an approver for CEO');
+        // Approvers are optional per step — not every role must be filled — but
+        // at least one is required so there's an approval chain to route through.
+        const anyApproverSelected = [
+            selectedApprovers.commercial_director,
+            selectedApprovers.ceo,
+        ].some(Boolean);
+        if (!anyApproverSelected) {
+            errors.push('Please select at least one approver');
         }
 
         // Validate dates are not in the past

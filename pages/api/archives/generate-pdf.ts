@@ -6,6 +6,7 @@ import PDFDocument from 'pdfkit';
 import path from 'path';
 import fs from 'fs';
 import { audit } from '@/lib/auditLog';
+import { resolveOnBehalfProfile } from '@/lib/onBehalf';
 import {
   signatureExists,
   userSignaturePath,
@@ -701,6 +702,7 @@ function renderTravelAuth(
   creatorDept: any,
   approvalSlots: OfficialApprovalSlot[] = [],
   selfSig: Buffer | null = null,
+  onBehalf: boolean = false,
 ): number {
   const pw = pageWidth;
 
@@ -737,12 +739,16 @@ function renderTravelAuth(
   doc.fontSize(8).fillColor(OFORM.ink).font('Helvetica').text('I have read these conditions and accept them.', 70, yPos + 0.5);
   yPos += 18;
 
-  // Signature of traveller
-  doc.fontSize(6.5).fillColor(OFORM.mute).font('Helvetica-Bold').text('SIGNATURE OF TRAVELLER', 55, yPos);
-  yPos += 10;
-  if (selfSig) { try { doc.image(selfSig, 55, yPos, { fit: [150, 34] }); } catch { /* ignore */ } yPos += 36; }
-  else { doc.moveTo(55, yPos + 16).lineTo(205, yPos + 16).strokeColor('#9ca3af').lineWidth(0.6).stroke(); yPos += 22; }
-  doc.font('Helvetica');
+  // Signature of traveller — omitted entirely when filed on behalf of someone
+  // (the principal never personally signed; the acceptance tick above is the
+  // only mark). Rendered only when the traveller filed for themselves.
+  if (!onBehalf) {
+    doc.fontSize(6.5).fillColor(OFORM.mute).font('Helvetica-Bold').text('SIGNATURE OF TRAVELLER', 55, yPos);
+    yPos += 10;
+    if (selfSig) { try { doc.image(selfSig, 55, yPos, { fit: [150, 34] }); } catch { /* ignore */ } yPos += 36; }
+    else { doc.moveTo(55, yPos + 16).lineTo(205, yPos + 16).strokeColor('#9ca3af').lineWidth(0.6).stroke(); yPos += 22; }
+    doc.font('Helvetica');
+  }
   yPos = oDocControl(doc, ['DOC NO: HR APX-27', 'DEPARTMENT: HUMAN RESOURCES', 'PAGE: 1 of 1'], yPos, pw);
   yPos += 6;
 
@@ -1031,17 +1037,28 @@ async function generatePdfBuffer(
     const resolvedSelf = await resolveSignatureSignedUrl(formData.signature_url);
     selfSignSignatureBuffer = resolvedSelf ? await fetchImageBuffer(resolvedSelf) : null;
   }
+  // Filed on behalf of someone? THAT person is the requestor/traveller on the
+  // document — resolve their profile once and use it for the header + signature.
+  const onBehalfProfile = await resolveOnBehalfProfile(request);
+
   // Traveller signature: official forms (travel auth) print "Signature of
   // Traveller" — the requestor's own saved signature. There's no per-request
   // drawn traveller signature, so fall back to their registered signature at
-  // signatures/<creatorId>.png.
-  if (!selfSignSignatureBuffer) {
-    const creatorId = request.creator_id || request.creator?.id || null;
-    if (creatorId && (await signatureExists(userSignaturePath(creatorId)))) {
-      const resolvedTraveller = await resolveSignatureSignedUrl(userSignatureProxyUrl(creatorId));
+  // signatures/<travellerId>.png.
+  //
+  // On-behalf: the principal never personally signed (the assistant filed for
+  // them), so the conditions block shows the acceptance checkbox ONLY, with no
+  // signature. Skip loading any traveller signature in that case.
+  if (!selfSignSignatureBuffer && !onBehalfProfile) {
+    const travellerId = request.creator_id || request.creator?.id || null;
+    if (travellerId && (await signatureExists(userSignaturePath(travellerId)))) {
+      const resolvedTraveller = await resolveSignatureSignedUrl(userSignatureProxyUrl(travellerId));
       selfSignSignatureBuffer = resolvedTraveller ? await fetchImageBuffer(resolvedTraveller) : null;
     }
   }
+  // Guard against a stray self-sign buffer (e.g. an assistant-drawn signature)
+  // ever printing as the principal's traveller signature on an on-behalf form.
+  const travellerSignatureBuffer = onBehalfProfile ? null : selfSignSignatureBuffer;
 
   return new Promise((resolve, reject) => {
     try {
@@ -1112,8 +1129,28 @@ async function generatePdfBuffer(
 
       let yPos = dividerY + 12;
 
-      const creator = Array.isArray(request.creator) ? request.creator[0] : request.creator;
-      const creatorDept = creator?.department ? (Array.isArray(creator.department) ? creator.department[0] : creator.department) : null;
+      let creator = Array.isArray(request.creator) ? request.creator[0] : request.creator;
+      let creatorDept = creator?.department ? (Array.isArray(creator.department) ? creator.department[0] : creator.department) : null;
+
+      // On-behalf: present the principal as the requestor throughout the
+      // document (name, department, business unit) — not the assistant who
+      // filed. formData.department/businessUnit were captured from the filer,
+      // so override them too.
+      if (onBehalfProfile) {
+        creator = {
+          ...creator,
+          id: onBehalfProfile.id,
+          display_name: onBehalfProfile.display_name,
+          email: onBehalfProfile.email,
+          job_title: onBehalfProfile.job_title,
+          department: onBehalfProfile.department,
+          business_unit: onBehalfProfile.business_unit,
+        };
+        creatorDept = onBehalfProfile.department || creatorDept;
+        if (onBehalfProfile.department?.name) formData.department = onBehalfProfile.department.name;
+        if (onBehalfProfile.business_unit?.name) formData.businessUnit = onBehalfProfile.business_unit.name;
+        if (onBehalfProfile.display_name) formData.requester = onBehalfProfile.display_name;
+      }
 
       // Generic "Request Information" grid — official forms carry their own
       // header fields (Name / Department / Date …), so skip it for those.
@@ -1182,7 +1219,7 @@ async function generatePdfBuffer(
       // ── Form-type-specific content ──
       switch (formType) {
         case 'travel_authorization':
-          yPos = renderTravelAuth(doc, formData, yPos, pageWidth, creator, creatorDept, approvalSlots, selfSignSignatureBuffer);
+          yPos = renderTravelAuth(doc, formData, yPos, pageWidth, creator, creatorDept, approvalSlots, travellerSignatureBuffer, !!onBehalfProfile);
           break;
         case 'capex': {
           const capexData = formData.capex || formData;

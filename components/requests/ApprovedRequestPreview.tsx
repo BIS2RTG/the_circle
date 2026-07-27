@@ -86,6 +86,18 @@ function money(value: any, currency = 'USD'): string {
     return `${currency} ${n.toFixed(2)}`;
 }
 
+// When a request was filed on behalf of someone, that principal (resolved
+// server-side as `onBehalfProfile`) is the requestor shown on the document —
+// not the assistant who filed it.
+function effectiveRequestor(request: any): any {
+    return request?.onBehalfProfile || request?.creator || {};
+}
+function filedByName(request: any): string | null {
+    if (!request?.onBehalfProfile) return null;
+    const filer = request?.creator;
+    return filer?.display_name || filer?.email || null;
+}
+
 function humaniseKey(key: string): string {
     return key
         .replace(/([A-Z])/g, ' $1')
@@ -345,7 +357,8 @@ function buildTravelAuthSections(request: any, metadata: any): PreviewSection[] 
 function buildPettyCashSections(request: any, metadata: any): PreviewSection[] {
     const lineItems: any[] = Array.isArray(metadata.lineItems) ? metadata.lineItems : [];
     const total = lineItems.reduce((sum, r) => sum + (parseFloat(r?.amount) || 0), 0);
-    const creator = request?.creator || {};
+    const creator = effectiveRequestor(request);
+    const filedBy = filedByName(request);
     const supportingDocs: any[] = Array.isArray(metadata.supportingDocuments) ? metadata.supportingDocuments : [];
 
     // Recipient signature stored as { type: 'manual', data: <data URL> } —
@@ -405,10 +418,11 @@ function buildPettyCashSections(request: any, metadata: any): PreviewSection[] {
         {
             title: 'Requestor',
             fields: [
-                { label: 'Submitted by', value: creator.display_name || '—' },
+                { label: 'Requestor', value: creator.display_name || '—' },
                 { label: 'Email', value: creator.email || '—' },
-                { label: 'Department', value: metadata.department || creator.department?.name || '—' },
-                { label: 'Business Unit', value: metadata.businessUnit || metadata.business_unit_name || creator.business_unit?.name || '—' },
+                { label: 'Department', value: (filedBy ? creator.department?.name : (metadata.department || creator.department?.name)) || '—' },
+                { label: 'Business Unit', value: (filedBy ? creator.business_unit?.name : (metadata.businessUnit || metadata.business_unit_name || creator.business_unit?.name)) || '—' },
+                ...(filedBy ? [{ label: 'Filed by', value: `${filedBy} (assistant)` }] : []),
                 { label: 'Submitted', value: formatDateTime(request?.created_at) },
             ],
         },
@@ -529,7 +543,8 @@ const COMP_ACCOMMODATION_LABELS: Record<string, string> = {
 };
 
 function buildCompSections(request: any, metadata: any): PreviewSection[] {
-    const creator = request?.creator || {};
+    const creator = effectiveRequestor(request);
+    const filedBy = filedByName(request);
     const travel = metadata.travelDocument;
     const hasTravel = metadata.processTravelDocument && travel;
 
@@ -599,9 +614,12 @@ function buildCompSections(request: any, metadata: any): PreviewSection[] {
             ? [{
                 title: 'Requestor',
                 fields: [
-                    { label: 'Submitted by', value: creator.display_name || '—' },
+                    { label: 'Requestor', value: creator.display_name || '—' },
                     { label: 'Email', value: creator.email || '—' },
                     ...(creator.job_title ? [{ label: 'Job Title', value: creator.job_title }] : []),
+                    ...(creator.department?.name ? [{ label: 'Department', value: creator.department.name }] : []),
+                    ...(creator.business_unit?.name ? [{ label: 'Business Unit', value: creator.business_unit.name }] : []),
+                    ...(filedBy ? [{ label: 'Filed by', value: `${filedBy} (assistant)` }] : []),
                     { label: 'Submitted', value: formatDateTime(request?.created_at) },
                 ],
             }]
@@ -841,7 +859,7 @@ function buildCapexSections(request: any, metadata: any): PreviewSection[] {
         preferredSupplier: preferred?.supplierName || '',
         reason: preferred?.selectionReason || data.quotationJustification || '',
         fundingSource: data.fundingSource || '',
-        requestedBy: data.requester || request?.creator?.display_name || data.department || '',
+        requestedBy: request?.onBehalfProfile?.display_name || data.requester || request?.creator?.display_name || data.department || '',
         approverNameByRole,
         approverSignatureByRole,
     });
