@@ -48,13 +48,13 @@ const TRAVEL_LOCATIONS = [
 
 // Inter-business unit distances in KM (exact values from distance matrix)
 const DISTANCE_MATRIX: Record<string, Record<string, number>> = {
-    'RTH':  { 'RTH': 0,   'NAH': 2.1,   'KHCC': 139,   'BRH': 440,   'AZAM': 713,   'VFRH': 709,   'MRC': 272 },
-    'NAH':  { 'RTH': 2.1, 'NAH': 0,     'KHCC': 136.9, 'BRH': 437.9, 'AZAM': 710.9, 'VFRH': 706.9, 'MRC': 269.9 },
-    'KHCC': { 'RTH': 139, 'NAH': 140, 'KHCC': 0,     'BRH': 301,   'AZAM': 574,   'VFRH': 570,   'MRC': 133 },
-    'BRH':  { 'RTH': 440, 'NAH': 437.9, 'KHCC': 301,   'BRH': 0,     'AZAM': 273,   'VFRH': 269,   'MRC': 168 },
-    'AZAM': { 'RTH': 713, 'NAH': 710.9, 'KHCC': 574,   'BRH': 273,   'AZAM': 0,     'VFRH': 4,     'MRC': 441 },
-    'VFRH': { 'RTH': 709, 'NAH': 706.9, 'KHCC': 570,   'BRH': 269,   'AZAM': 4,     'VFRH': 0,     'MRC': 437 },
-    'MRC':  { 'RTH': 272, 'NAH': 269.9, 'KHCC': 133,   'BRH': 168,   'AZAM': 441,   'VFRH': 437,   'MRC': 0 },
+    'RTH':  { 'RTH': 0,   'NAH': 2.1,   'KHCC': 139,   'BRH': 440,   'AZAM': 725,   'VFRH': 721,   'MRC': 250 },
+    'NAH':  { 'RTH': 2.1, 'NAH': 0,     'KHCC': 136.9, 'BRH': 437.9, 'AZAM': 722.9, 'VFRH': 718.9, 'MRC': 247.9 },
+    'KHCC': { 'RTH': 139, 'NAH': 140, 'KHCC': 0,     'BRH': 301,   'AZAM': 585,   'VFRH': 582,   'MRC': 389 },
+    'BRH':  { 'RTH': 439, 'NAH': 441, 'KHCC': 300,   'BRH': 0,     'AZAM': 454,   'VFRH': 450,   'MRC': 593 },
+    'AZAM': { 'RTH': 725, 'NAH': 722.9, 'KHCC': 585,   'BRH': 454,   'AZAM': 0,     'VFRH': 4,     'MRC': 973 },
+    'VFRH': { 'RTH': 721, 'NAH': 718.9, 'KHCC': 581,   'BRH': 450,   'AZAM': 4,     'VFRH': 0,     'MRC': 969 },
+    'MRC':  { 'RTH': 250, 'NAH': 247.9, 'KHCC': 389,   'BRH': 593,   'AZAM': 973,   'VFRH': 969,   'MRC': 0 },
 };
 
 // Get distance between two locations
