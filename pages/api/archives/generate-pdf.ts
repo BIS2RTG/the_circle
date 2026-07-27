@@ -530,6 +530,22 @@ function humanizeRole(s: string): string {
   return s.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+// Human labels for the workflow role keys stored in metadata.approverRoles.
+// Used so signed approval blocks show the role (position) the person filled —
+// exactly as the form's approval section does — instead of "Approver N".
+const ROLE_LABELS: Record<string, string> = {
+  line_manager: 'Line Manager',
+  functional_head: 'Functional Head',
+  hrd: 'Chief Human Capital Officer',
+  ceo: 'CEO',
+  finance_manager: 'Finance Manager',
+  general_manager: 'General Manager',
+  procurement_manager: 'Procurement Manager',
+  finance_director: 'Finance Director',
+  managing_director: 'Managing Director',
+  corporate_hod: 'Corporate HOD',
+};
+
 /** Light-grey section bar with dark label. */
 function oHeading(doc: any, text: string, y: number, pw: number): number {
   if (y > 730) { doc.addPage(); y = 50; }
@@ -1015,6 +1031,17 @@ async function generatePdfBuffer(
     const resolvedSelf = await resolveSignatureSignedUrl(formData.signature_url);
     selfSignSignatureBuffer = resolvedSelf ? await fetchImageBuffer(resolvedSelf) : null;
   }
+  // Traveller signature: official forms (travel auth) print "Signature of
+  // Traveller" — the requestor's own saved signature. There's no per-request
+  // drawn traveller signature, so fall back to their registered signature at
+  // signatures/<creatorId>.png.
+  if (!selfSignSignatureBuffer) {
+    const creatorId = request.creator_id || request.creator?.id || null;
+    if (creatorId && (await signatureExists(userSignaturePath(creatorId)))) {
+      const resolvedTraveller = await resolveSignatureSignedUrl(userSignatureProxyUrl(creatorId));
+      selfSignSignatureBuffer = resolvedTraveller ? await fetchImageBuffer(resolvedTraveller) : null;
+    }
+  }
 
   return new Promise((resolve, reject) => {
     try {
@@ -1130,11 +1157,21 @@ async function generatePdfBuffer(
       // Official-style approval slots (role, captured signature, name, date)
       // built from the request steps — used by the travel/capex renderers and,
       // for every other form, by the shared approval section below.
+      // Map approver user id -> workflow role. Steps almost always store
+      // approver_role = null (approvers were resolved by user id), so the role
+      // label comes from the metadata.approverRoles (roleKey -> userId) map.
+      const approverRolesMap = (request.metadata?.approverRoles || {}) as Record<string, any>;
+      const roleByUserId: Record<string, string> = {};
+      for (const [roleKey, uid] of Object.entries(approverRolesMap)) {
+        if (uid && typeof uid === 'string') roleByUserId[uid] = roleKey;
+      }
       const approvalSlots: OfficialApprovalSlot[] = (request.request_steps || []).map((step: any, index: number) => {
         const approval = step.approvals?.[0];
         const nm = step.approver?.display_name || approval?.approver?.display_name || '';
+        const roleKey = step.approver_role || roleByUserId[step.approver_user_id] || '';
+        const role = ROLE_LABELS[roleKey] || humanizeRole(roleKey) || `Approver ${index + 1}`;
         return {
-          role: humanizeRole(step.approver_role || `Approver ${index + 1}`),
+          role,
           name: step.is_redirected ? `pp ${nm}` : nm,
           date: approval?.signed_at || null,
           sig: signatureBuffers.get(index) || null,

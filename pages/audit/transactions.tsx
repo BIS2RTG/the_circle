@@ -7,7 +7,7 @@ import AuditAccessGate from '../../components/audit/AuditAccessGate';
 import AuditSectionTabs from '../../components/audit/AuditSectionTabs';
 import { formatEventTime } from '../../components/audit/AuditEventExplorer';
 import Head from 'next/head';
-import { Lock } from 'lucide-react';
+import { Lock, Mail, Bell } from 'lucide-react';
 
 /**
  * Transactions & Workflows — request-centric audit deep-dive (previously
@@ -27,6 +27,8 @@ export default function AuditTransactionsPage() {
     const [selectedRequest, setSelectedRequest] = useState<any | null>(null);
     const [auditLogs, setAuditLogs] = useState<any[]>([]);
     const [immutableEvents, setImmutableEvents] = useState<any[]>([]);
+    const [deliveries, setDeliveries] = useState<any[]>([]);
+    const [deliveryCounts, setDeliveryCounts] = useState<{ emails: number; emailsDelivered: number; inApp: number } | null>(null);
     const [loadingLogs, setLoadingLogs] = useState(false);
 
     // Filters & Sorting
@@ -67,9 +69,10 @@ export default function AuditTransactionsPage() {
             if (!selectedRequest) return;
             try {
                 setLoadingLogs(true);
-                const [trailResp, eventsResp] = await Promise.all([
+                const [trailResp, eventsResp, deliveriesResp] = await Promise.all([
                     fetch(`/api/audit?requestId=${selectedRequest.id}`),
                     fetch(`/api/audit/events?requestId=${selectedRequest.id}&pageSize=100`),
+                    fetch(`/api/audit/deliveries?requestId=${selectedRequest.id}`),
                 ]);
                 const trail = await trailResp.json();
                 setAuditLogs(trail.logs || []);
@@ -79,6 +82,14 @@ export default function AuditTransactionsPage() {
                 } else {
                     setImmutableEvents([]);
                 }
+                if (deliveriesResp.ok) {
+                    const d = await deliveriesResp.json();
+                    setDeliveries(d.timeline || []);
+                    setDeliveryCounts(d.counts || null);
+                } else {
+                    setDeliveries([]);
+                    setDeliveryCounts(null);
+                }
             } catch (err) {
                 console.error(err);
             } finally {
@@ -86,7 +97,7 @@ export default function AuditTransactionsPage() {
             }
         }
         if (selectedRequest) fetchLogs();
-        else { setAuditLogs([]); setImmutableEvents([]); }
+        else { setAuditLogs([]); setImmutableEvents([]); setDeliveries([]); setDeliveryCounts(null); }
     }, [selectedRequest]);
 
     // Filtering & Sorting Logic
@@ -525,6 +536,55 @@ export default function AuditTransactionsPage() {
                                             ))}
                                         </div>
                                     </div>
+
+                                    {/* Notifications & emails sent for this request */}
+                                    {!loadingLogs && (deliveries.length > 0 || deliveryCounts) && (
+                                        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+                                            <div className="px-5 py-4 border-b border-gray-100 flex flex-wrap items-center gap-2">
+                                                <Bell className="w-4 h-4 text-brand-600" strokeWidth={1.5} />
+                                                <h3 className="font-bold text-gray-900 text-sm">Notifications &amp; Emails</h3>
+                                                {deliveryCounts && (
+                                                    <span className="text-xs text-gray-400">
+                                                        — {deliveryCounts.inApp} in-app · {deliveryCounts.emailsDelivered}/{deliveryCounts.emails} emails delivered
+                                                    </span>
+                                                )}
+                                            </div>
+                                            {deliveries.length === 0 ? (
+                                                <div className="px-5 py-4 text-sm text-gray-400">No notifications recorded for this request.</div>
+                                            ) : (
+                                                <div className="divide-y divide-gray-50">
+                                                    {deliveries.map((d: any) => (
+                                                        <div key={`${d.channel}-${d.id}`} className="px-5 py-3 flex items-center gap-3 text-sm">
+                                                            {d.channel === 'email' ? (
+                                                                <Mail className="w-4 h-4 text-gray-400 shrink-0" strokeWidth={1.5} />
+                                                            ) : (
+                                                                <Bell className="w-4 h-4 text-gray-400 shrink-0" strokeWidth={1.5} />
+                                                            )}
+                                                            <div className="flex-1 min-w-0">
+                                                                <div className="font-medium text-gray-900 truncate">{d.subject || '(no subject)'}</div>
+                                                                <div className="text-xs text-gray-500 truncate">
+                                                                    {d.channel === 'email' ? 'Email' : 'In-app'} to {d.recipientName}
+                                                                    {d.kind ? ` · ${d.kind}` : ''}
+                                                                    {d.channel === 'email' && d.reason && !d.success ? ` · ${d.reason}` : ''}
+                                                                    {d.channel === 'in_app' && d.onBehalfOf ? ' · assistant copy' : ''}
+                                                                </div>
+                                                            </div>
+                                                            <span className="text-xs text-gray-400 font-mono whitespace-nowrap">{formatEventTime(d.at)}</span>
+                                                            {d.channel === 'email' ? (
+                                                                <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded ${d.success ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-600'}`}>
+                                                                    {d.success ? 'Sent' : 'Not sent'}
+                                                                </span>
+                                                            ) : (
+                                                                <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded ${d.isRead ? 'bg-gray-100 text-gray-500' : 'bg-brand-50 text-brand-600'}`}>
+                                                                    {d.isRead ? 'Read' : 'Unread'}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
 
                                     {/* Immutable event records for this request */}
                                     {!loadingLogs && immutableEvents.length > 0 && (

@@ -2,6 +2,7 @@ import { useRouter } from 'next/router';
 import { useEffect, useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '../ui';
+import { parseAmount } from '../../lib/money';
 import {
   Search,
   Plus,
@@ -87,8 +88,18 @@ const typeLabels: Record<string, string> = {
   travel_authorization: 'Travel',
 };
 
-function formatCurrency(amount: number, currency: string = 'USD') {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency, minimumFractionDigits: 0 }).format(amount);
+// `amount` may arrive as a display string ("10,931" / "$1,200.50") on some
+// request types (e.g. CAPEX), so normalise via parseAmount first — passing a
+// comma string straight to Intl.format() yields the dreaded "$NaN". Cents are
+// preserved (shown only when present).
+function formatCurrency(amount: unknown, currency: string = 'USD') {
+  const n = parseAmount(amount);
+  const cur = currency || 'USD';
+  try {
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n);
+  } catch {
+    return `${cur} ${n.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+  }
 }
 
 const MODE_CONFIG: Record<RequestsMode, { title: string; subtitle: string; statuses?: string[] }> = {

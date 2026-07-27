@@ -57,6 +57,57 @@ async function resolveRecipient(userId?: string | null, email?: string | null): 
   return data?.email || null;
 }
 
+/** Pull a request id out of an in-app path like `/requests/<uuid>` (or /comp/). */
+function requestIdFromActionUrl(actionUrl?: string | null): string | null {
+  if (!actionUrl) return null;
+  const m = actionUrl.match(
+    /\/requests(?:\/comp)?\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i
+  );
+  return m ? m[1] : null;
+}
+
+/**
+ * Append one row to notification_deliveries for an email attempt — success or
+ * drop. Best-effort: audit logging must never break the notification path.
+ */
+async function recordEmailDelivery(row: {
+  requestId: string | null;
+  recipientId?: string | null;
+  recipientEmail: string | null;
+  kind: NotificationEmailKind;
+  subject: string;
+  success: boolean;
+  reason?: string | null;
+  actorId?: string | null;
+}): Promise<void> {
+  try {
+    let organizationId: string | null = null;
+    if (row.recipientId) {
+      const { data } = await supabaseAdmin
+        .from('app_users')
+        .select('organization_id')
+        .eq('id', row.recipientId)
+        .maybeSingle();
+      organizationId = data?.organization_id || null;
+    }
+    await supabaseAdmin.from('notification_deliveries').insert({
+      organization_id: organizationId,
+      request_id: row.requestId,
+      recipient_id: row.recipientId || null,
+      recipient_email: row.recipientEmail,
+      channel: 'email',
+      kind: row.kind,
+      subject: row.subject,
+      transport: row.success ? row.reason || null : null,
+      success: row.success,
+      reason: row.reason || null,
+      actor_id: row.actorId || null,
+    });
+  } catch (e) {
+    console.warn('recordEmailDelivery failed (non-fatal):', e);
+  }
+}
+
 /**
  * Send a workflow notification email, honouring the recipient's preferences.
  * Returns { sent:false } (never throws) when the toggle is off or no email
@@ -85,15 +136,34 @@ export async function sendUserNotificationEmail(params: {
    * own token (e.g. cron reminders, which have no actor).
    */
   actorUserId?: string | null;
+  /**
+   * The request this notification concerns, for the audit/transactions
+   * delivery log. When omitted it's inferred from `actionUrl` (e.g.
+   * /requests/<id>). Pass explicitly when the CTA doesn't point at the request.
+   */
+  requestId?: string | null;
 }): Promise<{ sent: boolean; reason?: string }> {
+  const requestId = params.requestId || requestIdFromActionUrl(params.actionUrl);
   try {
     const prefs = await getUserPreferences(params.userId);
     if (!prefs[KIND_TO_PREF[params.kind]]) {
+      await recordEmailDelivery({
+        requestId, recipientId: params.userId, recipientEmail: params.email || null,
+        kind: params.kind, subject: params.subject, success: false,
+        reason: 'preference_off', actorId: params.actorUserId,
+      });
       return { sent: false, reason: 'preference_off' };
     }
 
     const to = await resolveRecipient(params.userId, params.email);
-    if (!to) return { sent: false, reason: 'no_email' };
+    if (!to) {
+      await recordEmailDelivery({
+        requestId, recipientId: params.userId, recipientEmail: null,
+        kind: params.kind, subject: params.subject, success: false,
+        reason: 'no_email', actorId: params.actorUserId,
+      });
+      return { sent: false, reason: 'no_email' };
+    }
 
     const actionUrl = params.actionUrl
       ? params.actionUrl.startsWith('http')
@@ -162,7 +232,14 @@ export async function sendUserNotificationEmail(params: {
 
     for (const attempt of attempts) {
       try {
-        if (await attempt.run()) return { sent: true, reason: attempt.label };
+        if (await attempt.run()) {
+          await recordEmailDelivery({
+            requestId, recipientId: params.userId, recipientEmail: to,
+            kind: params.kind, subject: params.subject, success: true,
+            reason: attempt.label, actorId: params.actorUserId,
+          });
+          return { sent: true, reason: attempt.label };
+        }
         console.warn(`notificationEmail: transport ${attempt.label} did not deliver to ${to}`);
       } catch (e: any) {
         console.warn(`notificationEmail: transport ${attempt.label} threw for ${to}:`, e?.message || e);
@@ -173,9 +250,19 @@ export async function sendUserNotificationEmail(params: {
       `notificationEmail: all transports failed for ${to} (tried: ${attempts.map((a) => a.label).join(', ') || 'none'}). ` +
         'Need a delegated Graph token for the actor/recipient, GRAPH_MAIL_SENDER (+ application Mail.Send admin consent), or RESEND_API_KEY.'
     );
+    await recordEmailDelivery({
+      requestId, recipientId: params.userId, recipientEmail: to,
+      kind: params.kind, subject: params.subject, success: false,
+      reason: 'not_configured', actorId: params.actorUserId,
+    });
     return { sent: false, reason: 'not_configured' };
   } catch (e: any) {
     console.error('notificationEmail: send threw (non-fatal):', e);
+    await recordEmailDelivery({
+      requestId, recipientId: params.userId, recipientEmail: params.email || null,
+      kind: params.kind, subject: params.subject, success: false,
+      reason: e?.message || 'error', actorId: params.actorUserId,
+    });
     return { sent: false, reason: e?.message || 'error' };
   }
 }
