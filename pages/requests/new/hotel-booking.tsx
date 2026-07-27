@@ -67,7 +67,7 @@ interface CostAllocation {
 
 // Business units for travel itinerary (excluding RTG SA, Heritage Expeditions, Gateway Stream, Head Office)
 const TRAVEL_LOCATIONS = [
-    { code: 'MRC', name: 'Montclaire Resort and Conferencing (MRC)', city: 'Nyanga' },
+    { code: 'MRC', name: 'Montclair Resort and Conferencing (MRC)', city: 'Nyanga' },
     { code: 'NAH', name: 'New Ambassador Hotel (NAH)', city: 'Harare' },
     { code: 'RTH', name: 'Rainbow Towers Hotel (RTH)', city: 'Harare' },
     { code: 'KHCC', name: 'KHCC Conference Centre', city: 'Kadoma' },

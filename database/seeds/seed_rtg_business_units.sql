@@ -15,5 +15,5 @@ INSERT INTO business_units (organization_id, name) VALUES
   ((SELECT id FROM organizations WHERE name = 'Rainbow Tourism Group' LIMIT 1), 'Heritage Expeditions Africa'),
   ((SELECT id FROM organizations WHERE name = 'Rainbow Tourism Group' LIMIT 1), 'Azambezi River Lodge'),
   ((SELECT id FROM organizations WHERE name = 'Rainbow Tourism Group' LIMIT 1), 'Victoria Falls Rainbow Hotel'),
-  ((SELECT id FROM organizations WHERE name = 'Rainbow Tourism Group' LIMIT 1), 'MontClaire Resort and Conference')
+  ((SELECT id FROM organizations WHERE name = 'Rainbow Tourism Group' LIMIT 1), 'Montclair Resort and Conference')
 ON CONFLICT (organization_id, name) DO NOTHING;

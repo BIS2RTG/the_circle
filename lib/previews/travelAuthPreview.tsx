@@ -34,7 +34,7 @@ const labelCellStyle: React.CSSProperties = { ...cellStyle, background: '#FAF7F0
 // list changes, update this constant alongside the form's.
 // ──────────────────────────────────────────────────────────────────────
 const TRAVEL_LOCATIONS: Record<string, string> = {
-    MRC: 'Montclaire Resort and Conferencing (MRC)',
+    MRC: 'Montclair Resort and Conferencing (MRC)',
     NAH: 'New Ambassador Hotel (NAH)',
     RTH: 'Rainbow Towers Hotel (RTH)',
     KHCC: 'KHCC Conference Centre',
@@ -86,7 +86,7 @@ const APPROVAL_ROLES: Array<{ key: string; label: string; description: string }>
 // ──────────────────────────────────────────────────────────────────────
 export const ALLOCATION_UNITS: Array<{ code: string; label: string }> = [
     { code: 'Corp', label: 'Corporate / Head Office' },
-    { code: 'MRC', label: 'Montclaire Resort & Conferencing' },
+    { code: 'MRC', label: 'Montclair Resort & Conferencing' },
     { code: 'NAH', label: 'New Ambassador Hotel' },
     { code: 'RTH', label: 'Rainbow Towers Hotel' },
     { code: 'KHCC', label: 'Kadoma Hotel & Conference Centre' },

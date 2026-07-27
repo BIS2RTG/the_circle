@@ -14,7 +14,7 @@ import ApproverSectionLoader from '../../../components/requests/ApproverSectionL
 // the cost-allocation list used elsewhere in the finance forms.
 const UNIT_OPTIONS: Array<{ code: string; label: string }> = [
     { code: 'CORP', label: 'Corporate (CORP)' },
-    { code: 'MRC', label: 'Montclaire Resort and Conferencing (MRC)' },
+    { code: 'MRC', label: 'Montclair Resort and Conferencing (MRC)' },
     { code: 'NAH', label: 'New Ambassador Hotel (NAH)' },
     { code: 'RTH', label: 'Rainbow Towers Hotel (RTH)' },
     { code: 'KHCC', label: 'KHCC Conference Centre (KHCC)' },
