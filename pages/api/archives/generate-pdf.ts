@@ -6,6 +6,7 @@ import PDFDocument from 'pdfkit';
 import path from 'path';
 import fs from 'fs';
 import { audit } from '@/lib/auditLog';
+import { resolveOnBehalfProfile } from '@/lib/onBehalf';
 import {
   signatureExists,
   userSignaturePath,
@@ -1031,14 +1032,18 @@ async function generatePdfBuffer(
     const resolvedSelf = await resolveSignatureSignedUrl(formData.signature_url);
     selfSignSignatureBuffer = resolvedSelf ? await fetchImageBuffer(resolvedSelf) : null;
   }
+  // Filed on behalf of someone? THAT person is the requestor/traveller on the
+  // document — resolve their profile once and use it for the header + signature.
+  const onBehalfProfile = await resolveOnBehalfProfile(request);
+
   // Traveller signature: official forms (travel auth) print "Signature of
   // Traveller" — the requestor's own saved signature. There's no per-request
   // drawn traveller signature, so fall back to their registered signature at
-  // signatures/<creatorId>.png.
+  // signatures/<travellerId>.png (the principal when filed on behalf).
   if (!selfSignSignatureBuffer) {
-    const creatorId = request.creator_id || request.creator?.id || null;
-    if (creatorId && (await signatureExists(userSignaturePath(creatorId)))) {
-      const resolvedTraveller = await resolveSignatureSignedUrl(userSignatureProxyUrl(creatorId));
+    const travellerId = onBehalfProfile?.id || request.creator_id || request.creator?.id || null;
+    if (travellerId && (await signatureExists(userSignaturePath(travellerId)))) {
+      const resolvedTraveller = await resolveSignatureSignedUrl(userSignatureProxyUrl(travellerId));
       selfSignSignatureBuffer = resolvedTraveller ? await fetchImageBuffer(resolvedTraveller) : null;
     }
   }
@@ -1112,8 +1117,28 @@ async function generatePdfBuffer(
 
       let yPos = dividerY + 12;
 
-      const creator = Array.isArray(request.creator) ? request.creator[0] : request.creator;
-      const creatorDept = creator?.department ? (Array.isArray(creator.department) ? creator.department[0] : creator.department) : null;
+      let creator = Array.isArray(request.creator) ? request.creator[0] : request.creator;
+      let creatorDept = creator?.department ? (Array.isArray(creator.department) ? creator.department[0] : creator.department) : null;
+
+      // On-behalf: present the principal as the requestor throughout the
+      // document (name, department, business unit) — not the assistant who
+      // filed. formData.department/businessUnit were captured from the filer,
+      // so override them too.
+      if (onBehalfProfile) {
+        creator = {
+          ...creator,
+          id: onBehalfProfile.id,
+          display_name: onBehalfProfile.display_name,
+          email: onBehalfProfile.email,
+          job_title: onBehalfProfile.job_title,
+          department: onBehalfProfile.department,
+          business_unit: onBehalfProfile.business_unit,
+        };
+        creatorDept = onBehalfProfile.department || creatorDept;
+        if (onBehalfProfile.department?.name) formData.department = onBehalfProfile.department.name;
+        if (onBehalfProfile.business_unit?.name) formData.businessUnit = onBehalfProfile.business_unit.name;
+        if (onBehalfProfile.display_name) formData.requester = onBehalfProfile.display_name;
+      }
 
       // Generic "Request Information" grid — official forms carry their own
       // header fields (Name / Department / Date …), so skip it for those.

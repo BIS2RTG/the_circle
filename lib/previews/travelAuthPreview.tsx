@@ -535,7 +535,11 @@ export function buildTravelAuthPreviewSections(input: TravelAuthPreviewInput): P
 // ──────────────────────────────────────────────────────────────────────
 export function travelAuthInputFromRequest(request: any): TravelAuthPreviewInput {
     const metadata = request?.metadata || {};
-    const creator = request?.creator || {};
+    // When filed on behalf of someone, THAT person is the traveller/requestor —
+    // their name, department, business unit and signature go on the document,
+    // not the assistant's. `onBehalfProfile` is resolved server-side.
+    const onBehalf = !!request?.onBehalfProfile;
+    const creator = request?.onBehalfProfile || request?.creator || {};
     const steps: any[] = Array.isArray(request?.request_steps) ? request.request_steps : [];
 
     // Private bucket: render saved signatures through the authenticated proxy.
@@ -594,8 +598,12 @@ export function travelAuthInputFromRequest(request: any): TravelAuthPreviewInput
     return {
         employee: {
             name: creator.display_name,
-            department: metadata.department || creator.department?.name,
-            businessUnit: metadata.businessUnit || metadata.business_unit_name || creator.business_unit?.name,
+            // On-behalf: the stored metadata.department/businessUnit belong to the
+            // ASSISTANT who filed, so prefer the principal's resolved unit names.
+            department: onBehalf ? creator.department?.name : (metadata.department || creator.department?.name),
+            businessUnit: onBehalf
+                ? creator.business_unit?.name
+                : (metadata.businessUnit || metadata.business_unit_name || creator.business_unit?.name),
         },
         requestTimestamp: request?.created_at
             ? new Date(request.created_at).toLocaleString('en-GB', {

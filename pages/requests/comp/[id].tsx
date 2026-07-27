@@ -5,6 +5,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '../../api/auth/[...nextauth]';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { fetchHrimsEmployeeByEmail } from '@/lib/hrimsClient';
+import { resolveOnBehalfProfile } from '@/lib/onBehalf';
 import { formatDateTime } from '@/lib/formatDate';
 import { useEffect, useRef, useState } from 'react';
 import { AppLayout } from '../../../components/layout';
@@ -561,9 +562,13 @@ export const getServerSideProps: GetServerSideProps<CompHotelBookingDetailsPageP
       }
     }
 
+    // When filed on behalf of someone, resolve THAT person as the requestor.
+    const onBehalfProfile = await resolveOnBehalfProfile(request as any);
+
     const enrichedRequest = {
       ...request,
       creator,
+      onBehalfProfile,
       status: actualStatus as RequestDetail['status'],
       current_step: currentStepIndex >= 0 ? currentStepIndex + 1 : request.request_steps?.length || 0,
       total_steps: request.request_steps?.length || 0,

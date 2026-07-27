@@ -916,18 +916,16 @@ export default function ExternalCompBookingPage() {
             errors.push('Reason for complimentary is required');
         }
 
-        // Required: All 4 approvers
-        if (!selectedApprovers.line_manager) {
-            errors.push('Please select an approver for Line Manager');
-        }
-        if (!selectedApprovers.functional_head) {
-            errors.push('Please select an approver for Functional Head');
-        }
-        if (!selectedApprovers.hrd) {
-            errors.push('Please select an approver for Chief Human Capital Officer');
-        }
-        if (!selectedApprovers.ceo) {
-            errors.push('Please select an approver for CEO');
+        // Approvers are optional per step — not every role must be filled — but
+        // at least one is required so there's an approval chain to route through.
+        const anyApproverSelected = [
+            selectedApprovers.line_manager,
+            selectedApprovers.functional_head,
+            selectedApprovers.hrd,
+            selectedApprovers.ceo,
+        ].some(Boolean);
+        if (!anyApproverSelected) {
+            errors.push('Please select at least one approver');
         }
 
         // Validate dates are not in the past
