@@ -1459,11 +1459,11 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
     // non-zero allocation is acceptable".
     const requestType = request?.metadata?.type;
     const isHotelBooking = requestType === 'hotel_booking' || requestType === 'external_hotel_booking';
-    const requestRequiresTravelCostAllocation = !!(
-        requestType === 'travel_authorization' ||
-        requestType === 'international_travel_authorization' ||
-        isHotelBooking
-    );
+    // Travel authorisations now capture cost allocation on the FORM itself
+    // (entered by the requestor — see /requests/new/travel-auth), so the
+    // CHCO/HRD no longer allocates cost at approval time. Hotel bookings still
+    // require the HRD to sign off on which units carry the comp value.
+    const requestRequiresTravelCostAllocation = !!isHotelBooking;
     const isHrdApprovingTravelAuth = !!(
         effectivePendingStep &&
         requestRequiresTravelCostAllocation &&
@@ -2849,13 +2849,18 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                     </Card>
                 )}
 
-                {/* Top Navigation Breadcrumb */}
+                {/* Top Navigation Breadcrumb — send the viewer back where they came
+                    from: approvers to their Approval Tasks, the requester (and
+                    everyone else) to My Requests. */}
                 <nav className="flex items-center text-sm text-text-secondary mb-2">
-                    <Link href="/approvals" className="hover:text-primary-600 transition-colors flex items-center gap-1">
+                    <Link
+                        href={isApprover && !isCreator ? '/approvals' : '/requests/my-requests'}
+                        className="hover:text-primary-600 transition-colors flex items-center gap-1"
+                    >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
                         </svg>
-                        Back to Approval Tasks
+                        {isApprover && !isCreator ? 'Back to Approval Tasks' : 'Back to My Requests'}
                     </Link>
                     <span className="mx-2 text-gray-300">/</span>
                     <span className="text-text-primary font-medium truncate max-w-xs">{request.title}</span>

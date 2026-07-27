@@ -1392,11 +1392,16 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
                 )}
 
                 <nav className="flex items-center text-sm text-text-secondary mb-2">
-                    <Link href="/approvals" className="hover:text-primary-600 transition-colors flex items-center gap-1">
+                    {/* Approvers go back to Approval Tasks; the requester (and
+                        everyone else) go to My Requests. */}
+                    <Link
+                        href={isApproverOnRequest && !isCreator ? '/approvals' : '/requests/my-requests'}
+                        className="hover:text-primary-600 transition-colors flex items-center gap-1"
+                    >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
                         </svg>
-                        Back to Approval Tasks
+                        {isApproverOnRequest && !isCreator ? 'Back to Approval Tasks' : 'Back to My Requests'}
                     </Link>
                     <span className="mx-2 text-gray-300">/</span>
                     <span className="text-text-primary font-medium truncate max-w-xs">{request.title}</span>

@@ -12,6 +12,7 @@ import { OnBehalfOfField, type OnBehalfOf } from '../../../components/requests/O
 import ApproverSectionLoader from '../../../components/requests/ApproverSectionLoader';
 import { CAPEX_APPROVAL_ROLES, CAPEX_APPROVAL_SECTIONS } from '../../../lib/capexApproval';
 import { buildCapexPreviewSections } from '../../../lib/previews/capexPreview';
+import { formatMoneyInput } from '../../../lib/money';
 
 interface DocumentMetadata {
   file: File;
@@ -1185,11 +1186,10 @@ export default function NewCapexRequestPage() {
     }
   };
 
-  const formatCurrency = (value: string) => {
-    const num = value.replace(/[^0-9.]/g, '');
-    if (!num) return '';
-    return parseFloat(num).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
-  };
+  // Preserve in-progress decimals so cents can be typed (e.g. "1,234.50").
+  // See lib/money formatMoneyInput — reformatting with parseFloat on every
+  // keystroke used to swallow the decimal point.
+  const formatCurrency = (value: string) => formatMoneyInput(value);
 
   // Parse a display-formatted currency string ("1,250.00") back to a number.
   const parseCurrency = (value: string) => {

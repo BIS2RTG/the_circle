@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { AppLayout } from '../../../components/layout';
 import { Card, Button, Input, RequestPreviewModal, UnsavedChangesModal, ReferenceCodeBanner } from '../../../components/ui';
 import type { PreviewSection, DocumentHeader } from '../../../components/ui';
-import { buildTravelAuthPreviewSections, buildTravelAuthDocumentHeader } from '../../../lib/previews/travelAuthPreview';
+import { buildTravelAuthPreviewSections, buildTravelAuthDocumentHeader, ALLOCATION_UNITS } from '../../../lib/previews/travelAuthPreview';
 import { useCurrentUser } from '../../../hooks/useCurrentUser';
 import { useUnsavedChangesPrompt, useFormAutosave } from '../../../hooks';
 import { useUserHrimsProfile } from '../../../hooks/useUserHrimsProfile';
@@ -254,14 +254,20 @@ export default function TravelAuthPage() {
     // Tollgate route type selection (premium or standard)
     const [tollgateRouteType, setTollgateRouteType] = useState<TollgateRouteType>('premium');
 
+    // Cost allocation is entered by the requestor (tick the relevant business
+    // unit and indicate the cost). Keyed by unit code (see ALLOCATION_UNITS);
+    // persisted to metadata.costAllocation and rendered on the preview + PDF.
+    const [costAllocation, setCostAllocation] = useState<Record<string, string>>({});
+
     // Autosave / crash recovery (serializable slices only). Disabled in edit mode.
     useFormAutosave({
         // Local and international share this component — keep their drafts separate.
         formKey: isInternational ? 'international-travel-auth' : 'travel-auth',
         enabled: !isEditMode,
-        data: { travelData, selectedApprovers, aaCalculator, isEmergencyRequest, emergencyReason, tollgateRouteType },
+        data: { travelData, costAllocation, selectedApprovers, aaCalculator, isEmergencyRequest, emergencyReason, tollgateRouteType },
         onRestore: (saved) => {
             if (saved.travelData) setTravelData(saved.travelData);
+            if (saved.costAllocation && typeof saved.costAllocation === 'object') setCostAllocation(saved.costAllocation);
             if (saved.selectedApprovers) setSelectedApprovers(prev => ({ ...prev, ...saved.selectedApprovers }));
             if (saved.aaCalculator) setAACalculator(saved.aaCalculator);
             if (typeof saved.isEmergencyRequest === 'boolean') setIsEmergencyRequest(saved.isEmergencyRequest);
@@ -270,8 +276,6 @@ export default function TravelAuthPage() {
             setIsDirty(true);
         },
     });
-
-    // Cost allocation is now auto-calculated, no need for state
 
     // Check if travel date is within 7 days
     const isTravelWithin7Days = () => {
@@ -555,6 +559,11 @@ export default function TravelAuthPage() {
                 // Pre-fill form with existing data
                 setTravelData(originalData);
 
+                // Restore the requestor's cost allocation across edits.
+                if (metadata.costAllocation && typeof metadata.costAllocation === 'object') {
+                    setCostAllocation(metadata.costAllocation);
+                }
+
                 // Preserve the on-behalf beneficiary across edits.
                 if (metadata.onBehalfOf?.userId) setOnBehalfOf(metadata.onBehalfOf);
 
@@ -791,6 +800,7 @@ export default function TravelAuthPage() {
                         itinerary: travelData.itinerary,
                         budget: travelData.budget,
                         grandTotal: calculateGrandTotal(),
+                        costAllocation,
                         approvers: approversArray,
                         approverRoles: selectedApprovers,
                         useParallelApprovals: false,
@@ -877,9 +887,13 @@ export default function TravelAuthPage() {
             isInternational,
             isEmergencyRequest,
             emergencyReason,
+            acceptConditions: travelData.acceptConditions,
+            travellerName: user?.display_name || session?.user?.name || undefined,
+            travellerSignatureUrl: user?.id ? `/api/signature/view?userId=${encodeURIComponent(user.id)}` : null,
             itinerary: travelData.itinerary,
             budget: travelData.budget,
             grandTotal: calculateGrandTotal(),
+            costAllocation,
             approvers: approverDisplay,
         });
     };
@@ -939,6 +953,7 @@ export default function TravelAuthPage() {
                         itinerary: travelData.itinerary,
                         budget: travelData.budget,
                         grandTotal: calculateGrandTotal(),
+                        costAllocation,
                         isEmergencyRequest: isTravelWithin7Days() ? isEmergencyRequest : false,
                         emergencyReason: isTravelWithin7Days() && isEmergencyRequest ? emergencyReason : '',
                         approvers: approversArray,
@@ -988,6 +1003,7 @@ export default function TravelAuthPage() {
                         itinerary: travelData.itinerary,
                         budget: travelData.budget,
                         grandTotal: calculateGrandTotal(),
+                        costAllocation,
                         approvers: approversArray,
                         approverRoles: selectedApprovers,
                         useParallelApprovals: false,
@@ -1540,13 +1556,63 @@ export default function TravelAuthPage() {
                             </table>
                         </div>
 
-                        {/* Cost Allocation — filled in by HR Director at approval time */}
+                        {/* Cost Allocation — entered by the requestor: tick the
+                            relevant business unit(s) and indicate the cost. */}
+                        {!isInternational && (
                         <div className="mt-6 pt-6 border-t border-gray-200">
-                            <h4 className="font-semibold text-gray-700 uppercase text-sm mb-2">Allocation Cost to Unit</h4>
-                            <p className="text-xs text-gray-500">
-                                The Chief Human Capital Officer will allocate the cost across business units when approving this request.
+                            <h4 className="font-semibold text-gray-700 uppercase text-sm mb-1">Allocation Cost to Unit</h4>
+                            <p className="text-xs text-gray-500 mb-3">
+                                Tick the relevant business unit(s) and indicate the cost to allocate to each.
                             </p>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                {ALLOCATION_UNITS.map((u) => {
+                                    const value = costAllocation[u.code] || '';
+                                    const ticked = value !== '';
+                                    return (
+                                        <div key={u.code} className={`flex items-center gap-2 p-2 rounded-lg border ${ticked ? 'border-primary-300 bg-primary-50/40' : 'border-gray-200'}`}>
+                                            <input
+                                                type="checkbox"
+                                                checked={ticked}
+                                                disabled={isApproverEditing}
+                                                onChange={(e) => {
+                                                    setCostAllocation((prev) => {
+                                                        const next = { ...prev };
+                                                        if (e.target.checked) next[u.code] = next[u.code] || '';
+                                                        else delete next[u.code];
+                                                        return next;
+                                                    });
+                                                    setIsDirty(true);
+                                                }}
+                                                className="rounded border-gray-300"
+                                            />
+                                            <label className="flex-1 text-sm text-gray-700 min-w-0">
+                                                <span className="font-medium">{u.code}</span>
+                                                <span className="text-gray-400 text-xs block truncate">{u.label}</span>
+                                            </label>
+                                            <div className="relative w-28 flex-shrink-0">
+                                                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-xs">$</span>
+                                                <input
+                                                    type="number"
+                                                    step="0.01"
+                                                    min="0"
+                                                    inputMode="decimal"
+                                                    disabled={isApproverEditing}
+                                                    value={value}
+                                                    placeholder="0.00"
+                                                    onChange={(e) => {
+                                                        const v = e.target.value;
+                                                        setCostAllocation((prev) => ({ ...prev, [u.code]: v }));
+                                                        setIsDirty(true);
+                                                    }}
+                                                    className="w-full pl-5 pr-2 py-1.5 rounded-lg border border-gray-300 text-sm text-right focus:outline-none focus:ring-1 focus:ring-primary-500"
+                                                />
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
                         </div>
+                        )}
                     </Card>
 
                     {/* Supporting documents (file + label + description) */}
