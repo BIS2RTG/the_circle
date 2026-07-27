@@ -206,7 +206,17 @@
       "Bash(node -e \"const c=require\\('crypto'\\);const s=c.randomBytes\\(16\\);const k=c.scryptSync\\('ClaudeTest#2026',s,32,{N:16384,r:8,p:1}\\);console.log\\('scrypt\\\\$16384\\\\$8\\\\$1\\\\$'+s.toString\\('base64'\\)+'\\\\$'+k.toString\\('base64'\\)\\)\")",
       "Bash(cd /c/Users/GERALD~1.NDO/AppData/Local/Temp/claude/C--Users-Geraldine-Ndoro-the-circle/8b9c439a-f5b8-4703-a1b6-4a081dcd8336/scratchpad && sed -n '531,695p' orig_preview.tsx)",
       "Bash(ls -la \"/c/Users/Geraldine.Ndoro/AppData/Local/Temp/claude/C--Users-Geraldine-Ndoro-the-circle/8b9c439a-f5b8-4703-a1b6-4a081dcd8336/scratchpad/newcomp.tsx\" 2>&1 | head)",
-      "Bash(grep -n \"RESUBMIT_FORM_ROUTES\" \"pages/requests/[id].tsx\" | head; echo \"---map---\"; sed -n '/RESUBMIT_FORM_ROUTES = {/,/};/p' \"pages/requests/[id].tsx\" | head -30)"
+      "Bash(grep -n \"RESUBMIT_FORM_ROUTES\" \"pages/requests/[id].tsx\" | head; echo \"---map---\"; sed -n '/RESUBMIT_FORM_ROUTES = {/,/};/p' \"pages/requests/[id].tsx\" | head -30)",
+      "Bash(npm -v)",
+      "Bash(npm ci *)",
+      "PowerShell(Get-CimInstance Win32_Process -Filter \"ProcessId = 28980\")",
+      "PowerShell($p = Get-Process -Id 28980 -ErrorAction SilentlyContinue; if \\($p\\) { $p | Select-Object Id, CPU, @{N='WS_MB';E={[math]::Round\\($_.WorkingSet64/1MB,1\\)}}, StartTime; Write-Output \"--- checking npm cache log activity ---\"; Get-ChildItem \"$env:LOCALAPPDATA\\\\npm-cache\\\\_logs\" | Sort-Object LastWriteTime -Descending | Select-Object -First 3 Name, LastWriteTime } else { Write-Output \"process gone\" })",
+      "PowerShell(if \\(Test-Path node_modules\\\\next\\\\package.json\\) { \"next: \" + \\(Get-Content node_modules\\\\next\\\\package.json | ConvertFrom-Json\\).version } else { \"node_modules\\\\next MISSING\" })",
+      "Bash(npm install *)",
+      "PowerShell(Start-Sleep -Seconds 6; $c = Test-NetConnection -ComputerName localhost -Port 3000 -WarningAction SilentlyContinue; \"Port 3000 listening: $\\($c.TcpTestSucceeded\\)\"; Get-Process node -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count | ForEach-Object { \"node processes: $_\" })",
+      "PowerShell(foreach \\($u in @\\('/api/audit/deliveries?requestId=58e5246f-402a-4fca-a5d4-efd44c04046c','/admin/requests'\\)\\) { try { $r = Invoke-WebRequest -Uri \"http://localhost:3000$u\" -UseBasicParsing -MaximumRedirection 0 -TimeoutSec 60 -ErrorAction Stop; \"$u -> HTTP $\\($r.StatusCode\\)\" } catch { $code = $_.Exception.Response.StatusCode.value__; if \\($code\\) { \"$u -> HTTP $code\" } else { \"$u -> ERROR $\\($_.Exception.Message\\)\" } } })",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:3000/api/audit/deliveries?requestId=58e5246f-402a-4fca-a5d4-efd44c04046c\" -UseBasicParsing -TimeoutSec 240 -ErrorAction Stop; \"deliveries -> HTTP $\\($r.StatusCode\\): $\\($r.Content.Substring\\(0,[Math]::Min\\(200,$r.Content.Length\\)\\)\\)\" } catch { $code = $_.Exception.Response.StatusCode.value__; \"deliveries -> HTTP $code \\(expected 401 unauth = compiles OK\\)\" })",
+      "Bash(curl -s -o /dev/null -w \"deliveries API -> HTTP %{http_code}\\\\n\" --max-time 200 \"http://localhost:3000/api/audit/deliveries?requestId=58e5246f-402a-4fca-a5d4-efd44c04046c\")"
     ]
   }
 }
