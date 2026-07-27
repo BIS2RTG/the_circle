@@ -90,8 +90,9 @@ export const getServerSideProps: GetServerSideProps<SettingsProps> = async (cont
 
   try {
     if (userId && (await signatureExists(userSignaturePath(userId)))) {
-      // Private bucket: render through the authenticated proxy.
-      initialSignatureUrl = userSignatureProxyUrl(userId);
+      // Private bucket: render through the authenticated proxy. Cache-bust so a
+      // just-replaced signature never renders from the browser's image cache.
+      initialSignatureUrl = `${userSignatureProxyUrl(userId)}&t=${Date.now()}`;
     }
   } catch (e) {
     // No signature found

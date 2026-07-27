@@ -482,8 +482,23 @@ export default function Home() {
             </button>
             <p className="mt-4 text-center text-[11px] text-gray-400">
               By signing in, you agree to our{" "}
-              <a href="#" className="text-[#9A7545] hover:underline">Terms</a> and{" "}
-              <a href="#" className="text-[#9A7545] hover:underline">Privacy Policy</a>.
+              <a
+                href="/legal/terms"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[#9A7545] hover:underline"
+              >
+                Terms
+              </a>{" "}
+              and{" "}
+              <a
+                href="/legal/privacy"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[#9A7545] hover:underline"
+              >
+                Privacy Policy
+              </a>.
             </p>
 
             {demoEnabled && (

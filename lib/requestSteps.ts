@@ -89,6 +89,17 @@ export async function buildAndNotifySteps(params: BuildStepsParams): Promise<Bui
     return { success: false, error: 'No approvers assigned. Please add approvers before submitting.' };
   }
 
+  // Integrity guard: the requester can never approve their own request. This is
+  // the authoritative backstop for every entry point (create / publish /
+  // resubmit) and every form — the pickers also hide the requester, but a
+  // crafted payload or a stale draft must still be refused here.
+  if (approverIds.includes(creatorId)) {
+    return {
+      success: false,
+      error: 'You cannot add yourself as an approver on your own request. Please remove yourself from the approver list.',
+    };
+  }
+
   const useParallelApprovals = metadata?.useParallelApprovals === true;
   const nowIso = new Date().toISOString();
 

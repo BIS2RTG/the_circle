@@ -5,6 +5,7 @@ import { GetServerSideProps } from 'next';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '../api/auth/[...nextauth]';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { getWatchedOwnerIds } from '@/lib/permanentWatchers';
 import { parseAmount } from '@/lib/money';
 import dynamic from 'next/dynamic';
 import { AppLayout } from '../../components/layout';
@@ -204,13 +205,25 @@ export const getServerSideProps: GetServerSideProps<ApprovalsPageProps> = async 
       .eq('organization_id', organizationId)
       .order('created_at', { ascending: false });
 
+    // Owners who named me as their PERMANENT watcher — I see everything they
+    // post or are an approver on. Mirrors /api/approvals/watching so the tab is
+    // populated on first server render, not only after the client refetch.
+    const watchedOwnerIds = new Set(
+      organizationId ? await getWatchedOwnerIds(userId, organizationId) : []
+    );
+
     let watchingRequests: any[] = [];
     if (!watchingError && watchingData) {
       watchingRequests = watchingData.filter((req: any) => {
         const watchers = req.metadata?.watchers || [];
-        return Array.isArray(watchers) && watchers.some((w: any) =>
+        const isPerRequestWatcher = Array.isArray(watchers) && watchers.some((w: any) =>
           typeof w === 'string' ? w === userId : w?.id === userId
         );
+        const isPermanent =
+          watchedOwnerIds.size > 0 &&
+          ((req.creator_id && watchedOwnerIds.has(req.creator_id)) ||
+            (req.request_steps || []).some((s: any) => s.approver_user_id && watchedOwnerIds.has(s.approver_user_id)));
+        return isPerRequestWatcher || isPermanent;
       });
     }
 

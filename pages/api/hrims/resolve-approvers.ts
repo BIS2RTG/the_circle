@@ -455,16 +455,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         general_manager,
         procurement_manager,
         corporate_hod,
-        projects_manager,
         managing_director,
         finance_director,
         capexCeo,
       ] = await Promise.all([
         resolveFirstPositionTitle(['Finance Manager', 'Accountant']),
         resolveDepartmentHead(),
-        resolveFirstPositionTitle(['Procurement Manager', 'Head of Procurement']),
+        // Procurement and Projects Manager is one person; match either title variant.
+        resolveFirstPositionTitle(['Procurement and Projects Manager', 'Procurement Manager', 'Head of Procurement', 'Projects Manager', 'Project Manager']),
         resolveFirstPositionTitle(['Corporate Head of Department', 'Head of Department']),
-        resolveFirstPositionTitle(['Projects Manager', 'Project Manager']),
         resolveFirstPositionTitle(['Chief Operating Officer', 'COO', 'Managing Director', 'MD']),
         resolveFirstPositionTitle(['Chief Finance Officer', 'CFO', 'Finance Director', 'Director of Finance']),
         resolveFirstPositionTitle(['CEO', 'Chief Executive Officer']),
@@ -473,7 +472,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       approvers.general_manager = general_manager;
       approvers.procurement_manager = procurement_manager;
       approvers.corporate_hod = corporate_hod;
-      approvers.projects_manager = projects_manager;
       approvers.managing_director = managing_director;
       approvers.finance_director = finance_director;
       approvers.ceo = capexCeo;

@@ -14,6 +14,7 @@ import {
   Coins,
   BarChart3,
   ClipboardList,
+  FileText,
   ShieldCheck,
   ShieldAlert,
   ScrollText,
@@ -197,6 +198,13 @@ const navSections: NavSection[] = [
   {
     title: 'Administrator',
     items: [
+      {
+        href: '/admin/requests',
+        label: 'All Requests',
+        requiredPermissions: ['requests.view_all', 'admin.roles', 'admin.system_config'],
+        requireAny: true,
+        icon: <FileText {...iconProps} />,
+      },
       {
         href: '/admin/settings/slas',
         label: 'SLAs',

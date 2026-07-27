@@ -19,9 +19,8 @@ export function WorkflowDefaultsConfig({ getSetting, queueChange }: ConfigTabPro
   const defaultCapexRoles = [
     { key: 'finance_manager', label: 'Finance Manager / Accountant', description: 'Financial Review' },
     { key: 'general_manager', label: 'General Manager (Unit)', description: 'Unit Approval' },
-    { key: 'procurement_manager', label: 'Procurement Manager', description: 'Procurement Review' },
+    { key: 'procurement_manager', label: 'Procurement and Projects Manager', description: 'Procurement & Projects Review' },
     { key: 'corporate_hod', label: 'Corporate Head of Dept', description: 'Department Approval' },
-    { key: 'projects_manager', label: 'Projects Manager', description: 'Projects Review' },
     { key: 'managing_director', label: 'Managing Director', description: 'Operations Approval' },
     { key: 'finance_director', label: 'Finance Director', description: 'Final Financial Approval' },
     { key: 'ceo', label: 'Chief Executive', description: 'Final Authorization' },

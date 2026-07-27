@@ -246,7 +246,9 @@ export default function JournalEntryPage() {
     const getFilteredUsersForRole = (roleKey: string) => {
         const term = approverSearch[roleKey] || '';
         const alreadySelectedIds = Object.values(selectedApprovers).filter(Boolean);
-        return users.filter(u => {
+        // The requester can never approve their own request — hide themselves from the picker.
+        const currentUserId = (session?.user as any)?.id;
+        return users.filter(u => u.id !== currentUserId).filter(u => {
             const matches = term
                 ? (u.display_name?.toLowerCase().includes(term.toLowerCase()) || u.email?.toLowerCase().includes(term.toLowerCase()))
                 : true;

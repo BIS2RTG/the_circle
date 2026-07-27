@@ -13,6 +13,7 @@
  *                    expose the matching temp/<id>.png object.
  */
 
+import { createHash } from 'crypto';
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { getServerSession } from 'next-auth/next';
 import { authOptions } from '../auth/[...nextauth]';
@@ -99,7 +100,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // HEAD: existence check only, no body (used by client signature probes).
   if (isHead) {
     const exists = await signatureExists(objectPath);
-    res.setHeader('Cache-Control', 'private, max-age=300');
+    // Never cache probe results in either direction: a fresh upload must not
+    // keep answering 404, and a deletion must not keep answering 200.
+    res.setHeader('Cache-Control', 'no-store');
     return res.status(exists ? 200 : 404).end();
   }
 
@@ -108,9 +111,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(404).json({ error: 'Signature not found' });
   }
 
+  // The proxy URL is CONSTANT per user, so any positive max-age makes a
+  // replaced/deleted signature linger in the browser for that long (users saw
+  // the old signature for up to 5 minutes after saving a new one). Serve with
+  // an ETag and force revalidation: unchanged signatures still answer 304 (no
+  // body transferred), but a replaced one shows up immediately.
+  const etag = `"${createHash('md5').update(file.buffer).digest('hex')}"`;
+  res.setHeader('ETag', etag);
+  res.setHeader('Cache-Control', 'private, no-cache');
+  if (req.headers['if-none-match'] === etag) {
+    return res.status(304).end();
+  }
+
   res.setHeader('Content-Type', file.contentType || 'image/png');
-  // Private: a signature is per-user PII; allow short-lived browser caching only.
-  res.setHeader('Cache-Control', 'private, max-age=300');
   res.setHeader('Content-Length', String(file.buffer.length));
   return res.status(200).send(file.buffer);
 }

@@ -13,11 +13,12 @@
  *    in the middleware (via the `loginAt` claim) and surfaced to the client
  *    guard so the UX matches.
  *
- * Times are deliberately small (15 / 30 min) per the security requirement.
+ * IDLE stays short so an unattended, unlocked machine is signed out quickly;
+ * ABSOLUTE is the maximum length of a continuously-active session.
  */
 
 export const IDLE_TIMEOUT_SECONDS = 15 * 60; // 15 minutes of inactivity
-export const ABSOLUTE_TIMEOUT_SECONDS = 30 * 60; // 30 minutes from login
+export const ABSOLUTE_TIMEOUT_SECONDS = 2 * 60 * 60; // 2 hours from login
 
 export const IDLE_TIMEOUT_MS = IDLE_TIMEOUT_SECONDS * 1000;
 export const ABSOLUTE_TIMEOUT_MS = ABSOLUTE_TIMEOUT_SECONDS * 1000;

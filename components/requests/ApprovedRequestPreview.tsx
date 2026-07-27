@@ -6,6 +6,12 @@ import {
     buildTravelAuthDocumentHeader,
     travelAuthInputFromRequest,
 } from '../../lib/previews/travelAuthPreview';
+import {
+    buildCapexPreviewSections,
+    capexPreviewTitle,
+    capexPreviewDocumentHeader,
+} from '../../lib/previews/capexPreview';
+import { CAPEX_APPROVAL_ROLES } from '../../lib/capexApproval';
 
 /**
  * ApprovedRequestPreview
@@ -215,7 +221,7 @@ function buildTravelAuthSections(request: any, metadata: any): PreviewSection[] 
                         </tr>
                         <tr>
                             <td style={labelCellStyle}>Business Unit</td>
-                            <td style={cellStyle}>{metadata.businessUnit || metadata.business_unit_name || '—'}</td>
+                            <td style={cellStyle}>{metadata.businessUnit || metadata.business_unit_name || creator.business_unit?.name || '—'}</td>
                             <td style={labelCellStyle}>Submitted</td>
                             <td style={cellStyle}>{formatDateTime(request.created_at)}</td>
                         </tr>
@@ -402,7 +408,7 @@ function buildPettyCashSections(request: any, metadata: any): PreviewSection[] {
                 { label: 'Submitted by', value: creator.display_name || '—' },
                 { label: 'Email', value: creator.email || '—' },
                 { label: 'Department', value: metadata.department || creator.department?.name || '—' },
-                { label: 'Business Unit', value: metadata.businessUnit || metadata.business_unit_name || '—' },
+                { label: 'Business Unit', value: metadata.businessUnit || metadata.business_unit_name || creator.business_unit?.name || '—' },
                 { label: 'Submitted', value: formatDateTime(request?.created_at) },
             ],
         },
@@ -524,15 +530,51 @@ const COMP_ACCOMMODATION_LABELS: Record<string, string> = {
 
 function buildCompSections(request: any, metadata: any): PreviewSection[] {
     const creator = request?.creator || {};
-    const units: any[] = Array.isArray(metadata.selectedBusinessUnits) ? metadata.selectedBusinessUnits : [];
     const travel = metadata.travelDocument;
     const hasTravel = metadata.processTravelDocument && travel;
 
+    // Normalise units: the multi-unit picker stores selectedBusinessUnits[];
+    // external hotel bookings store a single flat hotelUnit + room fields. The
+    // projection keeps the original table populated for both shapes.
+    const units: any[] = (() => {
+        if (Array.isArray(metadata.selectedBusinessUnits) && metadata.selectedBusinessUnits.length > 0) {
+            return metadata.selectedBusinessUnits;
+        }
+        if (metadata.hotelUnit || metadata.numberOfRooms || metadata.numberOfNights || metadata.arrivalDate) {
+            return [{
+                name: metadata.hotelUnit || 'Hotel',
+                accommodationType: metadata.accommodationType,
+                voucherValidityPeriod: metadata.voucherValidityPeriod
+                    || (metadata.arrivalDate && metadata.departureDate ? `${metadata.arrivalDate} → ${metadata.departureDate}` : ''),
+                numberOfPeople: metadata.numberOfPeople,
+                numberOfRooms: metadata.numberOfNights || metadata.numberOfRooms,
+                roomType: metadata.roomType,
+                numberOfMeals: metadata.numberOfMeals,
+                mealPeopleCount: metadata.mealPeopleCount,
+                specialArrangements: metadata.specialArrangements,
+            }];
+        }
+        return [];
+    })();
+
     const isMealOnly = (t?: string) => ['meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only'].includes(t || '');
 
+    // A comp requester is usually the guest themselves — fall back to the
+    // requestor's name when no explicit guest was entered.
     const guestDisplay = metadata.guestNames
         || [metadata.guestTitle, metadata.guestFirstName].filter(Boolean).join(' ')
+        || creator.display_name
         || '—';
+
+    // Hotel bookings store stay dates + nights; vouchers store a validity
+    // period + people + room type. Render the columns the data actually
+    // carries so populated fields don't show as '—'.
+    const hasStayDates = units.some((u: any) => u.arrivalDate || u.departureDate);
+
+    // A comp requester is usually the guest themselves — only surface the
+    // "Requestor" (Submitted by) block when the request was filed on behalf of
+    // someone else, so it doesn't duplicate the guest information.
+    const onBehalf = metadata.onBehalfOf && (metadata.onBehalfOf.userId || metadata.onBehalfOf.name);
 
     const sections: PreviewSection[] = [
         {
@@ -553,15 +595,17 @@ function buildCompSections(request: any, metadata: any): PreviewSection[] {
                     : []),
             ],
         },
-        {
-            title: 'Requestor',
-            fields: [
-                { label: 'Submitted by', value: creator.display_name || '—' },
-                { label: 'Email', value: creator.email || '—' },
-                ...(creator.job_title ? [{ label: 'Job Title', value: creator.job_title }] : []),
-                { label: 'Submitted', value: formatDateTime(request?.created_at) },
-            ],
-        },
+        ...(onBehalf
+            ? [{
+                title: 'Requestor',
+                fields: [
+                    { label: 'Submitted by', value: creator.display_name || '—' },
+                    { label: 'Email', value: creator.email || '—' },
+                    ...(creator.job_title ? [{ label: 'Job Title', value: creator.job_title }] : []),
+                    { label: 'Submitted', value: formatDateTime(request?.created_at) },
+                ],
+            }]
+            : []),
         ...(metadata.reason
             ? [{
                 title: 'Reason for Complimentary',
@@ -572,8 +616,37 @@ function buildCompSections(request: any, metadata: any): PreviewSection[] {
 
     if (units.length > 0) {
         sections.push({
-            title: 'Business Units',
-            content: (
+            title: hasStayDates ? 'Hotel Bookings' : 'Business Units',
+            content: hasStayDates ? (
+                <table style={docGridStyle}>
+                    <thead>
+                        <tr>
+                            <th style={headCellStyle}>Hotel Unit</th>
+                            <th style={headCellStyle}>Type</th>
+                            <th style={headCellStyle}>Arrival</th>
+                            <th style={headCellStyle}>Departure</th>
+                            <th style={{ ...headCellStyle, textAlign: 'right' }}>Nights</th>
+                            <th style={{ ...headCellStyle, textAlign: 'right' }}>Rooms</th>
+                            <th style={headCellStyle}>Notes</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {units.map((unit: any, i: number) => (
+                            <tr key={unit.id || i}>
+                                <td style={cellStyle}>{unit.name || '—'}</td>
+                                <td style={cellStyle}>
+                                    {COMP_ACCOMMODATION_LABELS[unit.accommodationType] || unit.accommodationType || '—'}
+                                </td>
+                                <td style={cellStyle}>{unit.arrivalDate ? formatDate(unit.arrivalDate) : '—'}</td>
+                                <td style={cellStyle}>{unit.departureDate ? formatDate(unit.departureDate) : '—'}</td>
+                                <td style={{ ...cellStyle, textAlign: 'right' }}>{unit.numberOfNights || '—'}</td>
+                                <td style={{ ...cellStyle, textAlign: 'right' }}>{unit.numberOfRooms || '—'}</td>
+                                <td style={cellStyle}>{unit.specialArrangements || '—'}</td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            ) : (
                 <table style={docGridStyle}>
                     <thead>
                         <tr>
@@ -581,7 +654,7 @@ function buildCompSections(request: any, metadata: any): PreviewSection[] {
                             <th style={headCellStyle}>Voucher Type</th>
                             <th style={headCellStyle}>Validity</th>
                             <th style={{ ...headCellStyle, textAlign: 'right' }}>People</th>
-                            <th style={{ ...headCellStyle, textAlign: 'right' }}>Nights</th>
+                            <th style={{ ...headCellStyle, textAlign: 'right' }}>Rooms</th>
                             <th style={headCellStyle}>Room Type</th>
                             <th style={headCellStyle}>Notes</th>
                         </tr>
@@ -613,8 +686,11 @@ function buildCompSections(request: any, metadata: any): PreviewSection[] {
 
     if (hasTravel) {
         const itinerary: any[] = Array.isArray(travel.itinerary) ? travel.itinerary : [];
+        // The travel authorisation is a distinct document — start it on a fresh
+        // page so the combined comp + travel preview / PDF reads as two pages.
         sections.push({
             title: 'Local Travel Authorization',
+            pageBreakBefore: true,
             fields: [
                 { label: 'Date of Intended Travel', value: formatDate(travel.dateOfIntendedTravel) },
                 { label: 'Travel Mode', value: travel.travelMode || '—' },
@@ -688,41 +764,87 @@ function buildCompSections(request: any, metadata: any): PreviewSection[] {
     return sections;
 }
 
+const CAPEX_PAYBACK_LABELS: Record<string, string> = {
+    '<6m': 'Less than 6 months',
+    '6-12m': '6 to 12 months',
+    '1-2y': '1 to 2 years',
+    '2-3y': '2 to 3 years',
+    '>3y': 'More than 3 years',
+};
+
+// Renders the exact CAPEX document (shared with the form page + the printable
+// PDF) from a saved request's metadata and its resolved approver steps.
 function buildCapexSections(request: any, metadata: any): PreviewSection[] {
     const data = metadata.capex || metadata;
-    return [
-        {
-            title: 'Requestor Information',
-            fields: [
-                { label: 'Requester', value: data.requester || request.creator?.display_name || '—' },
-                { label: 'Department', value: data.department || '—' },
-                { label: 'Business Unit', value: data.unit || '—' },
-                { label: 'Budget Type', value: data.budgetType || '—' },
-                { label: 'Priority', value: data.priority || '—' },
-            ],
-        },
-        {
-            title: 'Project Details',
-            fields: [
-                { label: 'Project Name', value: data.projectName || '—' },
-                { label: 'Description', value: data.description || '—', fullWidth: true },
-                { label: 'Business Justification', value: data.justification || '—', fullWidth: true },
-                { label: 'Start Date', value: formatDate(data.startDate) },
-                { label: 'End Date', value: formatDate(data.endDate) },
-            ],
-        },
-        {
-            title: 'Financial Analysis',
-            fields: [
-                { label: 'Project Cost', value: money(data.amount, data.currency || 'USD') },
-                { label: 'Currency', value: data.currency || 'USD' },
-                { label: 'Payback Period', value: data.paybackPeriod || '—' },
-                { label: 'NPV', value: data.npv || '—' },
-                { label: 'IRR', value: data.irr || '—' },
-                { label: 'Funding Source', value: data.fundingSource || '—' },
-            ],
-        },
-    ];
+
+    // Approver name per role: resolve each approverRoles[roleKey] id against the
+    // request_steps' embedded approver display names.
+    const roleMap: Record<string, any> = data.approverRoles || metadata.approverRoles || {};
+    const steps: any[] = Array.isArray(request?.request_steps) ? request.request_steps : [];
+    const nameById = new Map<string, string>();
+    for (const step of steps) {
+        const approver = Array.isArray(step.approver) ? step.approver[0] : step.approver;
+        if (step.approver_user_id && approver?.display_name) {
+            nameById.set(step.approver_user_id, approver.display_name);
+        }
+    }
+    const approverNameByRole: Record<string, string> = {};
+    for (const role of CAPEX_APPROVAL_ROLES) {
+        const uid = roleMap[role.key];
+        approverNameByRole[role.key] = uid ? nameById.get(uid) || '' : '';
+    }
+
+    // Recorded signature per role: the signature IMAGE of each approver who has
+    // actually approved goes on that role's signature line (names are only a
+    // caption under the line — never printed on it).
+    const approverSignatureByRole: Record<string, { url: string | null; signedAt?: string | null }> = {};
+    for (const role of CAPEX_APPROVAL_ROLES) {
+        const uid = roleMap[role.key];
+        const step =
+            steps.find((s) => s.approver_role === role.key) ||
+            (uid ? steps.find((s) => s.approver_user_id === uid) : null);
+        if (!step) continue;
+        const approval = Array.isArray(step.approvals) ? step.approvals[0] : null;
+        if (!approval?.signed_at || approval.decision !== 'approved') continue;
+        const approverId = approval?.approver?.id || approval?.approver_id || step.approver_user_id;
+        approverSignatureByRole[role.key] = {
+            url: signatureUrlForApproval(approval, approverId),
+            signedAt: approval.signed_at,
+        };
+    }
+
+    const quotes: any[] = Array.isArray(data.quotations) ? data.quotations : [];
+    const preferred = quotes.find((q) => q.isSelectedSupplier);
+
+    const parseNum = (s: any) => parseFloat(String(s ?? '').replace(/[^0-9.-]/g, '')) || 0;
+    const fmt = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const isBudgeted = data.budgetType === 'budget';
+    const budgetTypeMap: Record<string, string> = { budget: 'BUDGETED', 'non-budget': 'NON-BUDGETED', emergency: 'EMERGENCY' };
+
+    return buildCapexPreviewSections({
+        unit: data.unit || request?.creator?.business_unit?.name || '',
+        department: data.department || request?.creator?.department?.name || '',
+        projectName: data.projectName || request?.title || '',
+        budgetTypeDisplay: budgetTypeMap[data.budgetType] || (data.budgetType ? String(data.budgetType).toUpperCase() : ''),
+        currency: data.currency || 'USD',
+        budgetAmount: data.budgetAmount || '',
+        amountSpent: data.amountSpent || '',
+        balance: isBudgeted ? fmt(parseNum(data.budgetAmount) - parseNum(data.amountSpent)) : '',
+        projectCost: data.amount || '',
+        balanceAfter: isBudgeted ? data.budgetBalance || '' : '',
+        justification: data.justification || '',
+        payback: data.paybackPeriod ? CAPEX_PAYBACK_LABELS[data.paybackPeriod] || data.paybackPeriod : '',
+        npv: data.npv || '',
+        irr: data.irr || '',
+        evaluation: data.evaluation || '',
+        quotations: quotes.map((q) => ({ supplier: q.supplierName || '', amount: q.amount || '' })),
+        preferredSupplier: preferred?.supplierName || '',
+        reason: preferred?.selectionReason || data.quotationJustification || '',
+        fundingSource: data.fundingSource || '',
+        requestedBy: data.requester || request?.creator?.display_name || data.department || '',
+        approverNameByRole,
+        approverSignatureByRole,
+    });
 }
 
 function buildGenericSections(request: any, metadata: any): PreviewSection[] {
@@ -785,8 +907,9 @@ function buildDocumentHeader(metadata: any): DocumentHeader {
     }
 }
 
-// Shared section/header builder — used by both the modal and the inline tab.
-function buildPreviewForRequest(request: any) {
+// Shared section/header builder — used by the modal, the inline tab, and the
+// client-side "download as PDF" print flow on the detail pages.
+export function buildPreviewForRequest(request: any) {
     const metadata = request?.metadata || {};
     const type = metadata.type || metadata.requestType || '';
     const ref = metadata.referenceCode || `REQ-${String(request?.id || '').slice(0, 8).toUpperCase()}`;
@@ -807,10 +930,13 @@ function buildPreviewForRequest(request: any) {
     // an approver needs — so we skip the generic "Approval Signatures"
     // appendix in that case (it would duplicate the same information).
     const isTravelAuth = type === 'travel_authorization' || type === 'international_travel_authorization';
+    const isCapex = type === 'capex';
 
     const documentHeader = isTravelAuth
         ? buildTravelAuthDocumentHeader(type === 'international_travel_authorization')
-        : buildDocumentHeader(metadata);
+        : isCapex
+            ? capexPreviewDocumentHeader
+            : buildDocumentHeader(metadata);
 
     let typeSections: PreviewSection[] = [];
     switch (type) {
@@ -833,19 +959,24 @@ function buildPreviewForRequest(request: any) {
             typeSections = buildGenericSections(request, metadata);
     }
 
-    const sections: PreviewSection[] = isTravelAuth
+    // Travel auth and CAPEX embed their own signature block, so don't append the
+    // generic "Approval Signatures" table (it would duplicate the sign-offs).
+    const sections: PreviewSection[] = isTravelAuth || isCapex
         ? typeSections
         : [...typeSections, buildApprovalSignaturesSection(request)];
 
     // Subtitle adapts to status — for in-progress requests we don't claim
-    // "Fully Approved", we just stamp the submission date.
+    // "Fully Approved", we just stamp the submission date. The CAPEX form is a
+    // faithful reproduction of the paper document, so it carries no subtitle.
     const isApproved = request?.status === 'approved';
-    const subtitle = isApproved
-        ? `${ref} — Fully Approved on ${formatDateTime(request?.updated_at || request?.created_at)}`
-        : `${ref} — Submitted ${formatDateTime(request?.created_at)}`;
+    const subtitle = isCapex
+        ? undefined
+        : isApproved
+            ? `${ref} — Fully Approved on ${formatDateTime(request?.updated_at || request?.created_at)}`
+            : `${ref} — Submitted ${formatDateTime(request?.created_at)}`;
 
     return {
-        title: titleByType[type] || request?.title || 'Request',
+        title: isCapex ? capexPreviewTitle : (titleByType[type] || request?.title || 'Request'),
         subtitle,
         sections,
         documentHeader,
@@ -870,7 +1001,7 @@ export function ApprovedRequestPreviewInline({ request, className }: InlineProps
                 <button
                     type="button"
                     onClick={() => printPreviewDocument(printRef.current, title)}
-                    className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-[#5E4426] bg-[#F3EADC] border border-[#C9B896] rounded-lg hover:bg-[#E9DCC3] transition"
+                    className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-gray-700 bg-gray-100 border border-gray-300 rounded-lg hover:bg-gray-200 transition"
                 >
                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />

@@ -1,6 +1,7 @@
 import { Fragment, ReactNode, forwardRef, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useSuppressToastsWhileOpen } from './ToastProvider';
+import { formatDateTime } from '../../lib/formatDate';
 
 export interface PreviewField {
     label: string;
@@ -13,6 +14,9 @@ export interface PreviewSection {
     fields?: PreviewField[];
     /** When provided, rendered in place of `fields` — use for tables, multi-column layouts, etc. */
     content?: ReactNode;
+    /** Start this section on a new printed page (and show a divider on screen).
+     *  Used e.g. to render a combined comp + travel document as two pages. */
+    pageBreakBefore?: boolean;
 }
 
 export interface DocumentHeader {
@@ -105,7 +109,7 @@ export const RequestPreviewDocument = forwardRef<HTMLDivElement, RequestPreviewD
                 )}
 
                 <h1
-                    className="text-base font-bold text-[#5E4426] mb-1 uppercase tracking-wide text-center"
+                    className="text-base font-bold text-gray-900 mb-1 uppercase tracking-wide text-center"
                     style={{ textAlign: 'center' }}
                 >
                     {title}
@@ -117,9 +121,30 @@ export const RequestPreviewDocument = forwardRef<HTMLDivElement, RequestPreviewD
                 )}
 
                 {sections.map((section, i) => (
-                    <div key={i}>
+                    <div
+                        key={i}
+                        className={section.pageBreakBefore ? 'preview-page-break' : undefined}
+                        style={section.pageBreakBefore ? { breakBefore: 'page', pageBreakBefore: 'always' } : undefined}
+                    >
+                        {section.pageBreakBefore && i > 0 && (
+                            <div
+                                className="preview-page-divider"
+                                style={{
+                                    borderTop: '2px dashed #cbd5e1',
+                                    margin: '32px 0 20px',
+                                    paddingTop: 8,
+                                    textAlign: 'center',
+                                    fontSize: 10,
+                                    letterSpacing: '0.12em',
+                                    textTransform: 'uppercase',
+                                    color: '#94a3b8',
+                                }}
+                            >
+                                Page 2
+                            </div>
+                        )}
                         {section.title && (
-                            <h2 className="text-xs font-semibold uppercase tracking-wider text-[#5E4426] border-b border-[#C9B896] pb-1.5 mt-5 mb-2">
+                            <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-900 border-b border-gray-300 pb-1.5 mt-5 mb-2">
                                 {section.title}
                             </h2>
                         )}
@@ -143,6 +168,24 @@ export const RequestPreviewDocument = forwardRef<HTMLDivElement, RequestPreviewD
                         ) : null}
                     </div>
                 ))}
+
+                {/* System-generation stamp — a truthful record of when this
+                    document was produced from The Circle. Uses the `footer`
+                    class so the shared print stylesheet targets it too; the
+                    print helper therefore does NOT append its own footer. */}
+                <div
+                    className="footer"
+                    style={{
+                        marginTop: 24,
+                        fontSize: 9,
+                        color: '#999',
+                        borderTop: '1px solid #eee',
+                        paddingTop: 6,
+                        textAlign: 'center',
+                    }}
+                >
+                    Generated from The Circle on {formatDateTime(new Date())}
+                </div>
             </div>
         );
     }
@@ -167,15 +210,15 @@ export function printPreviewDocument(node: HTMLElement | null, title: string) {
         <meta charset="utf-8" />
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #111; padding: 24px; }
-            h1 { font-size: 18px; margin: 0 0 4px; color: #5E4426; text-align: center; text-transform: uppercase; letter-spacing: 0.04em; }
-            h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: #5E4426; border-bottom: 1px solid #C9B896; padding-bottom: 4px; margin: 18px 0 10px; }
+            h1 { font-size: 18px; margin: 0 0 4px; color: #111827; text-align: center; text-transform: uppercase; letter-spacing: 0.04em; }
+            h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: #111827; border-bottom: 1px solid #9ca3af; padding-bottom: 4px; margin: 18px 0 10px; }
             .doc-logo-wrap { text-align: center; margin-bottom: 10px; }
             .doc-logo-wrap img { max-height: 70px; width: auto; display: inline-block; }
             table { border-collapse: collapse; width: 100%; font-size: 11px; }
             table.doc-id-strip { border: 1px solid #111; margin: 8px 0 16px; }
             table.doc-id-strip td { border: 1px solid #111; padding: 6px 10px; font-weight: 600; font-size: 11px; }
             table td, table th { border: 1px solid #333; padding: 6px 8px; vertical-align: top; }
-            table th { background: #F3EADC; color: #5E4426; text-align: left; font-weight: 700; }
+            table th { background: #F3F4F6; color: #111827; text-align: left; font-weight: 700; }
             .subtitle { color: #666; font-size: 11px; margin-bottom: 14px; text-align: center; }
             .footer { margin-top: 24px; font-size: 9px; color: #999; border-top: 1px solid #eee; padding-top: 6px; text-align: center; }
             .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 20px; }
@@ -195,13 +238,16 @@ export function printPreviewDocument(node: HTMLElement | null, title: string) {
             table.approval-row .sig-line { height: 22px !important; }
             /* Neutralise the on-screen horizontal scroll wrapper so it cannot clip. */
             table.approval-row { display: table; }
+            .preview-page-break { break-before: page; page-break-before: always; }
             @media print {
                 @page { margin: 14mm; }
                 body { padding: 0; }
+                /* The on-screen "Page 2" divider is redundant once a real page
+                   break exists — hide it in the printed/PDF output. */
+                .preview-page-divider { display: none !important; }
                 table.approval-row { table-layout: fixed !important; width: 100% !important; min-width: 0 !important; }
             }
         </style></head><body>${html}
-        <div class="footer">Generated ${new Date().toLocaleString()}</div>
         <script>window.onload = () => { setTimeout(() => window.print(), 250); };</script>
         </body></html>`);
     w.document.close();
@@ -279,7 +325,7 @@ export default function RequestPreviewModal({
                         <button
                             type="button"
                             onClick={handlePrint}
-                            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-[#5E4426] bg-[#F3EADC] border border-[#C9B896] rounded-lg hover:bg-[#E9DCC3] transition"
+                            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 border border-gray-300 rounded-lg hover:bg-gray-200 transition"
                         >
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
@@ -299,7 +345,7 @@ export default function RequestPreviewModal({
                                     type="button"
                                     disabled={confirming}
                                     onClick={onConfirm}
-                                    className="px-5 py-2 text-sm font-semibold text-white bg-[#9A7545] rounded-lg hover:bg-[#7C5A33] disabled:opacity-60 disabled:cursor-not-allowed"
+                                    className="px-5 py-2 text-sm font-semibold text-white bg-gray-900 rounded-lg hover:bg-gray-800 disabled:opacity-60 disabled:cursor-not-allowed"
                                 >
                                     {confirming ? 'Submitting…' : confirmLabel}
                                 </button>

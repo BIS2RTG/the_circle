@@ -105,7 +105,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Risk evaluation (server-authoritative) — drives auth enforcement.
     // -----------------------------------------------------------------
     const riskEval = await evaluateRiskForAction(requestId, stepId);
-    const requiredAuth = authForRisk(riskEval.risk);
+    // Honour the requiredAuth the evaluator returned (rather than recomputing
+    // from the risk level). When approval verification is disabled org-wide the
+    // evaluator returns 'session', so the enforcement block below is skipped
+    // entirely — see APPROVAL_VERIFICATION_DISABLED in lib/approvalRisk.ts.
+    const requiredAuth = riskEval.requiredAuth ?? authForRisk(riskEval.risk);
 
     // Step-up authentication is enforced strictly by risk level. Drawing a
     // signature is NOT a substitute for MFA / biometric verification —

@@ -5,10 +5,18 @@
  * suitable for showing in a toast or fallback UI, falling back to a generic
  * message when nothing meaningful is available.
  */
+import { getNetworkErrorMessage } from './networkError';
+
 const GENERIC_MESSAGE = 'Something went wrong. Please try again.';
 
 export function getErrorMessage(error: unknown, fallback: string = GENERIC_MESSAGE): string {
     if (!error) return fallback;
+
+    // Connectivity failures ("Failed to fetch", offline, timeout) get a clear
+    // "check your connection" message rather than the engine's cryptic text, so
+    // the user understands it's the network — not a broken system.
+    const networkMessage = getNetworkErrorMessage(error);
+    if (networkMessage) return networkMessage;
 
     if (typeof error === 'string') {
         return error.trim() || fallback;

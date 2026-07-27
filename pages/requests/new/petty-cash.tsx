@@ -15,7 +15,7 @@ import ApproverSectionLoader from '../../../components/requests/ApproverSectionL
 // Code is stored in metadata; label is shown in the dropdown.
 const CHARGE_TO_OPTIONS: Array<{ code: string; label: string }> = [
     { code: 'CORP', label: 'Corporate (CORP)' },
-    { code: 'MRC', label: 'Montclaire Resort and Conferencing (MRC)' },
+    { code: 'MRC', label: 'Montclair Resort and Conferencing (MRC)' },
     { code: 'NAH', label: 'New Ambassador Hotel (NAH)' },
     { code: 'RTH', label: 'Rainbow Towers Hotel (RTH)' },
     { code: 'KHCC', label: 'KHCC Conference Centre (KHCC)' },
@@ -483,7 +483,9 @@ export default function PettyCashRequestPage() {
     const getFilteredUsersForRole = (roleKey: string) => {
         const term = approverSearch[roleKey] || '';
         const alreadySelectedIds = Object.values(selectedApprovers).filter(Boolean);
-        return users.filter(u => {
+        // The requester can never approve their own request — hide themselves from the picker.
+        const currentUserId = (session?.user as any)?.id;
+        return users.filter(u => u.id !== currentUserId).filter(u => {
             const matches = term
                 ? (u.display_name?.toLowerCase().includes(term.toLowerCase()) || u.email?.toLowerCase().includes(term.toLowerCase()))
                 : true;

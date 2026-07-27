@@ -1318,7 +1318,7 @@ export class ApprovalEngine {
 
     const { data: request } = await supabaseAdmin
       .from('requests')
-      .select('creator_id, status, organization_id, title, metadata, request_steps(status, approver_user_id)')
+      .select('creator_id, status, organization_id, title, metadata, request_steps(status, approver_user_id, step_index)')
       .eq('id', requestId)
       .single();
 
@@ -1403,7 +1403,22 @@ export class ApprovalEngine {
     const note = isRevive
       ? `The requester reopened ${requestRef} to amend and resubmit it.`
       : `The requester pulled back ${requestRef} to amend it. No action is needed for now — you'll be re-notified if it's resubmitted.`;
-    for (const approverId of pendingApproverIds) {
+
+    // For CAPEX, only the FIRST approver (the currently-active step) is told
+    // about an unsubmit — the downstream approvers were never notified in the
+    // first place, so pinging them is just noise. Other request types keep the
+    // original behaviour of notifying everyone who was still waiting.
+    const isCapex =
+      (request.metadata as any)?.type === 'capex' || (request.metadata as any)?.requestType === 'capex';
+    let recipientIds = pendingApproverIds;
+    if (isCapex) {
+      const firstStep = [...steps]
+        .filter((s) => s.approver_user_id)
+        .sort((a, b) => (a.step_index ?? 0) - (b.step_index ?? 0))[0];
+      recipientIds = firstStep?.approver_user_id ? [firstStep.approver_user_id as string] : [];
+    }
+
+    for (const approverId of recipientIds) {
       try {
         await this.notifyApprover(requestId, approverId, request.organization_id, userId, note);
       } catch (e) {

@@ -29,7 +29,10 @@ const csp = [
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' https://fonts.gstatic.com data:",
   "img-src 'self' data: blob: https://*.supabase.co https://graph.microsoft.com https://ui-avatars.com",
-  "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://graph.microsoft.com",
+  // blob:/data: — the e-sign PDF editor fetches the user-uploaded PDF from an
+  // in-memory blob: URL, and pdf.js reads data: URLs; without these the
+  // document fails to load under CSP.
+  "connect-src 'self' blob: data: https://*.supabase.co wss://*.supabase.co https://graph.microsoft.com",
   "worker-src 'self' blob:",
   "frame-src 'self'",
   "object-src 'none'",

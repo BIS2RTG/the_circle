@@ -127,14 +127,14 @@ export default function SignatureSelector({
         <TabButton choice="manual" label="Draw" hint="Draw a new signature" />
       </div>
 
-      <div className="border border-gray-200 rounded-lg p-3 bg-gray-50 min-h-[140px]">
+      <div className="border border-gray-200 rounded-lg p-3 bg-gray-50 min-h-[220px]">
         {value.type === 'saved' && savedSignatureUrl && (
-          <div className="flex items-center justify-center h-[120px]">
+          <div className="flex items-center justify-center h-[200px]">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={savedSignatureUrl}
               alt="Your saved signature"
-              className="max-h-[120px] max-w-full object-contain"
+              className="max-h-[200px] max-w-full object-contain"
             />
           </div>
         )}
@@ -146,21 +146,28 @@ export default function SignatureSelector({
                 <SigCanvas
                   ref={(ref: ReactSignatureCanvas | null) => { canvasRef.current = ref; }}
                   penColor="#111827"
+                  // A slightly heavier pen makes the stroke read like ink and
+                  // feels more natural on a larger pad.
+                  minWidth={0.75}
+                  maxWidth={2.75}
                   canvasProps={{
                     // No fixed width/height: the autosize hook keeps the
-                    // backing store in sync with the CSS size + pixel ratio.
-                    className: 'w-full h-[120px] rounded',
+                    // backing store in sync with the CSS size + pixel ratio so
+                    // the ink stays locked under the pen. A taller pad gives
+                    // approvers more room to sign comfortably.
+                    className: 'w-full h-[200px] rounded touch-none cursor-crosshair',
                     style: { touchAction: 'none' },
                   }}
                   onEnd={handleCanvasEnd}
                 />
               ) : (
-                <div className="w-full h-[120px] flex items-center justify-center text-gray-400 text-sm">
+                <div className="w-full h-[200px] flex items-center justify-center text-gray-400 text-sm">
                   Loading...
                 </div>
               )}
             </div>
-            <div className="mt-2 flex justify-end">
+            <div className="mt-2 flex items-center justify-between">
+              <span className="text-xs text-gray-400">Sign inside the box above</span>
               <button
                 type="button"
                 onClick={clearCanvas}
