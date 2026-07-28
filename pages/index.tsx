@@ -355,6 +355,22 @@ export default function Home() {
   const [demoError, setDemoError] = useState("");
   const [demoLoading, setDemoLoading] = useState(false);
 
+  // Microsoft sign-in redirect guard. On iPad the signIn() redirect has a
+  // perceptible delay, so it looks like "nothing happened" and users tap again —
+  // but every tap fires a fresh OAuth request that overwrites the state / PKCE
+  // cookie, so the value Microsoft echoes back no longer matches → an
+  // intermittent "auth error" on the callback. Fire it exactly once, show a
+  // clear "redirecting" state, and ignore further taps until we've navigated
+  // away. A fail-safe timeout re-enables the button if the (rare) error path
+  // leaves us on the page.
+  const [msRedirecting, setMsRedirecting] = useState(false);
+  const handleMicrosoftSignIn = () => {
+    if (msRedirecting || !done) return;
+    setMsRedirecting(true);
+    window.setTimeout(() => setMsRedirecting(false), 8000);
+    void signIn("azure-ad", callbackUrl ? { callbackUrl } : undefined);
+  };
+
   const handleDemoLogin = async (e: FormEvent) => {
     e.preventDefault();
     setDemoError("");
@@ -468,15 +484,28 @@ export default function Home() {
             className="flex flex-col items-center w-full max-w-sm mx-auto"
           >
             <button
-              onClick={() => signIn("azure-ad", callbackUrl ? { callbackUrl } : undefined)}
-              disabled={!done}
-              className="group relative w-full overflow-hidden rounded-xl bg-gray-900 px-6 py-4 text-white font-semibold shadow-xl shadow-gray-900/10 transition-all hover:bg-gray-800 active:scale-[0.985] focus:outline-none focus:ring-2 focus:ring-[#9A7545] focus:ring-offset-2 disabled:pointer-events-none"
+              onClick={handleMicrosoftSignIn}
+              disabled={!done || msRedirecting}
+              aria-busy={msRedirecting}
+              className="group relative w-full overflow-hidden rounded-xl bg-gray-900 px-6 py-4 text-white font-semibold shadow-xl shadow-gray-900/10 transition-all hover:bg-gray-800 active:scale-[0.985] focus:outline-none focus:ring-2 focus:ring-[#9A7545] focus:ring-offset-2 disabled:pointer-events-none disabled:opacity-90"
             >
               <span className="relative z-10 flex items-center justify-center gap-3">
-                <svg className="w-5 h-5" viewBox="0 0 21 21" fill="currentColor">
-                  <path d="M0 0h10v10H0V0zm11 0h10v10H11V0zM0 11h10v10H0V11zm11 0h10v10H11V11z" />
-                </svg>
-                Sign in with Microsoft
+                {msRedirecting ? (
+                  <>
+                    <svg className="w-5 h-5 animate-spin" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Redirecting to Microsoft…
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-5 h-5" viewBox="0 0 21 21" fill="currentColor">
+                      <path d="M0 0h10v10H0V0zm11 0h10v10H11V0zM0 11h10v10H0V11zm11 0h10v10H11V11z" />
+                    </svg>
+                    Sign in with Microsoft
+                  </>
+                )}
               </span>
               <span className="absolute inset-0 translate-y-full bg-gradient-to-r from-[#9A7545] to-[#C9A574] transition-transform duration-500 group-hover:translate-y-0" />
             </button>
