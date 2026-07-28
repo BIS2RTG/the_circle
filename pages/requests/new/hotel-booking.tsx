@@ -7,8 +7,10 @@ import type { PreviewSection, DocumentHeader } from '../../../components/ui';
 import { useCurrentUser } from '../../../hooks/useCurrentUser';
 import { useUnsavedChangesPrompt, useFormAutosave } from '../../../hooks';
 import { useUserHrimsProfile } from '../../../hooks/useUserHrimsProfile';
+import { useRequestorIdentity } from '../../../hooks/useRequestorIdentity';
 import { calculateTollgatesForItinerary, getTollgateRouteInfo, TollgateRouteType } from '../../../lib/formConfig';
 import { OnBehalfOfField, type OnBehalfOf } from '../../../components/requests/OnBehalfOfField';
+import { isApproverRowLocked } from '../../../lib/approverLocking';
 import ApproverSectionLoader from '../../../components/requests/ApproverSectionLoader';
 import { AssociatesField, type Associate } from '../../../components/requests/AssociatesField';
 import { SupportingDocuments, uploadSupportingDocuments, makeSupportingDoc, type SupportingDoc } from '../../../components/requests/SupportingDocuments';
@@ -157,6 +159,9 @@ export default function HotelBookingPage() {
         ceo: '',
     });
     const [onBehalfOf, setOnBehalfOf] = useState<OnBehalfOf | null>(null);
+    // Requestor identity shown on the form + document — the principal when filing
+    // on behalf of someone (autofilled on selection), else the signed-in user.
+    const requestor = useRequestorIdentity(onBehalfOf);
     // Accompanying associates: directory picks carry an id (→ request watchers);
     // non-RTG guests are free-text only. `formData.guestNames` is kept in sync as
     // the joined display string used in the title/metadata/preview.
@@ -963,7 +968,7 @@ export default function HotelBookingPage() {
         const requestTimestamp = new Date().toLocaleString('en-GB', {
             day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
         });
-        const requestorName = user?.display_name || session?.user?.name || '—';
+        const requestorName = requestor.name || '—';
         const allocation = calculateCostAllocation();
         const totalKm = travelData.itinerary.reduce((sum, r) => sum + (parseFloat(r.km) || 0), 0);
 
@@ -977,13 +982,13 @@ export default function HotelBookingPage() {
                                 <td style={labelCellStyle}>Name of Employee</td>
                                 <td style={cellStyle}>{requestorName}</td>
                                 <td style={labelCellStyle}>Department</td>
-                                <td style={cellStyle}>{departmentName || '—'}</td>
+                                <td style={cellStyle}>{requestor.department || '—'}</td>
                             </tr>
                             <tr>
                                 <td style={labelCellStyle}>Date &amp; Time of Request</td>
                                 <td style={cellStyle}>{requestTimestamp}</td>
                                 <td style={labelCellStyle}>Business Unit</td>
-                                <td style={cellStyle}>{businessUnitName || '—'}</td>
+                                <td style={cellStyle}>{requestor.businessUnit || '—'}</td>
                             </tr>
                             <tr>
                                 <td style={labelCellStyle}>Guest Details</td>
@@ -1617,23 +1622,28 @@ export default function HotelBookingPage() {
                     {/* Requestor Information Section */}
                     <Card className="p-6">
                         <h3 className="text-sm font-semibold text-gray-700 mb-4 uppercase border-b pb-2">Requestor Information</h3>
+                        {requestor.isOnBehalf && (
+                            <p className="text-xs text-primary-700 bg-primary-50 border border-primary-200 rounded-lg px-3 py-2 mb-4">
+                                Showing details for <strong>{onBehalfOf?.name}</strong>, on whose behalf you are filing this request.
+                            </p>
+                        )}
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                             <div>
                                 <label className="block text-sm font-semibold text-gray-700 mb-1 uppercase">Name</label>
                                 <div className="px-4 py-2 rounded-xl border border-gray-200 bg-gray-50 text-gray-600">
-                                    {user?.display_name || session?.user?.name || 'N/A'}
+                                    {requestor.name || 'N/A'}
                                 </div>
                             </div>
                             <div>
                                 <label className="block text-sm font-semibold text-gray-700 mb-1 uppercase">Business Unit</label>
                                 <div className="px-4 py-2 rounded-xl border border-gray-200 bg-gray-50 text-gray-600">
-                                    {businessUnitName || 'N/A'}
+                                    {requestor.businessUnit || 'N/A'}
                                 </div>
                             </div>
                             <div>
                                 <label className="block text-sm font-semibold text-gray-700 mb-1 uppercase">Department</label>
                                 <div className="px-4 py-2 rounded-xl border border-gray-200 bg-gray-50 text-gray-600">
-                                    {departmentName || 'N/A'}
+                                    {requestor.department || 'N/A'}
                                 </div>
                             </div>
                             <div>
@@ -2632,6 +2642,7 @@ export default function HotelBookingPage() {
                                 const selectedUser = selectedUserId ? users.find(u => u.id === selectedUserId) : null;
                                 const filteredUsers = getFilteredUsersForRole(role.key);
                                 const isAutoResolved = autoResolvedRoles[role.key];
+                                const isLocked = isApproverRowLocked(role.key, isAutoResolved);
 
                                 return (
                                     <div key={role.key} className="relative">
@@ -2659,18 +2670,22 @@ export default function HotelBookingPage() {
                                                         <div className="flex-1 min-w-0">
                                                             <p className="text-sm font-medium text-gray-900 truncate">{selectedUser.display_name}</p>
                                                             <p className="text-xs text-gray-500 truncate">{selectedUser.email}</p>
-                                                            {isAutoResolved && <p className="text-xs text-green-600 mt-0.5">Auto-assigned from HRIMS</p>}
+                                                            {isAutoResolved && <p className="text-xs text-green-600 mt-0.5">Auto-assigned from HRIMS organogram{isLocked ? ' · locked' : ''}</p>}
                                                         </div>
+                                                        {/* Senior fixed approvers (CEO, HRD, directors) are locked once
+                                                            auto-resolved; departmental/managerial rows stay changeable. */}
+                                                        {!isLocked && (
                                                         <button
                                                             type="button"
                                                             onClick={() => { handleRemoveApprover(role.key); setAutoResolvedRoles(prev => ({ ...prev, [role.key]: false })); }}
                                                             className="p-1.5 rounded-lg hover:bg-danger-50 text-gray-400 hover:text-danger-500 transition-colors"
-                                                            title="Change approver"
+                                                            title="Remove approver"
                                                         >
                                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" />
                                                             </svg>
                                                         </button>
+                                                        )}
                                                     </div>
                                                 ) : (
                                                     <div className="relative">
@@ -2772,7 +2787,7 @@ export default function HotelBookingPage() {
                 onClose={() => setShowPreview(false)}
                 mode="preview"
                 title="Complimentary Hotel Staff Booking Form"
-                subtitle={`Requestor: ${user?.display_name || session?.user?.name || ''} · ${today}`}
+                subtitle={`Requestor: ${requestor.name || ''} · ${today}`}
                 sections={buildPreviewSections()}
                 documentHeader={hotelBookingDocumentHeader}
             />
@@ -2781,7 +2796,7 @@ export default function HotelBookingPage() {
                 onClose={() => setShowConfirm(false)}
                 mode="confirm"
                 title="Complimentary Hotel Staff Booking Form"
-                subtitle={`Requestor: ${user?.display_name || session?.user?.name || ''} · ${today}`}
+                subtitle={`Requestor: ${requestor.name || ''} · ${today}`}
                 sections={buildPreviewSections()}
                 documentHeader={hotelBookingDocumentHeader}
                 confirming={loading}
