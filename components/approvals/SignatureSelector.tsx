@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type ReactSignatureCanvas from 'react-signature-canvas';
 import { useSignatureCanvasAutosize } from '@/hooks/useSignatureCanvasAutosize';
+import SignaturePadGate from '@/components/SignaturePadGate';
 
 /**
  * SignatureSelector
@@ -141,7 +142,7 @@ export default function SignatureSelector({
 
         {value.type === 'manual' && (
           <div>
-            <div className="bg-white border border-dashed border-gray-300 rounded">
+            <SignaturePadGate className="bg-white border border-dashed border-gray-300 rounded">
               {SigCanvas ? (
                 <SigCanvas
                   ref={(ref: ReactSignatureCanvas | null) => { canvasRef.current = ref; }}
@@ -165,7 +166,7 @@ export default function SignatureSelector({
                   Loading...
                 </div>
               )}
-            </div>
+            </SignaturePadGate>
             <div className="mt-2 flex items-center justify-between">
               <span className="text-xs text-gray-400">Sign inside the box above</span>
               <button

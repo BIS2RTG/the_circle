@@ -819,7 +819,10 @@ function renderCapex(
     { label: 'Unit', value: formData.unit || 'N/A' },
     { label: 'Department', value: formData.department || creatorDept?.name || 'N/A' },
   ], yPos, pw);
-  yPos = oFullRow(doc, 'Description of Project', formData.description || formData.projectName || 'N/A', yPos, pw, 40);
+  yPos = oFullRow(doc, 'Description of Project', formData.projectName || 'N/A', yPos, pw, 40);
+  if (formData.description) {
+    yPos = oFullRow(doc, 'Detailed Description', formData.description, yPos, pw, 40);
+  }
   yPos = oInfoRow(doc, [
     { label: 'Budget / Non-Budget / Emergency', value: (formData.budgetType || 'N/A').toString().replace(/_/g, ' ') },
     { label: 'Project Requested By', value: formData.requester || creator?.display_name || 'N/A' },
@@ -904,10 +907,14 @@ function renderHotelBooking(doc: any, formData: Record<string, any>, yPos: numbe
     yPos += 5;
   }
 
-  // Travel data if processTravelDocument
-  if (formData.travelData || formData.processTravelDocument) {
-    const td = formData.travelData || formData;
-    if (td.itinerary || td.budget) {
+  // Travel data if processTravelDocument. The travel authorisation is persisted
+  // under `travelDocument`; its cost allocation is a sibling (`travelCostAllocation`)
+  // entered by the requestor — merge it in so renderTravelAuth prints it under
+  // "Allocation Cost to Unit" (it reads td.costAllocation).
+  if (formData.travelData || formData.travelDocument || formData.processTravelDocument) {
+    const baseTd = formData.travelData || formData.travelDocument || formData;
+    if (baseTd.itinerary || baseTd.budget) {
+      const td = { ...baseTd, costAllocation: baseTd.costAllocation || formData.travelCostAllocation || {} };
       yPos = renderTravelAuth(doc, td, yPos, pageWidth, creator, creatorDept);
     }
   }

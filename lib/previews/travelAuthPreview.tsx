@@ -546,8 +546,15 @@ export function buildTravelAuthPreviewSections(input: TravelAuthPreviewInput): P
 // the [id]-page preview matches the form preview without each call site
 // having to do the conversion.
 // ──────────────────────────────────────────────────────────────────────
-export function travelAuthInputFromRequest(request: any): TravelAuthPreviewInput {
-    const metadata = request?.metadata || {};
+export function travelAuthInputFromRequest(request: any, travelMeta?: any): TravelAuthPreviewInput {
+    const requestMeta = request?.metadata || {};
+    // When a travel document is BUNDLED inside another request (e.g. a
+    // complimentary booking that also processes travel), the travel-specific
+    // fields live under `travelMeta` (= metadata.travelDocument). The
+    // employee, approvers and submission timestamp still come from the parent
+    // request. When `travelMeta` is omitted this behaves exactly as before,
+    // so standalone travel authorisations are unaffected.
+    const metadata = travelMeta || requestMeta;
     // When filed on behalf of someone, THAT person is the traveller/requestor —
     // their name, department, business unit and signature go on the document,
     // not the assistant's. `onBehalfProfile` is resolved server-side.
@@ -566,7 +573,7 @@ export function travelAuthInputFromRequest(request: any): TravelAuthPreviewInput
     // reliability: the step's own approver_role, then the approverRoles map,
     // then positional fallback. This mirrors how the CAPEX preview resolves
     // signatures and is what makes them show up on the document.
-    const roleMap: Record<string, any> = metadata.approverRoles || {};
+    const roleMap: Record<string, any> = requestMeta.approverRoles || {};
     const userIdToRole: Record<string, string> = {};
     for (const [roleKey, userId] of Object.entries(roleMap)) {
         if (userId && typeof userId === 'string') userIdToRole[userId] = roleKey.toLowerCase();
@@ -613,10 +620,10 @@ export function travelAuthInputFromRequest(request: any): TravelAuthPreviewInput
             name: creator.display_name,
             // On-behalf: the stored metadata.department/businessUnit belong to the
             // ASSISTANT who filed, so prefer the principal's resolved unit names.
-            department: onBehalf ? creator.department?.name : (metadata.department || creator.department?.name),
+            department: onBehalf ? creator.department?.name : (requestMeta.department || creator.department?.name),
             businessUnit: onBehalf
                 ? creator.business_unit?.name
-                : (metadata.businessUnit || metadata.business_unit_name || creator.business_unit?.name),
+                : (requestMeta.businessUnit || requestMeta.business_unit_name || creator.business_unit?.name),
         },
         requestTimestamp: request?.created_at
             ? new Date(request.created_at).toLocaleString('en-GB', {
@@ -642,7 +649,7 @@ export function travelAuthInputFromRequest(request: any): TravelAuthPreviewInput
         itinerary: metadata.itinerary,
         budget: metadata.budget,
         grandTotal: metadata.grandTotal,
-        costAllocation: metadata.costAllocation || {},
+        costAllocation: metadata.costAllocation || requestMeta.travelCostAllocation || {},
         approvers,
         comments: comments || undefined,
     };
