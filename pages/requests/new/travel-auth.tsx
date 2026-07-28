@@ -12,6 +12,7 @@ import { calculateTollgatesForItinerary, getTollgateRouteInfo, TollgateRouteType
 import { SupportingDocuments, uploadSupportingDocuments, makeSupportingDoc, type SupportingDoc } from '../../../components/requests/SupportingDocuments';
 import { OnBehalfOfField, type OnBehalfOf } from '../../../components/requests/OnBehalfOfField';
 import ApproverSectionLoader from '../../../components/requests/ApproverSectionLoader';
+import { isApproverRowLocked } from '../../../lib/approverLocking';
 
 interface ItineraryRow {
     date: string;
@@ -1770,6 +1771,7 @@ export default function TravelAuthPage() {
                                 const selectedUser = selectedUserId ? users.find(u => u.id === selectedUserId) : null;
                                 const filteredUsers = getFilteredUsersForRole(role.key);
                                 const isAutoResolved = autoResolvedRoles[role.key];
+                                const isLocked = isApproverRowLocked(role.key, isAutoResolved);
 
                                 return (
                                     <div key={role.key} className="relative">
@@ -1783,9 +1785,13 @@ export default function TravelAuthPage() {
                                                         <div className="flex-1 min-w-0">
                                                             <p className="text-sm font-medium text-gray-900 truncate">{selectedUser.display_name}</p>
                                                             <p className="text-xs text-gray-500 truncate">{selectedUser.email}</p>
-                                                            {isAutoResolved && <p className="text-xs text-green-600 mt-0.5">Auto-assigned from HRIMS</p>}
+                                                            {isAutoResolved && <p className="text-xs text-green-600 mt-0.5">Auto-assigned from HRIMS organogram{isLocked ? ' · locked' : ''}</p>}
                                                         </div>
-                                                        <button type="button" onClick={() => { handleRemoveApprover(role.key); setAutoResolvedRoles(prev => ({ ...prev, [role.key]: false })); }} className="p-1.5 rounded-lg hover:bg-danger-50 text-gray-400 hover:text-danger-500 transition-colors" title="Change approver"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" /></svg></button>
+                                                        {/* Senior fixed approvers (CEO, HRD, directors) are locked once
+                                                            auto-resolved; departmental/managerial rows stay changeable. */}
+                                                        {!isLocked && (
+                                                            <button type="button" onClick={() => { handleRemoveApprover(role.key); setAutoResolvedRoles(prev => ({ ...prev, [role.key]: false })); }} className="p-1.5 rounded-lg hover:bg-danger-50 text-gray-400 hover:text-danger-500 transition-colors" title="Remove approver"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" /></svg></button>
+                                                        )}
                                                     </div>
                                                 ) : (
                                                     <div className="relative">
