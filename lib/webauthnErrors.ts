@@ -4,7 +4,7 @@
  * The browser's native errors are cryptic and leak spec URLs (e.g. a cancelled
  * or timed-out ceremony throws a NotAllowedError whose message points at
  * w3.org). We never want to show those raw. Map the DOMException `name` to
- * calm, plain-English copy the user can act on.
+ * calm, plain-English copy the user can act on. This is just an additional comment
  */
 export function friendlyWebauthnError(err: any, ctx: 'register' | 'verify' = 'register'): string {
   const name: string | undefined = err?.name;

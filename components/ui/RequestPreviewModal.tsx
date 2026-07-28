@@ -191,6 +191,77 @@ export const RequestPreviewDocument = forwardRef<HTMLDivElement, RequestPreviewD
     }
 );
 
+// ──────────────────────────────────────────────────────────────────────
+// buildDocumentHeaderSection
+// ──────────────────────────────────────────────────────────────────────
+// Reproduces the top-of-document header (logo + doc-id strip + title) as a
+// regular PreviewSection, so a SECOND form can start on a fresh page with
+// its own official header. This is what lets a combined comp + travel
+// request render as two self-contained documents — each identical to the
+// standalone form — inside a single RequestPreviewDocument. Pass
+// `pageBreakBefore: true` for the second (and later) document so it prints
+// on its own page.
+// ──────────────────────────────────────────────────────────────────────
+export function buildDocumentHeaderSection(
+    documentHeader: DocumentHeader,
+    title: string,
+    opts?: { subtitle?: string; pageBreakBefore?: boolean }
+): PreviewSection {
+    const header: DocumentHeader = {
+        logoUrl: documentHeader.logoUrl ?? DEFAULT_LOGO,
+        docNo: documentHeader.docNo,
+        department: documentHeader.department,
+        page: documentHeader.page ?? 'PAGE: 1 of 1',
+    };
+    return {
+        pageBreakBefore: opts?.pageBreakBefore,
+        content: (
+            <div>
+                {header.logoUrl && (
+                    <div className="doc-logo-wrap" style={{ textAlign: 'center', marginBottom: 10 }}>
+                        <img
+                            src={header.logoUrl}
+                            alt="RTG Logo"
+                            style={{ maxHeight: 70, width: 'auto', display: 'inline-block' }}
+                        />
+                    </div>
+                )}
+                {(header.docNo || header.department || header.page) && (
+                    <table
+                        className="doc-id-strip"
+                        style={{ width: '100%', borderCollapse: 'collapse', border: '1px solid #111', margin: '8px 0 16px', fontSize: 11 }}
+                    >
+                        <tbody>
+                            <tr>
+                                <td style={{ border: '1px solid #111', padding: '6px 10px', fontWeight: 600, textAlign: 'left', width: '40%' }}>
+                                    {header.docNo || ''}
+                                </td>
+                                <td style={{ border: '1px solid #111', padding: '6px 10px', fontWeight: 600, textAlign: 'center', width: '40%' }}>
+                                    {header.department || ''}
+                                </td>
+                                <td style={{ border: '1px solid #111', padding: '6px 10px', fontWeight: 600, textAlign: 'right', width: '20%' }}>
+                                    {header.page || ''}
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                )}
+                <h1
+                    className="text-base font-bold text-gray-900 mb-1 uppercase tracking-wide text-center"
+                    style={{ textAlign: 'center' }}
+                >
+                    {title}
+                </h1>
+                {opts?.subtitle && (
+                    <p className="subtitle text-xs text-gray-500 mb-3 text-center" style={{ textAlign: 'center' }}>
+                        {opts.subtitle}
+                    </p>
+                )}
+            </div>
+        ),
+    };
+}
+
 // Shared print helper — opens a new window with the document HTML and
 // triggers the browser's print dialog. Exposed so the inline preview
 // can offer the same Print button as the modal.

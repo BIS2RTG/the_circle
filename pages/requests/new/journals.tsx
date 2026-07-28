@@ -14,6 +14,7 @@ import type { PreviewSection, DocumentHeader } from '../../../components/ui';
 import { useCurrentUser } from '../../../hooks/useCurrentUser';
 import { useUnsavedChangesPrompt, useFormAutosave } from '../../../hooks';
 import { useUserHrimsProfile } from '../../../hooks/useUserHrimsProfile';
+import { useRequestorIdentity } from '../../../hooks/useRequestorIdentity';
 import { OnBehalfOfField, type OnBehalfOf } from '../../../components/requests/OnBehalfOfField';
 
 const CURRENCY_OPTIONS = ['USD', 'ZWG'];
@@ -106,6 +107,9 @@ export default function JournalEntryPage() {
 
     const [selectedWatchers, setSelectedWatchers] = useState<Array<{ id: string; display_name: string; email: string }>>([]);
     const [onBehalfOf, setOnBehalfOf] = useState<OnBehalfOf | null>(null);
+    // Requestor identity shown on the form + document — the principal when filing
+    // on behalf of someone (autofilled on selection), else the signed-in user.
+    const requestor = useRequestorIdentity(onBehalfOf);
     const [watcherSearch, setWatcherSearch] = useState('');
     const [showWatcherDropdown, setShowWatcherDropdown] = useState(false);
 
@@ -674,23 +678,28 @@ export default function JournalEntryPage() {
                     {/* Requestor Information */}
                     <Card className="p-6">
                         <h3 className="text-sm font-semibold text-gray-700 mb-4 uppercase border-b pb-2">Requestor Information</h3>
+                        {requestor.isOnBehalf && (
+                            <p className="text-xs text-primary-700 bg-primary-50 border border-primary-200 rounded-lg px-3 py-2 mb-4">
+                                Showing details for <strong>{onBehalfOf?.name}</strong>, on whose behalf you are filing this request.
+                            </p>
+                        )}
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                             <div>
                                 <label className="block text-sm font-semibold text-gray-700 mb-1 uppercase">Name</label>
                                 <div className="px-4 py-2 rounded-xl border border-gray-200 bg-gray-50 text-gray-600">
-                                    {user?.display_name || session?.user?.name || 'N/A'}
+                                    {requestor.name || 'N/A'}
                                 </div>
                             </div>
                             <div>
                                 <label className="block text-sm font-semibold text-gray-700 mb-1 uppercase">Business Unit</label>
                                 <div className="px-4 py-2 rounded-xl border border-gray-200 bg-gray-50 text-gray-600">
-                                    {businessUnitName || 'N/A'}
+                                    {requestor.businessUnit || 'N/A'}
                                 </div>
                             </div>
                             <div>
                                 <label className="block text-sm font-semibold text-gray-700 mb-1 uppercase">Department</label>
                                 <div className="px-4 py-2 rounded-xl border border-gray-200 bg-gray-50 text-gray-600">
-                                    {departmentName || 'N/A'}
+                                    {requestor.department || 'N/A'}
                                 </div>
                             </div>
                         </div>

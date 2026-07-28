@@ -637,6 +637,39 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ error: 'Invalid form type. Must be: travel, hotel-booking, voucher, capex, petty-cash, inter-unit-debit-note, or inter-unit-credit-note' });
     }
 
+    // De-duplicate auto-resolved approvers: the same person must never occupy
+    // two roles in one approval workflow. This happens for executives (and people
+    // who report close to them) whose Line Manager and/or Functional Head resolve
+    // to the same senior person as a fixed role — e.g. the CEO being auto-filled
+    // as both Functional Head and CEO. Process roles from most to least senior and
+    // clear any repeat of a userId already claimed by a more senior role, so the
+    // junior/chain role (Line Manager, Functional Head) is left EMPTY to be filled
+    // manually rather than duplicating a senior approver.
+    const DEDUP_PRIORITY: Record<string, string[]> = {
+      travel: ['ceo', 'hrd', 'functional_head', 'line_manager'],
+      'hotel-booking': ['ceo', 'hrd', 'functional_head', 'line_manager'],
+      capex: [
+        'ceo', 'finance_director', 'managing_director', 'corporate_hod',
+        'procurement_manager', 'general_manager', 'finance_manager',
+      ],
+      voucher: ['ceo', 'commercial_director'],
+      'petty-cash': ['finance_manager', 'accountant', 'department_head'],
+      'inter-unit-debit-note': ['from_finance_manager', 'to_accountant'],
+      'inter-unit-credit-note': ['from_finance_manager', 'to_accountant'],
+    };
+    const dedupOrder = DEDUP_PRIORITY[formType] || Object.keys(approvers);
+    const claimedUserIds = new Set<string>();
+    for (const roleKey of dedupOrder) {
+      const a = approvers[roleKey];
+      if (!a) continue;
+      if (claimedUserIds.has(a.userId)) {
+        approvers[roleKey] = null;
+        debug.push(`DEDUP: cleared "${roleKey}" — ${a.displayName} already fills a more senior role`);
+      } else {
+        claimedUserIds.add(a.userId);
+      }
+    }
+
     console.log('[resolve-approvers] Debug trace:', debug.join(' | '));
     return res.status(200).json({ approvers, _debug: debug });
   } catch (error: any) {

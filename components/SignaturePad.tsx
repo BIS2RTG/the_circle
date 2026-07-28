@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import SignatureCanvas from 'react-signature-canvas';
 import { useSignatureCanvasAutosize } from '../hooks/useSignatureCanvasAutosize';
+import SignaturePadGate from './SignaturePadGate';
 import { QRCodeSVG } from 'qrcode.react';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -286,20 +287,22 @@ export default function SignaturePad({ initialUrl, onSave }: SignaturePadProps) 
                     ) : (
                         <div className="space-y-4">
                             <div className="border border-gray-200 rounded-lg bg-white relative">
-                                <SignatureCanvas
-                                    ref={sigCanvas}
-                                    onEnd={handleDrawEnd}
-                                    canvasProps={{
-                                        // Taller drawing area so signatures aren't cramped; the
-                                        // autosize hook keeps the backing store in sync.
-                                        className: 'w-full h-56 sm:h-64 cursor-crosshair rounded-lg touch-none',
-                                        // touch-action:none stops the page from
-                                        // scrolling when a finger/pen lands on the pad;
-                                        // overscroll containment stops any bounce.
-                                        style: { touchAction: 'none', overscrollBehavior: 'contain' },
-                                    }}
-                                    backgroundColor="rgba(255, 255, 255, 0)"
-                                />
+                                <SignaturePadGate>
+                                    <SignatureCanvas
+                                        ref={sigCanvas}
+                                        onEnd={handleDrawEnd}
+                                        canvasProps={{
+                                            // Taller drawing area so signatures aren't cramped; the
+                                            // autosize hook keeps the backing store in sync.
+                                            className: 'w-full h-56 sm:h-64 cursor-crosshair rounded-lg touch-none',
+                                            // touch-action:none stops the page from
+                                            // scrolling when a finger/pen lands on the pad;
+                                            // overscroll containment stops any bounce.
+                                            style: { touchAction: 'none', overscrollBehavior: 'contain' },
+                                        }}
+                                        backgroundColor="rgba(255, 255, 255, 0)"
+                                    />
+                                </SignaturePadGate>
                                 {!pendingDataUrl && (
                                     <div className="absolute top-2 right-2 text-xs text-gray-300 pointer-events-none">Sign here</div>
                                 )}
