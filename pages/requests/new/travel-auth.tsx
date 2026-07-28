@@ -47,15 +47,26 @@ const TRAVEL_LOCATIONS = [
     { code: 'OTHER', name: 'Other (Manual Entry)', city: '' },
 ];
 
-// Inter-business unit distances in KM (exact values from distance matrix)
+// Inter-business unit distances in KM (exact values from hotel to hotel)
+// const DISTANCE_MATRIX: Record<string, Record<string, number>> = {
+//     'RTH':  { 'RTH': 0,   'NAH': 2.1,   'KHCC': 139,   'BRH': 440,   'AZAM': 725,   'VFRH': 721,   'MRC': 250 },
+//     'NAH':  { 'RTH': 2.1, 'NAH': 0,     'KHCC': 136.9, 'BRH': 437.9, 'AZAM': 722.9, 'VFRH': 718.9, 'MRC': 247.9 },
+//     'KHCC': { 'RTH': 139, 'NAH': 140, 'KHCC': 0,     'BRH': 301,   'AZAM': 585,   'VFRH': 582,   'MRC': 389 },
+//     'BRH':  { 'RTH': 439, 'NAH': 441, 'KHCC': 300,   'BRH': 0,     'AZAM': 454,   'VFRH': 450,   'MRC': 593 },
+//     'AZAM': { 'RTH': 725, 'NAH': 722.9, 'KHCC': 585,   'BRH': 454,   'AZAM': 0,     'VFRH': 4,     'MRC': 973 },
+//     'VFRH': { 'RTH': 721, 'NAH': 718.9, 'KHCC': 581,   'BRH': 450,   'AZAM': 4,     'VFRH': 0,     'MRC': 969 },
+//     'MRC':  { 'RTH': 250, 'NAH': 247.9, 'KHCC': 389,   'BRH': 593,   'AZAM': 973,   'VFRH': 969,   'MRC': 0 },
+// };
+
+// These are from the distance table shared by THE DISTANCE TABLE
 const DISTANCE_MATRIX: Record<string, Record<string, number>> = {
-    'RTH':  { 'RTH': 0,   'NAH': 2.1,   'KHCC': 139,   'BRH': 440,   'AZAM': 725,   'VFRH': 721,   'MRC': 250 },
-    'NAH':  { 'RTH': 2.1, 'NAH': 0,     'KHCC': 136.9, 'BRH': 437.9, 'AZAM': 722.9, 'VFRH': 718.9, 'MRC': 247.9 },
-    'KHCC': { 'RTH': 139, 'NAH': 140, 'KHCC': 0,     'BRH': 301,   'AZAM': 585,   'VFRH': 582,   'MRC': 389 },
-    'BRH':  { 'RTH': 439, 'NAH': 441, 'KHCC': 300,   'BRH': 0,     'AZAM': 454,   'VFRH': 450,   'MRC': 593 },
-    'AZAM': { 'RTH': 725, 'NAH': 722.9, 'KHCC': 585,   'BRH': 454,   'AZAM': 0,     'VFRH': 4,     'MRC': 973 },
-    'VFRH': { 'RTH': 721, 'NAH': 718.9, 'KHCC': 581,   'BRH': 450,   'AZAM': 4,     'VFRH': 0,     'MRC': 969 },
-    'MRC':  { 'RTH': 250, 'NAH': 247.9, 'KHCC': 389,   'BRH': 593,   'AZAM': 973,   'VFRH': 969,   'MRC': 0 },
+    'RTH':  { 'RTH': 0,   'NAH': 0,   'KHCC': 134,   'BRH': 439,   'AZAM': 876,   'VFRH': 876,   'MRC': 250 },
+    'NAH':  { 'RTH': 0, 'NAH': 0, 'KHCC': 134,     'BRH': 439,   'AZAM': 876,   'VFRH': 876,   'MRC': 250 },
+    'KHCC': { 'RTH': 141, 'NAH': 141, 'KHCC': 0,     'BRH': 298,   'AZAM': 735,   'VFRH': 735,   'MRC': 400 },
+    'BRH':  { 'RTH': 439, 'NAH': 439, 'KHCC': 298,   'BRH': 0,     'AZAM': 437,   'VFRH': 437,   'MRC': 102 },
+    'AZAM': { 'RTH': 876, 'NAH': 876, 'KHCC': 735,   'BRH': 437,   'AZAM': 0,     'VFRH': 0,     'MRC': 1123 },
+    'VFRH': { 'RTH': 876, 'NAH': 876, 'KHCC': 735,   'BRH': 437,   'AZAM': 0,     'VFRH': 0,     'MRC': 1123 },
+    'MRC':  { 'RTH': 250, 'NAH': 250, 'KHCC': 400,   'BRH': 102,   'AZAM': 1123,   'VFRH': 1123,   'MRC': 0 },
 };
 
 // Get distance between two locations

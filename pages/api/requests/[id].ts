@@ -168,7 +168,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const isPermanentWatcher = await isPermanentWatcherOf(userId, organizationId, request as any);
 
       if (!isCreator && !isWatcher && !canApproverView && !isPermanentWatcher) {
-        if (!(await isElevatedViewer())) {
+        // Finance admins can open any CAPEX (they manage funding from the
+        // capex-tracker and need the full request detail). isElevatedViewer()
+        // populates rbacProfile, so reuse it for the finance check.
+        const elevated = await isElevatedViewer();
+        const requestType = request.metadata?.type || request.metadata?.requestType;
+        const financeCanViewCapex =
+          requestType === 'capex' && !!rbacProfile && hasPermission(rbacProfile, 'finance.view_tracker');
+        if (!elevated && !financeCanViewCapex) {
           // Not elevated, not involved, or a future approver whose turn hasn't come.
           if (userStep && userStep.status === 'waiting') {
             return res.status(403).json({

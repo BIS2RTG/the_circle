@@ -7,6 +7,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '../api/auth/[...nextauth]';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { resolveOnBehalfProfile } from '@/lib/onBehalf';
+import { getUserRBACProfile, hasPermission } from '@/lib/rbac';
 import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { AppLayout } from '../../components/layout';
@@ -1243,12 +1244,27 @@ export const getServerSideProps: GetServerSideProps<RequestDetailsPageProps> = a
     );
     const canApproverView = userStep && userStep.status !== 'waiting';
 
+    // Privileged view: super users may open any request; finance admins may open
+    // any CAPEX (they manage funding from /finance/capex-tracker and need the
+    // full request detail). Only resolved when the cheaper checks above fail.
+    let canPrivilegedView = false;
     if (!isCreator && !isWatcher && !canApproverView) {
+      try {
+        const rbac = await getUserRBACProfile(userId);
+        canPrivilegedView =
+          rbac.is_super_admin ||
+          (requestType === 'capex' && hasPermission(rbac, 'finance.view_tracker'));
+      } catch {
+        canPrivilegedView = false;
+      }
+    }
+
+    if (!isCreator && !isWatcher && !canApproverView && !canPrivilegedView) {
       return {
         props: {
           initialRequest: null,
-          initialError: userStep?.status === 'waiting' 
-            ? 'This request is not yet ready for your review.' 
+          initialError: userStep?.status === 'waiting'
+            ? 'This request is not yet ready for your review.'
             : 'You do not have permission to view this request',
         },
       };

@@ -905,7 +905,14 @@ export default function CapexTrackerPage() {
                     const priority = priorityDisplay(entry);
                     const canEdit = canUpdateFunding(entry);
                     return (
-                      <tr key={entry.id} className="hover:bg-gray-50">
+                      <tr
+                        key={entry.id}
+                        className={`hover:bg-gray-50 ${entry.request_id ? 'cursor-pointer' : ''}`}
+                        // Clicking a row opens the full request. The "Update
+                        // progress" button stops propagation so it still edits.
+                        onClick={entry.request_id ? () => router.push(`/requests/${entry.request_id}`) : undefined}
+                        title={entry.request_id ? 'Open request' : undefined}
+                      >
                         <td className="px-4 py-3 whitespace-nowrap">
                           <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${priority.cls}`}>
                             {priority.label}
@@ -955,7 +962,7 @@ export default function CapexTrackerPage() {
                           {canEdit ? (
                             <button
                               type="button"
-                              onClick={() => openEdit(entry)}
+                              onClick={(e) => { e.stopPropagation(); openEdit(entry); }}
                               className="rounded-lg border border-primary-300 bg-primary-50 px-2 py-1 text-xs font-semibold text-primary-700 hover:bg-primary-100 transition-colors"
                             >
                               Update progress

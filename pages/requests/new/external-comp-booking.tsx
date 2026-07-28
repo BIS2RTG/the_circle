@@ -2,8 +2,9 @@ import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
 import { AppLayout } from '../../../components/layout';
-import { Card, Button, Input, RequestPreviewModal, UnsavedChangesModal, ReferenceCodeBanner } from '../../../components/ui';
+import { Card, Button, Input, RequestPreviewModal, UnsavedChangesModal, ReferenceCodeBanner, buildDocumentHeaderSection } from '../../../components/ui';
 import type { PreviewSection } from '../../../components/ui';
+import { buildTravelAuthPreviewSections, buildTravelAuthDocumentHeader } from '../../../lib/previews/travelAuthPreview';
 import { useCurrentUser } from '../../../hooks/useCurrentUser';
 import { useUnsavedChangesPrompt, useFormAutosave } from '../../../hooks';
 import { useUserHrimsProfile } from '../../../hooks/useUserHrimsProfile';
@@ -726,7 +727,9 @@ export default function ExternalCompBookingPage() {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    title: `Hotel Booking: ${formData.guestNames}`,
+                    title: formData.processTravelDocument
+                        ? `External Complimentary Booking & Travel Authorisation: ${formData.guestNames}`
+                        : `Hotel Booking: ${formData.guestNames}`,
                     description: formData.reason,
                     metadata: {
                         type: 'hotel_booking',
@@ -783,7 +786,9 @@ export default function ExternalCompBookingPage() {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    title: `Hotel Booking: ${formData.guestNames || 'Draft'}`,
+                    title: formData.processTravelDocument
+                        ? `External Complimentary Booking & Travel Authorisation: ${formData.guestNames || 'Draft'}`
+                        : `Hotel Booking: ${formData.guestNames || 'Draft'}`,
                     description: formData.reason || 'Draft request',
                     metadata: {
                         type: 'hotel_booking',
@@ -822,49 +827,102 @@ export default function ExternalCompBookingPage() {
     const [showPreview, setShowPreview] = useState(false);
     const [showConfirm, setShowConfirm] = useState(false);
 
-    const buildPreviewSections = (): PreviewSection[] => [
-        {
-            title: 'Requestor Information',
-            fields: [
-                { label: 'Name', value: requestor.name || '' },
-                { label: 'Business Unit', value: requestor.businessUnit || '' },
-                { label: 'Department', value: requestor.department || '' },
-                { label: 'Date', value: today },
-            ],
-        },
-        {
-            title: 'Guest Details',
-            fields: [
-                { label: 'Guest Name(s)', value: formData.guestNames, fullWidth: true },
-            ],
-        },
-        {
-            title: 'Business Units / Hotels',
-            fields: selectedBusinessUnits.length === 0
-                ? [{ label: 'Hotels', value: 'None selected', fullWidth: true }]
-                : selectedBusinessUnits.map((u, i) => ({
-                    label: `${i + 1}. ${u.name}`,
-                    value: `${u.arrivalDate || '—'} → ${u.departureDate || '—'} · ${u.numberOfNights || '0'} night(s) · ${u.numberOfRooms || '0'} room(s) · ${u.accommodationType || '—'}${u.specialArrangements ? `\nSpecial: ${u.specialArrangements}` : ''}`,
-                    fullWidth: true,
+    const buildPreviewSections = (): PreviewSection[] => {
+        const compSections: PreviewSection[] = [
+            {
+                title: 'Requestor Information',
+                fields: [
+                    { label: 'Name', value: requestor.name || '' },
+                    { label: 'Business Unit', value: requestor.businessUnit || '' },
+                    { label: 'Department', value: requestor.department || '' },
+                    { label: 'Date', value: today },
+                ],
+            },
+            {
+                title: 'Guest Details',
+                fields: [
+                    { label: 'Guest Name(s)', value: formData.guestNames, fullWidth: true },
+                ],
+            },
+            {
+                title: 'Business Units / Hotels',
+                fields: selectedBusinessUnits.length === 0
+                    ? [{ label: 'Hotels', value: 'None selected', fullWidth: true }]
+                    : selectedBusinessUnits.map((u, i) => ({
+                        label: `${i + 1}. ${u.name}`,
+                        value: `${u.arrivalDate || '—'} → ${u.departureDate || '—'} · ${u.numberOfNights || '0'} night(s) · ${u.numberOfRooms || '0'} room(s) · ${u.accommodationType || '—'}${u.specialArrangements ? `\nSpecial: ${u.specialArrangements}` : ''}`,
+                        fullWidth: true,
+                    })),
+            },
+            {
+                title: 'Allocation & Reason',
+                fields: [
+                    { label: 'Allocation Type', value: formData.allocationType },
+                    { label: 'Discount %', value: formData.percentageDiscount || '—' },
+                    { label: 'Reason for Complimentary', value: formData.reason, fullWidth: true },
+                    { label: 'Process Travel Document', value: formData.processTravelDocument ? 'Yes' : 'No' },
+                ],
+            },
+            {
+                title: 'Approvers',
+                fields: approvalRoles.map(r => ({
+                    label: r.label,
+                    value: users.find(u => u.id === selectedApprovers[r.key])?.display_name || 'Not selected',
                 })),
-        },
-        {
-            title: 'Allocation & Reason',
-            fields: [
-                { label: 'Allocation Type', value: formData.allocationType },
-                { label: 'Discount %', value: formData.percentageDiscount || '—' },
-                { label: 'Reason for Complimentary', value: formData.reason, fullWidth: true },
-                { label: 'Process Travel Document', value: formData.processTravelDocument ? 'Yes' : 'No' },
-            ],
-        },
-        {
-            title: 'Approvers',
-            fields: approvalRoles.map(r => ({
-                label: r.label,
-                value: users.find(u => u.id === selectedApprovers[r.key])?.display_name || 'Not selected',
-            })),
-        },
-    ];
+            },
+        ];
+
+        if (!formData.processTravelDocument) return compSections;
+
+        // Combined request: append the travel authorisation as a SECOND page,
+        // built from the shared travel-auth builder so it is identical to a
+        // standalone travel authorisation. One workflow, two documents.
+        const currentUserId = (session?.user as any)?.id;
+        const isOnBehalf = !!requestor.isOnBehalf;
+        const approverDisplay: Record<string, { name?: string }> = {};
+        for (const r of approvalRoles) {
+            const u = users.find(u => u.id === selectedApprovers[r.key]);
+            approverDisplay[r.key] = { name: u?.display_name };
+        }
+        const requestTimestamp = new Date().toLocaleString('en-GB', {
+            day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+        });
+        return [
+            ...compSections,
+            buildDocumentHeaderSection(
+                buildTravelAuthDocumentHeader(false),
+                'Local Travel Authorisation',
+                { pageBreakBefore: true }
+            ),
+            ...buildTravelAuthPreviewSections({
+                employee: {
+                    name: requestor.name,
+                    department: requestor.department,
+                    businessUnit: requestor.businessUnit,
+                },
+                requestTimestamp,
+                dateOfIntendedTravel: travelData.dateOfIntendedTravel,
+                purposeOfTravel: travelData.purposeOfTravel,
+                accompanyingAssociates: travelData.accompanyingAssociates,
+                travelMode: travelData.travelMode,
+                vehicleRegistration: travelData.vehicleRegistration,
+                isInternational: false,
+                isEmergencyRequest,
+                emergencyReason,
+                acceptConditions: travelData.acceptConditions,
+                travellerName: requestor.name,
+                travellerSignatureUrl: isOnBehalf
+                    ? null
+                    : (currentUserId ? `/api/signature/view?userId=${encodeURIComponent(currentUserId)}` : null),
+                onBehalf: isOnBehalf,
+                itinerary: travelData.itinerary,
+                budget: travelData.budget,
+                grandTotal: calculateGrandTotal(),
+                costAllocation: {},
+                approvers: approverDisplay,
+            }),
+        ];
+    };
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -1025,7 +1083,9 @@ export default function ExternalCompBookingPage() {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    title: `Hotel Booking: ${formData.guestNames}`,
+                    title: formData.processTravelDocument
+                        ? `External Complimentary Booking & Travel Authorisation: ${formData.guestNames}`
+                        : `Hotel Booking: ${formData.guestNames}`,
                     description: formData.reason,
                     priority: 'normal',
                     category: 'hotel',
@@ -1091,7 +1151,9 @@ export default function ExternalCompBookingPage() {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    title: `Hotel Booking: ${formData.guestNames || 'Draft'}`,
+                    title: formData.processTravelDocument
+                        ? `External Complimentary Booking & Travel Authorisation: ${formData.guestNames || 'Draft'}`
+                        : `Hotel Booking: ${formData.guestNames || 'Draft'}`,
                     description: formData.reason || 'Draft request',
                     priority: 'normal',
                     category: 'hotel',
@@ -2284,7 +2346,7 @@ export default function ExternalCompBookingPage() {
                 isOpen={showPreview}
                 onClose={() => setShowPreview(false)}
                 mode="preview"
-                title="External Complimentary Hotel Booking Form"
+                title={formData.processTravelDocument ? 'External Complimentary Booking & Travel Authorisation' : 'External Complimentary Hotel Booking Form'}
                 subtitle={`Requestor: ${requestor.name || ''} · ${today}`}
                 sections={buildPreviewSections()}
             />
@@ -2292,7 +2354,7 @@ export default function ExternalCompBookingPage() {
                 isOpen={showConfirm}
                 onClose={() => setShowConfirm(false)}
                 mode="confirm"
-                title="External Complimentary Hotel Booking Form"
+                title={formData.processTravelDocument ? 'External Complimentary Booking & Travel Authorisation' : 'External Complimentary Hotel Booking Form'}
                 subtitle={`Requestor: ${requestor.name || ''} · ${today}`}
                 sections={buildPreviewSections()}
                 confirming={loading}
