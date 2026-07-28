@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useIpadCanvasZoomFix } from '../hooks/useIpadCanvasZoomFix';
 
 /**
  * SignaturePadGate
@@ -26,6 +27,10 @@ export default function SignaturePadGate({
 }) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [fullyVisible, setFullyVisible] = useState(true);
+  // iPad-only: neutralise the desktop `html { zoom: 0.9 }` for the pad so touch
+  // strokes land under the pen (WebKit mis-maps touch coords under CSS zoom).
+  // 1 (no-op) on every other device.
+  const ipadZoom = useIpadCanvasZoomFix();
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -53,7 +58,14 @@ export default function SignaturePadGate({
   };
 
   return (
-    <div ref={wrapRef} className={`relative ${className || ''}`}>
+    <div
+      ref={wrapRef}
+      className={`relative ${className || ''}`}
+      // `zoom` is applied ONLY on iPad (ipadZoom !== 1); elsewhere this is undefined
+      // so the wrapper renders exactly as before. Cast: `zoom` isn't in the React
+      // CSSProperties type but is valid CSS and supported by WebKit/Blink.
+      style={ipadZoom !== 1 ? ({ zoom: ipadZoom } as React.CSSProperties) : undefined}
+    >
       {children}
       {!fullyVisible && (
         <div
