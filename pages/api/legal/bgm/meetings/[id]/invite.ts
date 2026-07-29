@@ -72,7 +72,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   ].join('');
 
   const outcome = await distributeMeetingInvitation({
-    organiserUserId: ctx.userId,
+    organiserUserId: [ctx.userId, meeting.created_by],
     organiserName: ctx.displayName,
     uid: meeting.id,
     event: {

@@ -14,7 +14,9 @@ import { AssociatesField, Associate } from '../../../../components/requests/Asso
 import { AttendanceStatus, CHECK_IN_METHOD_LABELS, VIRTUAL_PLATFORM_LABELS } from '@/lib/bgm';
 import QrCheckInModal from '../../../../components/legal/bgm/QrCheckInModal';
 import SignatureCaptureModal from '../../../../components/legal/bgm/SignatureCaptureModal';
-import { ArrowLeft, MapPin, Video, CalendarClock, Send, Ban, Save, Lock, LockOpen, UserPlus, X, ShieldCheck, QrCode, FileText, PenLine } from 'lucide-react';
+import SignPromptModal from '../../../../components/legal/bgm/SignPromptModal';
+import AttendanceEmailModal from '../../../../components/legal/bgm/AttendanceEmailModal';
+import { ArrowLeft, MapPin, Video, CalendarClock, Send, Ban, Save, Lock, LockOpen, UserPlus, X, ShieldCheck, QrCode, FileText, PenLine, Mail } from 'lucide-react';
 
 function fmtRange(start: string, end: string | null, tz?: string) {
   try {
@@ -48,9 +50,13 @@ export default function MeetingDetail() {
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [signFor, setSignFor] = useState<{ id: string; kind: 'director' | 'guest'; name: string } | null>(null);
+  const [finalizeOpen, setFinalizeOpen] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
+  const [emailOpen, setEmailOpen] = useState(false);
 
   const finalized = !!meeting?.finalized_at;
   const editable = canManageAttendance && !finalized && meeting?.status !== 'cancelled';
+  const started = !!meeting && new Date(meeting.scheduled_start).getTime() <= Date.now();
 
   const load = async () => {
     if (!id) return;
@@ -123,15 +129,27 @@ export default function MeetingDetail() {
     } finally { setCancelling(false); }
   };
 
-  const toggleFinalize = async () => {
-    const res = await fetch(`/api/legal/bgm/meetings/${id}/finalize`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ finalize: !finalized }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      addToast({ type: 'success', message: finalized ? 'Register re-opened for editing.' : `Register finalized. Quorum ${data.quorum?.met ? 'met' : 'not met'} (${data.quorum?.attended}/${data.quorum?.required}).` });
+  const doFinalize = async (signature: string) => {
+    setFinalizing(true);
+    try {
+      const res = await fetch(`/api/legal/bgm/meetings/${id}/finalize`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ finalize: true, signature }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to finalize');
+      addToast({ type: 'success', message: `Register finalized. Quorum ${data.quorum?.met ? 'met' : 'not met'} (${data.quorum?.attended}/${data.quorum?.required}).` });
+      setFinalizeOpen(false);
       load();
-    } else addToast({ type: 'error', message: data.error || 'Failed' });
+    } catch (err) { addToast({ type: 'error', message: (err as Error).message }); }
+    finally { setFinalizing(false); }
+  };
+
+  const reopenRegister = async () => {
+    const res = await fetch(`/api/legal/bgm/meetings/${id}/finalize`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ finalize: false }),
+    });
+    if (res.ok) { addToast({ type: 'success', message: 'Register re-opened for editing.' }); load(); }
+    else addToast({ type: 'error', message: 'Failed to re-open the register.' });
   };
 
   const openQr = async () => {
@@ -188,7 +206,7 @@ export default function MeetingDetail() {
                   </Button>
                 )}
                 {canManageAttendance && (
-                  <Button variant={finalized ? 'outline' : 'secondary'} onClick={toggleFinalize}>
+                  <Button variant={finalized ? 'outline' : 'secondary'} onClick={() => (finalized ? reopenRegister() : setFinalizeOpen(true))}>
                     {finalized ? <><LockOpen className="w-4 h-4 mr-1.5" /> Re-open register</> : <><Lock className="w-4 h-4 mr-1.5" /> Finalize register</>}
                   </Button>
                 )}
@@ -216,6 +234,7 @@ export default function MeetingDetail() {
               <Button variant="outline"><FileText className="w-4 h-4 mr-1.5" /> Attendance report</Button>
             </Link>
             {editable && <Button variant="outline" onClick={openQr}><QrCode className="w-4 h-4 mr-1.5" /> QR check-in</Button>}
+            {editable && started && <Button variant="outline" onClick={() => setEmailOpen(true)}><Mail className="w-4 h-4 mr-1.5" /> Email check-in links</Button>}
             {editable && <Button variant="outline" onClick={() => setAddOpen(true)}><UserPlus className="w-4 h-4 mr-1.5" /> Add attendees</Button>}
             {editable && <Button variant="primary" onClick={save} isLoading={saving} disabled={!dirty}><Save className="w-4 h-4 mr-1.5" /> Save</Button>}
           </div>
@@ -282,6 +301,27 @@ export default function MeetingDetail() {
           attendee={signFor}
           onClose={() => setSignFor(null)}
           onSaved={() => { setSignFor(null); load(); }}
+        />
+      )}
+
+      {emailOpen && (
+        <AttendanceEmailModal
+          meetingId={String(id)}
+          register={register}
+          guests={guests}
+          onClose={() => setEmailOpen(false)}
+          onSent={() => setEmailOpen(false)}
+        />
+      )}
+
+      {finalizeOpen && (
+        <SignPromptModal
+          title="Finalize the register"
+          subtitle="Finalizing locks the attendance record for the minute book. Sign below to confirm — your signature appears on the report."
+          confirmLabel="Sign & finalize"
+          busy={finalizing}
+          onSubmit={doFinalize}
+          onClose={() => setFinalizeOpen(false)}
         />
       )}
 
