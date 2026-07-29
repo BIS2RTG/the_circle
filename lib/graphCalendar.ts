@@ -99,8 +99,84 @@ export async function cancelOutlookMeeting(accessToken: string, eventId: string,
 }
 
 /**
- * Distribute a meeting invitation. Tries Outlook (as `organiserUserId`), then
- * falls back to emailing an .ics. Returns which transport succeeded.
+ * Send one board email via the most reliable available transport, in order:
+ *   1. the user's DELEGATED Graph mailbox (`/me/sendMail`) — needs only the
+ *      `Mail.Send` scope that sign-in already grants, and lands in their real
+ *      Outlook Sent Items;
+ *   2. the application service mailbox (`GRAPH_MAIL_SENDER`);
+ *   3. Resend.
+ * Returns true if any transport accepted the message. Never throws.
+ */
+export async function sendBoardEmail(
+  userId: string | null,
+  opts: { to: string; subject: string; html: string; ics?: { name: string; content: Buffer } }
+): Promise<boolean> {
+  // 1. Delegated (organiser) mailbox — works with the Mail.Send scope we hold.
+  if (userId) {
+    try {
+      const token = await getValidMsAccessToken(userId);
+      if (token && (await sendDelegatedMail(token, opts))) return true;
+    } catch (err) {
+      console.error('[bgm] delegated mail failed, trying app mail:', err);
+    }
+  }
+  // 2. Application service mailbox (with the .ics attachment if present).
+  if (isGraphAppMailConfigured()) {
+    try {
+      const res = await sendAppGraphMail({
+        to: opts.to,
+        subject: opts.subject,
+        html: opts.html,
+        attachments: opts.ics ? [{ name: opts.ics.name, contentType: 'text/calendar; method=REQUEST', content: opts.ics.content }] : undefined,
+      });
+      if (res.success) return true;
+    } catch (err) {
+      console.error('[bgm] app mail failed, trying Resend:', err);
+    }
+  }
+  // 3. Resend (the wrapper has no attachment support; the details are in the body).
+  try {
+    await sendResendEmail({ to: opts.to, subject: opts.subject, html: opts.html });
+    return true;
+  } catch (err) {
+    console.error('[bgm] Resend failed:', err);
+    return false;
+  }
+}
+
+async function sendDelegatedMail(
+  accessToken: string,
+  opts: { to: string; subject: string; html: string; ics?: { name: string; content: Buffer } }
+): Promise<boolean> {
+  const message: Record<string, any> = {
+    subject: opts.subject,
+    body: { contentType: 'HTML', content: opts.html },
+    toRecipients: [{ emailAddress: { address: opts.to } }],
+  };
+  if (opts.ics) {
+    message.attachments = [{
+      '@odata.type': '#microsoft.graph.fileAttachment',
+      name: opts.ics.name,
+      contentType: 'text/calendar; method=REQUEST',
+      contentBytes: opts.ics.content.toString('base64'),
+    }];
+  }
+  const resp = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, saveToSentItems: true }),
+  });
+  if (!resp.ok) {
+    console.error('[bgm] delegated sendMail failed:', resp.status, await resp.text().catch(() => ''));
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Distribute a meeting invitation. Tries a real Outlook calendar event first
+ * (needs Calendars.ReadWrite — usually not granted, so it falls through), then
+ * emails a branded invitation + .ics to each attendee via sendBoardEmail.
  */
 export async function distributeMeetingInvitation(params: {
   organiserUserId: string;
@@ -110,7 +186,8 @@ export async function distributeMeetingInvitation(params: {
 }): Promise<{ transport: 'outlook' | 'ics_email' | 'none'; eventId?: string; webLink?: string | null; error?: string }> {
   const { organiserUserId, event, uid } = params;
 
-  // 1. Try Outlook via the organiser's delegated token.
+  // 1. Best experience: a real Outlook event. Only works with Calendars.ReadWrite;
+  //    a 403/absent scope just falls through to email.
   try {
     const token = await getValidMsAccessToken(organiserUserId);
     if (token) {
@@ -118,10 +195,10 @@ export async function distributeMeetingInvitation(params: {
       return { transport: 'outlook', eventId: res.eventId, webLink: res.webLink };
     }
   } catch (err) {
-    console.error('[bgm] Outlook invite failed, falling back to .ics email:', err);
+    console.error('[bgm] Outlook event unavailable, emailing an .ics instead:', err);
   }
 
-  // 2. Fallback: email an .ics to each attendee (best-effort, never throws).
+  // 2. Email a branded invitation + .ics to each attendee.
   const recipients = event.attendees.filter((a) => !!a.email);
   if (recipients.length === 0) return { transport: 'none', error: 'no_recipients' };
 
@@ -134,7 +211,6 @@ export async function distributeMeetingInvitation(params: {
     description: stripHtml(event.bodyHtml || ''),
     organiserName: params.organiserName || 'The Circle',
   });
-
   const html = brandedEmailShell({
     heading: event.subject,
     bodyHtml: `
@@ -145,43 +221,14 @@ export async function distributeMeetingInvitation(params: {
       <p style="margin:16px 0 0">A calendar invitation (.ics) is attached — open it to add this meeting to your calendar.</p>
     `,
   });
-
-  const icsAttachment = {
-    name: 'invite.ics',
-    contentType: 'text/calendar; method=REQUEST',
-    content: Buffer.from(ics, 'utf8'),
-  };
   const subject = `Invitation: ${event.subject}`;
+  const icsAttachment = { name: 'invite.ics', content: Buffer.from(ics, 'utf8') };
 
-  // Send per-recipient via the APP transport (service mailbox → Resend) so
-  // invitations still go out even when the organiser has no delegated Graph
-  // token (the common case on staging / preview). Never throws.
   let anySent = false;
-  let lastError: string | undefined;
-  const graphReady = isGraphAppMailConfigured();
   for (const r of recipients) {
-    if (graphReady) {
-      try {
-        const res = await sendAppGraphMail({ to: r.email, subject, html, attachments: [icsAttachment] });
-        if (res.success) { anySent = true; continue; }
-        lastError = res.error;
-      } catch (err) {
-        lastError = (err as Error).message;
-      }
-    }
-    // Resend fallback (no attachment support in the wrapper; the join link and
-    // details are in the branded body, so the invite is still actionable).
-    try {
-      await sendResendEmail({ to: r.email, subject, html });
-      anySent = true;
-    } catch (err) {
-      lastError = (err as Error).message;
-    }
+    if (await sendBoardEmail(organiserUserId, { to: r.email, subject, html, ics: icsAttachment })) anySent = true;
   }
-
-  return anySent
-    ? { transport: 'ics_email' }
-    : { transport: 'none', error: lastError || 'no_mail_transport' };
+  return anySent ? { transport: 'ics_email' } : { transport: 'none', error: 'no_mail_transport' };
 }
 
 /** Graph wants 'YYYY-MM-DDTHH:mm:ss' with no timezone suffix (tz sent separately). */

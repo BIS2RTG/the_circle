@@ -52,6 +52,7 @@ export const CHECK_IN_METHOD_LABELS: Record<string, string> = {
   self_token: 'Self check-in (link)',
   teams: 'Teams attendance report',
   import: 'Imported record',
+  in_person: 'Signed in person',
 };
 
 // ---- Meetings (BGM-01) ----

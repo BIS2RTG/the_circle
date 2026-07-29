@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { GetServerSideProps } from 'next';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '../api/auth/[...nextauth]';
-import { getUserRBACProfile, hasAnyPermission } from '@/lib/rbac';
+import { useRequirePermission } from '@/contexts/RBACContext';
 import { AppLayout } from '../../components/layout';
 import { Card } from '../../components/ui';
 import { Landmark, FileText, ShieldCheck, ArrowRight, Lock } from 'lucide-react';
@@ -18,6 +18,7 @@ interface SubSystem {
 }
 
 export default function LegalHome() {
+  useRequirePermission(['legal.access', 'bgm.meetings.view', 'bgm.directors.view']);
   const subsystems: SubSystem[] = [
     {
       key: 'bgm',
@@ -107,12 +108,6 @@ export default function LegalHome() {
 
 export const getServerSideProps: GetServerSideProps = async (context) => {
   const session = await getServerSession(context.req, context.res, authOptions);
-  if (!session?.user?.id) {
-    return { redirect: { destination: '/', permanent: false } };
-  }
-  const profile = await getUserRBACProfile((session.user as any).id);
-  if (!hasAnyPermission(profile, ['legal.access', 'bgm.meetings.view', 'bgm.directors.view'])) {
-    return { redirect: { destination: '/dashboard', permanent: false } };
-  }
+  if (!session?.user?.id) return { redirect: { destination: '/', permanent: false } };
   return { props: {} };
 };

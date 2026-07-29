@@ -4,12 +4,11 @@ import { useRouter } from 'next/router';
 import { GetServerSideProps } from 'next';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '../../../api/auth/[...nextauth]';
-import { getUserRBACProfile, hasAnyPermission } from '@/lib/rbac';
 import { AppLayout } from '../../../../components/layout';
 import { Card, Button, Input } from '../../../../components/ui';
 import Loader from '@/components/Loader';
 import { useToast } from '../../../../components/ui/ToastProvider';
-import { useRBAC } from '../../../../contexts/RBACContext';
+import { useRBAC, useRequirePermission } from '../../../../contexts/RBACContext';
 import AttendanceBadge from '../../../../components/legal/bgm/AttendanceBadge';
 import { ATTENDANCE_LABELS, ATTENDANCE_STATUSES } from '@/lib/bgm';
 import { ArrowLeft, Crown, Mail, Phone, Pencil, Ban, RotateCcw } from 'lucide-react';
@@ -19,6 +18,7 @@ export default function DirectorDetail() {
   const { id } = router.query;
   const { addToast } = useToast();
   const { hasPermission } = useRBAC();
+  useRequirePermission(['bgm.directors.view', 'bgm.attendance.view', 'legal.access']);
   const canManage = hasPermission('bgm.directors.manage');
 
   const [data, setData] = useState<any>(null);
@@ -214,9 +214,5 @@ function StatCard({ label, value, accent }: { label: string; value: string | num
 export const getServerSideProps: GetServerSideProps = async (context) => {
   const session = await getServerSession(context.req, context.res, authOptions);
   if (!session?.user?.id) return { redirect: { destination: '/', permanent: false } };
-  const profile = await getUserRBACProfile((session.user as any).id);
-  if (!hasAnyPermission(profile, ['bgm.directors.view', 'bgm.attendance.view', 'legal.access'])) {
-    return { redirect: { destination: '/dashboard', permanent: false } };
-  }
   return { props: {} };
 };

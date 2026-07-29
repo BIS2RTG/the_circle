@@ -1,8 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { isAuthorizedCron } from './reminders';
-import { sendAppGraphMail } from '@/lib/graphAppMail';
-import { sendEmail } from '@/lib/email';
+import { sendBoardEmail } from '@/lib/graphCalendar';
 import { brandedEmailShell } from '@/lib/emailShell';
 
 /**
@@ -63,7 +62,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           <p style="margin:0 0 6px"><strong>Where:</strong> ${escapeHtml(whereLabel)}</p>
         `,
       });
-      const ok = await sendDirectEmail(d.email, `Reminder: ${m.title}`, html);
+      const ok = await sendBoardEmail(m.created_by, { to: d.email, subject: `Reminder: ${m.title}`, html });
       if (ok) sent += 1;
     }
 
@@ -87,20 +86,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   return res.status(200).json({ ok: true, sent, meetings: results });
-}
-
-/** Try the service mailbox (Graph app), fall back to Resend. */
-async function sendDirectEmail(to: string, subject: string, html: string): Promise<boolean> {
-  try {
-    const r = await sendAppGraphMail({ to, subject, html });
-    if (r.success) return true;
-  } catch { /* fall through */ }
-  try {
-    await sendEmail({ to, subject, html });
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function formatWhen(iso: string, timeZone?: string): string {

@@ -21,7 +21,6 @@ export default function BoardCheckIn() {
   const [step, setStep] = useState<'identify' | 'sign' | 'done'>('identify');
   const [email, setEmail] = useState('');
   const [attendee, setAttendee] = useState<{ id: string; kind: string; name: string } | null>(null);
-  const [mode, setMode] = useState<'present' | 'virtual'>('present');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sigRef = useRef<SignatureCanvas>(null);
@@ -31,7 +30,7 @@ export default function BoardCheckIn() {
     (async () => {
       setLoading(true);
       const r = await fetch(`/api/legal/bgm/checkin/${token}`);
-      if (r.ok) { const d = await r.json(); setMeeting(d.meeting); setOpen(d.open); setMode(d.meeting?.is_virtual ? 'virtual' : 'present'); }
+      if (r.ok) { const d = await r.json(); setMeeting(d.meeting); setOpen(d.open); }
       else setLinkError((await r.json().catch(() => ({}))).error || 'This check-in link is not valid.');
       setLoading(false);
     })();
@@ -62,7 +61,7 @@ export default function BoardCheckIn() {
     try {
       const r = await fetch(`/api/legal/bgm/checkin/${token}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'checkin', attendee_id: attendee!.id, kind: attendee!.kind, mode, signature }),
+        body: JSON.stringify({ action: 'checkin', attendee_id: attendee!.id, kind: attendee!.kind, mode: 'present', signature }),
       });
       const d = await r.json();
       if (!r.ok) { setError(d.error || 'Could not record your check-in.'); return; }
@@ -132,12 +131,7 @@ export default function BoardCheckIn() {
                   <p className="text-sm text-neutral-500">Checking in as</p>
                   <p className="text-lg font-bold text-neutral-900 mb-4">{attendee.name}</p>
 
-                  <div className="grid grid-cols-2 gap-2 mb-4">
-                    <button onClick={() => setMode('present')} className={`py-2 rounded-xl border text-sm font-medium ${mode === 'present' ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-neutral-200 text-neutral-600'}`}>In person</button>
-                    <button onClick={() => setMode('virtual')} className={`py-2 rounded-xl border text-sm font-medium ${mode === 'virtual' ? 'border-sky-500 bg-sky-50 text-sky-700' : 'border-neutral-200 text-neutral-600'}`}>Virtually</button>
-                  </div>
-
-                  <label className="block text-sm font-medium text-neutral-700 mb-1">Sign to confirm</label>
+                  <label className="block text-sm font-medium text-neutral-700 mb-1">Sign to confirm your attendance</label>
                   <div className="border border-neutral-300 rounded-xl bg-white relative">
                     <SignatureCanvas ref={sigRef}
                       canvasProps={{ className: 'w-full h-40 rounded-xl', style: { touchAction: 'none' } }}

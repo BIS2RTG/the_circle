@@ -2,8 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import crypto from 'crypto';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { requireBgm } from '@/lib/bgmApi';
-import { sendAppGraphMail, isGraphAppMailConfigured } from '@/lib/graphAppMail';
-import { sendEmail as sendResendEmail } from '@/lib/email';
+import { sendBoardEmail } from '@/lib/graphCalendar';
 import { brandedEmailShell } from '@/lib/emailShell';
 
 /**
@@ -58,14 +57,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   });
 
   let sent = 0;
-  const graphReady = isGraphAppMailConfigured();
   for (const to of emails) {
-    let ok = false;
-    if (graphReady) {
-      try { const r = await sendAppGraphMail({ to, subject: `Check-in: ${meeting.title}`, html }); ok = r.success; } catch { /* noop */ }
-    }
-    if (!ok) { try { await sendResendEmail({ to, subject: `Check-in: ${meeting.title}`, html }); ok = true; } catch { /* noop */ } }
-    if (ok) sent += 1;
+    if (await sendBoardEmail(ctx.userId, { to, subject: `Check-in: ${meeting.title}`, html })) sent += 1;
   }
 
   if (sent === 0) return res.status(502).json({ error: 'No mail transport is configured, so the link could not be sent. Copy it instead.' });
