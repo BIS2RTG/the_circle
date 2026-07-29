@@ -58,7 +58,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const quorum = meeting.quorum ?? defaultQuorum(rows.length);
 
-    return res.status(200).json({ meeting, register: rows, guests: guests || [], quorum });
+    // Name of whoever finalized (shown on the report next to their signature).
+    let finalized_by_name: string | null = null;
+    if (meeting.finalized_by) {
+      const { data: fu } = await supabaseAdmin
+        .from('app_users').select('display_name').eq('id', meeting.finalized_by).single();
+      finalized_by_name = fu?.display_name || null;
+    }
+
+    return res.status(200).json({ meeting: { ...meeting, finalized_by_name }, register: rows, guests: guests || [], quorum });
   }
 
   if (req.method === 'PATCH') {

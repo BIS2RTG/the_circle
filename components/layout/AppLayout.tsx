@@ -5,6 +5,7 @@ import Sidebar from './Sidebar';
 import OnboardingFlow from '../onboarding/OnboardingFlow';
 import FeatureTour, { TourStep } from '../onboarding/FeatureTour';
 import { useSignatureCheck, useCurrentUser } from '@/hooks';
+import { useRBAC } from '../../contexts/RBACContext';
 
 // Post-onboarding walkthrough of the everyday features. Each step anchors to a
 // real element via its `data-tour` attribute; missing targets are skipped.
@@ -84,6 +85,7 @@ export default function AppLayout({
   };
   const { hasSignature, loading: signatureLoading, refetch } = useSignatureCheck();
   const { user, loading: userLoading, needsProfileSetup, refetch: refetchUser } = useCurrentUser();
+  const { hasPermission, loading: rbacLoading } = useRBAC();
 
   // Pages that opt out of the first-login onboarding / signature gate
   // (e.g. mobile signature capture, public e-sign, profile settings).
@@ -125,7 +127,13 @@ export default function AppLayout({
   useEffect(() => {
     if (runOnboarding !== false) return;   // still onboarding (or undecided) — wait
     if (tourDecided.current || !user || !canTour) return;
+    if (rbacLoading) return;               // wait for permissions before deciding
     tourDecided.current = true;
+
+    // The tour anchors to the Requests/E-Sign nav, which is hidden for users
+    // without request permissions (e.g. the legal team). Skip it for them so it
+    // never renders against missing targets.
+    if (!hasPermission('requests.create')) return;
 
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -156,7 +164,7 @@ export default function AppLayout({
     })();
 
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
-  }, [runOnboarding, user, canTour]);
+  }, [runOnboarding, user, canTour, rbacLoading, hasPermission]);
 
   const finishTour = () => {
     try { if (user) localStorage.setItem(`tour:done:${user.id}`, 'true'); } catch {}

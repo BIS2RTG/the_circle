@@ -108,16 +108,22 @@ export async function cancelOutlookMeeting(accessToken: string, eventId: string,
  * Returns true if any transport accepted the message. Never throws.
  */
 export async function sendBoardEmail(
-  userId: string | null,
+  userId: string | null | (string | null)[],
   opts: { to: string; subject: string; html: string; ics?: { name: string; content: Buffer } }
 ): Promise<boolean> {
-  // 1. Delegated (organiser) mailbox — works with the Mail.Send scope we hold.
-  if (userId) {
+  // 1. Delegated mailbox — try each candidate (e.g. the person acting AND the
+  //    meeting creator), since only some users have a stored Graph token.
+  //    Works with the Mail.Send scope sign-in already grants.
+  const candidates = Array.isArray(userId) ? userId : [userId];
+  const tried = new Set<string>();
+  for (const uid of candidates) {
+    if (!uid || tried.has(uid)) continue;
+    tried.add(uid);
     try {
-      const token = await getValidMsAccessToken(userId);
+      const token = await getValidMsAccessToken(uid);
       if (token && (await sendDelegatedMail(token, opts))) return true;
     } catch (err) {
-      console.error('[bgm] delegated mail failed, trying app mail:', err);
+      console.error('[bgm] delegated mail failed for', uid, '- trying next:', err);
     }
   }
   // 2. Application service mailbox (with the .ics attachment if present).
@@ -179,23 +185,29 @@ async function sendDelegatedMail(
  * emails a branded invitation + .ics to each attendee via sendBoardEmail.
  */
 export async function distributeMeetingInvitation(params: {
-  organiserUserId: string;
+  /** One or more candidate senders (e.g. the acting user AND the meeting creator). */
+  organiserUserId: string | (string | null)[];
   organiserName?: string | null;
   event: OutlookEventInput;
   uid: string; // stable id for the .ics (meeting id)
 }): Promise<{ transport: 'outlook' | 'ics_email' | 'none'; eventId?: string; webLink?: string | null; error?: string }> {
   const { organiserUserId, event, uid } = params;
+  const senderIds = Array.isArray(organiserUserId) ? organiserUserId : [organiserUserId];
 
   // 1. Best experience: a real Outlook event. Only works with Calendars.ReadWrite;
   //    a 403/absent scope just falls through to email.
-  try {
-    const token = await getValidMsAccessToken(organiserUserId);
-    if (token) {
-      const res = await createOutlookMeeting(token, event);
-      return { transport: 'outlook', eventId: res.eventId, webLink: res.webLink };
+  for (const sid of senderIds) {
+    if (!sid) continue;
+    try {
+      const token = await getValidMsAccessToken(sid);
+      if (token) {
+        const res = await createOutlookMeeting(token, event);
+        return { transport: 'outlook', eventId: res.eventId, webLink: res.webLink };
+      }
+    } catch (err) {
+      console.error('[bgm] Outlook event unavailable, emailing an .ics instead:', err);
+      break; // scope/permission issue — don't retry Outlook for other senders
     }
-  } catch (err) {
-    console.error('[bgm] Outlook event unavailable, emailing an .ics instead:', err);
   }
 
   // 2. Email a branded invitation + .ics to each attendee.
@@ -226,7 +238,7 @@ export async function distributeMeetingInvitation(params: {
 
   let anySent = false;
   for (const r of recipients) {
-    if (await sendBoardEmail(organiserUserId, { to: r.email, subject, html, ics: icsAttachment })) anySent = true;
+    if (await sendBoardEmail(senderIds, { to: r.email, subject, html, ics: icsAttachment })) anySent = true;
   }
   return anySent ? { transport: 'ics_email' } : { transport: 'none', error: 'no_mail_transport' };
 }

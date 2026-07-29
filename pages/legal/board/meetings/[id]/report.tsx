@@ -7,9 +7,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '../../../../api/auth/[...nextauth]';
 import { useRequirePermission } from '@/contexts/RBACContext';
 import Loader from '@/components/Loader';
-import {
-  ATTENDANCE_LABELS, ATTENDANCE_STATUSES, RSVP_LABELS, CHECK_IN_METHOD_LABELS, AttendanceStatus, defaultQuorum,
-} from '@/lib/bgm';
+import { CHECK_IN_METHOD_LABELS, AttendanceStatus, defaultQuorum } from '@/lib/bgm';
 import { ArrowLeft, Printer } from 'lucide-react';
 
 function fmt(iso: string | null, opts: Intl.DateTimeFormatOptions) {
@@ -18,6 +16,12 @@ function fmt(iso: string | null, opts: Intl.DateTimeFormatOptions) {
 }
 const fmtDateTime = (iso: string | null, tz?: string) => fmt(iso, { dateStyle: 'full', timeStyle: 'short', timeZone: tz });
 const fmtTime = (iso: string | null) => fmt(iso, { timeStyle: 'short' });
+// Simplified attendance display: Present (incl. legacy virtual) vs Apology / Absent.
+const attLabel = (status: AttendanceStatus | null): string => {
+  if (status === 'present' || status === 'virtual') return 'Present';
+  if (status === 'apology' || status === 'absent') return 'Apology / Absent';
+  return '—';
+};
 
 export default function AttendanceReport() {
   const router = useRouter();
@@ -74,7 +78,7 @@ export default function AttendanceReport() {
             </div>
             <div className="text-right text-[11px] text-neutral-500">
               <p>Generated {fmt(new Date().toISOString(), { dateStyle: 'medium', timeStyle: 'short' })}</p>
-              {meeting.finalized_at ? <p className="text-emerald-600 font-medium">Finalized {fmt(meeting.finalized_at, { dateStyle: 'medium' })}</p> : <p className="text-amber-600">Draft — not finalized</p>}
+              {meeting.finalized_at && <p className="text-emerald-600 font-medium">Finalized {fmt(meeting.finalized_at, { dateStyle: 'medium' })}</p>}
             </div>
           </div>
 
@@ -89,7 +93,8 @@ export default function AttendanceReport() {
           {/* Summary */}
           <div className="flex flex-wrap gap-2 mb-5">
             <Pill label={`Quorum ${attended}/${q}`} tone={quorumMet ? 'good' : 'warn'} suffix={quorumMet ? 'met' : 'not met'} />
-            {ATTENDANCE_STATUSES.map((s) => <Pill key={s} label={ATTENDANCE_LABELS[s]} tone="neutral" suffix={String(counts[s])} />)}
+            <Pill label="Present" tone="neutral" suffix={String(counts.present + counts.virtual)} />
+            <Pill label="Apology / Absent" tone="neutral" suffix={String(counts.apology + counts.absent)} />
             <Pill label="Invited" tone="neutral" suffix={String(register.length + guests.length)} />
           </div>
 
@@ -100,7 +105,6 @@ export default function AttendanceReport() {
                 <th className="py-2 pr-2 font-semibold w-6">#</th>
                 <th className="py-2 pr-2 font-semibold">Name</th>
                 <th className="py-2 pr-2 font-semibold">Capacity</th>
-                <th className="py-2 pr-2 font-semibold">RSVP</th>
                 <th className="py-2 pr-2 font-semibold">Attendance</th>
                 <th className="py-2 pr-2 font-semibold">Checked in</th>
                 <th className="py-2 pr-2 font-semibold">Method</th>
@@ -113,8 +117,7 @@ export default function AttendanceReport() {
                   <td className="py-2 pr-2 text-neutral-400">{i + 1}</td>
                   <td className="py-2 pr-2 font-medium text-neutral-900">{r.name}</td>
                   <td className="py-2 pr-2 text-neutral-600">{r.kind}</td>
-                  <td className="py-2 pr-2">{RSVP_LABELS[(r.rsvp_status || 'no_response') as keyof typeof RSVP_LABELS]}</td>
-                  <td className="py-2 pr-2">{r.status ? ATTENDANCE_LABELS[r.status as AttendanceStatus] : '—'}</td>
+                  <td className="py-2 pr-2">{attLabel(r.status)}</td>
                   <td className="py-2 pr-2 text-neutral-600">{fmtTime(r.checked_in_at)}</td>
                   <td className="py-2 pr-2 text-neutral-600">{r.check_in_method ? (CHECK_IN_METHOD_LABELS[r.check_in_method] || r.check_in_method) : '—'}</td>
                   <td className="py-2">
@@ -128,9 +131,18 @@ export default function AttendanceReport() {
             </tbody>
           </table>
 
-          <div className="mt-8 grid grid-cols-2 gap-8 text-[11px] text-neutral-500">
-            <div className="border-t border-neutral-300 pt-2">Chairperson signature</div>
-            <div className="border-t border-neutral-300 pt-2">Company Secretary signature</div>
+          {/* Single sign-off */}
+          <div className="mt-10 max-w-xs text-[11px] text-neutral-500">
+            <div className="h-14 flex items-end">
+              {meeting.finalized_signature && (
+                /* eslint-disable-next-line @next/next/no-img-element */
+                <img src={meeting.finalized_signature} alt="Signature" className="max-h-14 object-contain" />
+              )}
+            </div>
+            <div className="border-t border-neutral-400 pt-1">
+              <span className="font-medium text-neutral-700">{meeting.finalized_by_name || 'Signed off by'}</span>
+              {meeting.finalized_at ? ` · ${fmt(meeting.finalized_at, { dateStyle: 'medium' })}` : ''}
+            </div>
           </div>
         </div>
       </div>

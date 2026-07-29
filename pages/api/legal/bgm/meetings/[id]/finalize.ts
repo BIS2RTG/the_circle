@@ -33,10 +33,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!finalize) {
     const { error } = await supabaseAdmin
       .from('board_meetings')
-      .update({ finalized_at: null, finalized_by: null })
+      .update({ finalized_at: null, finalized_by: null, finalized_signature: null })
       .eq('id', id);
     if (error) return res.status(500).json({ error: error.message });
     return res.status(200).json({ ok: true, finalized: false });
+  }
+
+  // The finaliser signs off; their signature appears at the bottom of the report.
+  const signature = req.body?.signature;
+  if (typeof signature !== 'string' || !signature.startsWith('data:image')) {
+    return res.status(400).json({ error: 'A signature is required to finalize the register.' });
   }
 
   // Compute quorum from the register.
@@ -50,7 +56,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const { error } = await supabaseAdmin
     .from('board_meetings')
-    .update({ finalized_at: new Date().toISOString(), finalized_by: ctx.userId, status: 'completed' })
+    .update({ finalized_at: new Date().toISOString(), finalized_by: ctx.userId, finalized_signature: signature, status: 'completed' })
     .eq('id', id);
   if (error) return res.status(500).json({ error: error.message });
 
