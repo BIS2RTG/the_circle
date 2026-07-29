@@ -5,7 +5,7 @@ import { useRouter } from 'next/router';
 import { GetServerSideProps } from 'next';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '../../../../api/auth/[...nextauth]';
-import { getUserRBACProfile, hasAnyPermission } from '@/lib/rbac';
+import { useRequirePermission } from '@/contexts/RBACContext';
 import Loader from '@/components/Loader';
 import {
   ATTENDANCE_LABELS, ATTENDANCE_STATUSES, RSVP_LABELS, CHECK_IN_METHOD_LABELS, AttendanceStatus, defaultQuorum,
@@ -22,6 +22,7 @@ const fmtTime = (iso: string | null) => fmt(iso, { timeStyle: 'short' });
 export default function AttendanceReport() {
   const router = useRouter();
   const { id } = router.query;
+  useRequirePermission(['bgm.attendance.view', 'bgm.meetings.view', 'legal.access']);
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
@@ -162,9 +163,5 @@ function Pill({ label, suffix, tone }: { label: string; suffix?: string; tone: '
 export const getServerSideProps: GetServerSideProps = async (context) => {
   const session = await getServerSession(context.req, context.res, authOptions);
   if (!session?.user?.id) return { redirect: { destination: '/', permanent: false } };
-  const profile = await getUserRBACProfile((session.user as any).id);
-  if (!hasAnyPermission(profile, ['bgm.attendance.view', 'bgm.meetings.view', 'legal.access'])) {
-    return { redirect: { destination: '/dashboard', permanent: false } };
-  }
   return { props: {} };
 };

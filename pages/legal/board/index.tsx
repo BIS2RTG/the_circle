@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { GetServerSideProps } from 'next';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '../../api/auth/[...nextauth]';
-import { getUserRBACProfile, hasAnyPermission } from '@/lib/rbac';
 import { AppLayout } from '../../../components/layout';
 import { Card, Button } from '../../../components/ui';
 import Loader from '@/components/Loader';
@@ -15,7 +14,7 @@ import {
   CalendarDays, ListChecks, ClipboardCheck, Users, Plus, MapPin, Video, Crown, ChevronRight,
   Search, ShieldCheck, Send, Clock,
 } from 'lucide-react';
-import { useRBAC } from '../../../contexts/RBACContext';
+import { useRBAC, useRequirePermission } from '../../../contexts/RBACContext';
 
 type Tab = 'calendar' | 'meetings' | 'attendance' | 'directors';
 
@@ -37,6 +36,7 @@ function fmtDateTime(iso: string, tz?: string) {
 export default function BoardGovernanceHub() {
   const router = useRouter();
   const { hasPermission } = useRBAC();
+  useRequirePermission(['bgm.meetings.view', 'bgm.directors.view', 'legal.access']);
   const canManageMeetings = hasPermission('bgm.meetings.manage');
   const canManageDirectors = hasPermission('bgm.directors.manage');
 
@@ -59,11 +59,20 @@ export default function BoardGovernanceHub() {
   const [summary, setSummary] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const loadCommittees = useCallback(async () => {
-    const r = await fetch('/api/legal/bgm/committees');
-    if (r.ok) setCommittees((await r.json()).committees || []);
+  // One consolidated fetch for the whole hub (committees, directors, meetings,
+  // summary) — far fewer round trips than four separate calls.
+  const loadOverview = useCallback(async (y: number) => {
+    const r = await fetch(`/api/legal/bgm/overview?year=${y}`);
+    if (r.ok) {
+      const d = await r.json();
+      setCommittees(d.committees || []);
+      setDirectors(d.directors || []);
+      setMeetings(d.meetings || []);
+      setSummary(d.summary || []);
+    }
   }, []);
 
+  // Lightweight refetch of just the meetings when the year changes.
   const loadMeetings = useCallback(async (y: number) => {
     const r = await fetch(`/api/legal/bgm/meetings?year=${y}`);
     if (r.ok) setMeetings((await r.json()).meetings || []);
@@ -74,21 +83,19 @@ export default function BoardGovernanceHub() {
     if (r.ok) setDirectors((await r.json()).directors || []);
   }, []);
 
-  const loadSummary = useCallback(async () => {
-    const r = await fetch('/api/legal/bgm/attendance/summary');
-    if (r.ok) setSummary((await r.json()).summary || []);
-  }, []);
-
+  const didInit = useRef(false);
   useEffect(() => {
     (async () => {
       setLoading(true);
-      await Promise.all([loadCommittees(), loadMeetings(year), loadDirectors(), loadSummary()]);
+      await loadOverview(year);
       setLoading(false);
+      didInit.current = true;
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => { loadMeetings(year); }, [year, loadMeetings]);
+  // On year change (after the first load), refresh just the meetings list.
+  useEffect(() => { if (didInit.current) loadMeetings(year); }, [year, loadMeetings]);
 
   const years = useMemo(() => {
     const now = new Date().getFullYear();
@@ -415,13 +422,10 @@ function FilterSelect({ value, onChange, options }: { value: string; onChange: (
 }
 
 export const getServerSideProps: GetServerSideProps = async (context) => {
+  // Fast session-only gate (no DB). The permission gate runs client-side via
+  // useRequirePermission using the cached RBAC profile — the API routes enforce
+  // permissions server-side regardless.
   const session = await getServerSession(context.req, context.res, authOptions);
-  if (!session?.user?.id) {
-    return { redirect: { destination: '/', permanent: false } };
-  }
-  const profile = await getUserRBACProfile((session.user as any).id);
-  if (!hasAnyPermission(profile, ['bgm.meetings.view', 'bgm.directors.view', 'legal.access'])) {
-    return { redirect: { destination: '/dashboard', permanent: false } };
-  }
+  if (!session?.user?.id) return { redirect: { destination: '/', permanent: false } };
   return { props: {} };
 };

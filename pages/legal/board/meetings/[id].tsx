@@ -4,20 +4,17 @@ import { useRouter } from 'next/router';
 import { GetServerSideProps } from 'next';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '../../../api/auth/[...nextauth]';
-import { getUserRBACProfile, hasAnyPermission } from '@/lib/rbac';
 import { AppLayout } from '../../../../components/layout';
 import { Card, Button, Modal } from '../../../../components/ui';
 import ConfirmDialog from '../../../../components/ui/ConfirmDialog';
 import Loader from '@/components/Loader';
 import { useToast } from '../../../../components/ui/ToastProvider';
-import { useRBAC } from '../../../../contexts/RBACContext';
+import { useRBAC, useRequirePermission } from '../../../../contexts/RBACContext';
 import { AssociatesField, Associate } from '../../../../components/requests/AssociatesField';
-import {
-  ATTENDANCE_STATUSES, ATTENDANCE_LABELS, AttendanceStatus,
-  RSVP_STATUSES, RSVP_LABELS, RsvpStatus, CHECK_IN_METHOD_LABELS, VIRTUAL_PLATFORM_LABELS,
-} from '@/lib/bgm';
+import { AttendanceStatus, CHECK_IN_METHOD_LABELS, VIRTUAL_PLATFORM_LABELS } from '@/lib/bgm';
 import QrCheckInModal from '../../../../components/legal/bgm/QrCheckInModal';
-import { ArrowLeft, MapPin, Video, CalendarClock, Send, Ban, Save, Lock, LockOpen, UserPlus, X, ShieldCheck, QrCode, FileText } from 'lucide-react';
+import SignatureCaptureModal from '../../../../components/legal/bgm/SignatureCaptureModal';
+import { ArrowLeft, MapPin, Video, CalendarClock, Send, Ban, Save, Lock, LockOpen, UserPlus, X, ShieldCheck, QrCode, FileText, PenLine } from 'lucide-react';
 
 function fmtRange(start: string, end: string | null, tz?: string) {
   try {
@@ -34,6 +31,7 @@ export default function MeetingDetail() {
   const { id } = router.query;
   const { addToast } = useToast();
   const { hasPermission } = useRBAC();
+  useRequirePermission(['bgm.meetings.view', 'bgm.attendance.view', 'legal.access']);
   const canManageMeeting = hasPermission('bgm.meetings.manage');
   const canManageAttendance = hasPermission('bgm.attendance.manage');
 
@@ -49,6 +47,7 @@ export default function MeetingDetail() {
   const [qrUrl, setQrUrl] = useState<string | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [signFor, setSignFor] = useState<{ id: string; kind: 'director' | 'guest'; name: string } | null>(null);
 
   const finalized = !!meeting?.finalized_at;
   const editable = canManageAttendance && !finalized && meeting?.status !== 'cancelled';
@@ -88,8 +87,8 @@ export default function MeetingDetail() {
     setSaving(true);
     try {
       const entries = [
-        ...register.map((r) => ({ kind: 'director', id: r.director_id, status: r.status, rsvp_status: r.rsvp_status, note: r.note || null })),
-        ...guests.map((g) => ({ kind: 'guest', id: g.id, status: g.status, rsvp_status: g.rsvp_status, note: g.note || null })),
+        ...register.map((r) => ({ kind: 'director', id: r.director_id, status: r.status, note: r.note || null })),
+        ...guests.map((g) => ({ kind: 'guest', id: g.id, status: g.status, note: g.note || null })),
       ];
       const res = await fetch(`/api/legal/bgm/attendance/${id}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ entries }),
@@ -229,12 +228,11 @@ export default function MeetingDetail() {
               <AttendeeRow
                 key={r.director_id}
                 name={r.full_name} email={r.email}
-                rsvp={r.rsvp_status} status={r.status} note={r.note}
+                status={r.status} signature={r.check_in_signature}
                 checkedInAt={r.checked_in_at} method={r.check_in_method}
                 editable={editable}
-                onRsvp={(v) => setDirField(r.director_id, 'rsvp_status', v)}
                 onStatus={(v) => setDirField(r.director_id, 'status', v)}
-                onNote={(v) => setDirField(r.director_id, 'note', v)}
+                onSign={editable ? () => setSignFor({ id: r.director_id, kind: 'director', name: r.full_name }) : undefined}
                 onRemove={editable ? () => removeInvitee('director', r.director_id) : undefined}
                 href={`/legal/board/directors/${r.director_id}`}
               />
@@ -253,12 +251,11 @@ export default function MeetingDetail() {
                   <AttendeeRow
                     key={g.id}
                     name={g.full_name} email={g.email} sub={g.role || g.organization}
-                    rsvp={g.rsvp_status} status={g.status} note={g.note}
+                    status={g.status} signature={g.check_in_signature}
                     checkedInAt={g.checked_in_at} method={null}
                     editable={editable}
-                    onRsvp={(v) => setGuestField(g.id, 'rsvp_status', v)}
                     onStatus={(v) => setGuestField(g.id, 'status', v)}
-                    onNote={(v) => setGuestField(g.id, 'note', v)}
+                    onSign={editable ? () => setSignFor({ id: g.id, kind: 'guest', name: g.full_name }) : undefined}
                     onRemove={editable ? () => removeInvitee('guest', g.id) : undefined}
                   />
                 ))}
@@ -279,6 +276,15 @@ export default function MeetingDetail() {
 
       {qrUrl && <QrCheckInModal meetingId={String(id)} url={qrUrl} title={meeting.title} onClose={() => setQrUrl(null)} />}
 
+      {signFor && (
+        <SignatureCaptureModal
+          meetingId={String(id)}
+          attendee={signFor}
+          onClose={() => setSignFor(null)}
+          onSaved={() => { setSignFor(null); load(); }}
+        />
+      )}
+
       <ConfirmDialog
         isOpen={cancelOpen}
         title="Cancel this meeting?"
@@ -295,48 +301,60 @@ export default function MeetingDetail() {
   );
 }
 
-/** One attendee row with RSVP + attendance segmented controls. */
+// Two-bucket attendance: Present (covers legacy 'virtual') vs Apology / Absent.
+type AttBucket = 'present' | 'absent';
+function bucketOf(status: AttendanceStatus | null): AttBucket | null {
+  if (status === 'present' || status === 'virtual') return 'present';
+  if (status === 'apology' || status === 'absent') return 'absent';
+  return null;
+}
+const ATT_BUCKETS: { key: AttBucket; label: string; value: AttendanceStatus; active: string }[] = [
+  { key: 'present', label: 'Present', value: 'present', active: 'border-emerald-500 bg-emerald-50 text-emerald-700' },
+  { key: 'absent', label: 'Apology / Absent', value: 'absent', active: 'border-rose-500 bg-rose-50 text-rose-700' },
+];
+
+/** One attendee row with a two-option attendance control + signature. */
 function AttendeeRow(props: {
   name: string; email?: string | null; sub?: string | null;
-  rsvp: RsvpStatus; status: AttendanceStatus | null; note?: string | null;
+  status: AttendanceStatus | null; signature?: string | null;
   checkedInAt?: string | null; method?: string | null;
   editable: boolean; href?: string;
-  onRsvp: (v: RsvpStatus) => void; onStatus: (v: AttendanceStatus | null) => void; onNote: (v: string) => void;
+  onStatus: (v: AttendanceStatus | null) => void;
+  onSign?: () => void;
   onRemove?: () => void;
 }) {
+  const bucket = bucketOf(props.status);
   const nameEl = props.href ? (
     <Link href={props.href} className="font-medium text-text-primary hover:text-primary-600">{props.name}</Link>
   ) : <span className="font-medium text-text-primary">{props.name}</span>;
   return (
     <div className="px-4 py-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          {nameEl}
-          <p className="text-xs text-neutral-400 truncate">{props.sub || props.email || '—'}</p>
+        <div className="flex items-center gap-3 min-w-0">
+          {/* Signature beside the name */}
+          {props.signature && (
+            /* eslint-disable-next-line @next/next/no-img-element */
+            <img src={props.signature} alt={`${props.name} signature`} className="h-9 w-24 object-contain rounded border border-neutral-200 bg-white shrink-0" />
+          )}
+          <div className="min-w-0">
+            {nameEl}
+            <p className="text-xs text-neutral-400 truncate">{props.sub || props.email || '—'}</p>
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-4">
-          {/* RSVP */}
-          <div className="flex items-center gap-1">
-            <span className="text-[10px] uppercase tracking-wider text-neutral-400 mr-1">RSVP</span>
-            {RSVP_STATUSES.filter((s) => s !== 'no_response').map((s) => (
-              <button key={s} disabled={!props.editable}
-                onClick={() => props.onRsvp(props.rsvp === s ? 'no_response' : s)}
-                className={`px-2 py-1 rounded-md text-[11px] font-medium border disabled:opacity-60 disabled:cursor-not-allowed ${props.rsvp === s ? rsvpClass(s) : 'border-gray-200 text-neutral-500 hover:bg-neutral-50'}`}>
-                {RSVP_LABELS[s]}
-              </button>
-            ))}
-          </div>
-          {/* Attendance */}
-          <div className="flex items-center gap-1">
-            <span className="text-[10px] uppercase tracking-wider text-neutral-400 mr-1">Present</span>
-            {ATTENDANCE_STATUSES.map((s) => (
-              <button key={s} disabled={!props.editable}
-                onClick={() => props.onStatus(props.status === s ? null : s)}
-                className={`px-2 py-1 rounded-md text-[11px] font-medium border disabled:opacity-60 disabled:cursor-not-allowed ${props.status === s ? attClass(s) : 'border-gray-200 text-neutral-500 hover:bg-neutral-50'}`}>
-                {ATTENDANCE_LABELS[s]}
-              </button>
-            ))}
-          </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {ATT_BUCKETS.map((b) => (
+            <button key={b.key} disabled={!props.editable}
+              onClick={() => props.onStatus(bucket === b.key ? null : b.value)}
+              className={`px-3 py-1 rounded-md text-xs font-medium border disabled:opacity-60 disabled:cursor-not-allowed ${bucket === b.key ? b.active : 'border-gray-200 text-neutral-500 hover:bg-neutral-50'}`}>
+              {b.label}
+            </button>
+          ))}
+          {props.onSign && (
+            <button onClick={props.onSign} title={props.signature ? 'Re-capture signature' : 'Sign on this device'}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium border border-primary-300 text-primary-700 hover:bg-primary-50">
+              <PenLine className="w-3.5 h-3.5" /> Sign
+            </button>
+          )}
           {props.onRemove && (
             <button onClick={props.onRemove} className="p-1 text-neutral-300 hover:text-rose-500" title="Remove attendee"><X className="w-4 h-4" /></button>
           )}
@@ -415,29 +433,8 @@ function AddAttendeesModal({ meetingId, excludedDirectorIds, onClose, onAdded }:
   );
 }
 
-function rsvpClass(s: RsvpStatus): string {
-  switch (s) {
-    case 'accepted': return 'border-emerald-500 bg-emerald-50 text-emerald-700';
-    case 'declined': return 'border-rose-500 bg-rose-50 text-rose-700';
-    case 'tentative': return 'border-amber-500 bg-amber-50 text-amber-700';
-    default: return 'border-gray-200 text-neutral-500';
-  }
-}
-function attClass(s: AttendanceStatus): string {
-  switch (s) {
-    case 'present': return 'border-emerald-500 bg-emerald-50 text-emerald-700';
-    case 'virtual': return 'border-sky-500 bg-sky-50 text-sky-700';
-    case 'apology': return 'border-amber-500 bg-amber-50 text-amber-700';
-    case 'absent': return 'border-rose-500 bg-rose-50 text-rose-700';
-  }
-}
-
 export const getServerSideProps: GetServerSideProps = async (context) => {
   const session = await getServerSession(context.req, context.res, authOptions);
   if (!session?.user?.id) return { redirect: { destination: '/', permanent: false } };
-  const profile = await getUserRBACProfile((session.user as any).id);
-  if (!hasAnyPermission(profile, ['bgm.meetings.view', 'bgm.attendance.view', 'legal.access'])) {
-    return { redirect: { destination: '/dashboard', permanent: false } };
-  }
   return { props: {} };
 };

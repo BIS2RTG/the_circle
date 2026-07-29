@@ -70,22 +70,30 @@ const navSections: NavSection[] = [
       {
         href: '/requests/new',
         label: 'New Request',
+        requiredPermissions: ['requests.create'],
+        requireAny: true,
         icon: <FilePlus2 {...iconProps} />,
         dataTour: 'requests',
       },
       {
         href: '/requests/my-requests',
         label: 'My Requests',
+        requiredPermissions: ['requests.view_own', 'requests.view_all'],
+        requireAny: true,
         icon: <ListChecks {...iconProps} />,
       },
       {
         href: '/requests/drafts',
         label: 'My Drafts',
+        requiredPermissions: ['requests.create'],
+        requireAny: true,
         icon: <FilePen {...iconProps} />,
       },
       {
         href: '/approvals',
         label: 'My Approval Tasks',
+        requiredPermissions: ['approvals.view'],
+        requireAny: true,
         icon: <CircleCheck {...iconProps} />,
       },
       {
@@ -98,6 +106,8 @@ const navSections: NavSection[] = [
       {
         href: '/requests/esign',
         label: 'E-Sign PDF',
+        requiredPermissions: ['requests.create'],
+        requireAny: true,
         icon: <FileSignature {...iconProps} />,
         dataTour: 'esign',
       },
