@@ -44,11 +44,18 @@ export default function SettingsPage() {
     }
   }, [user]);
 
-  const checkSignature = async (url: string) => {
+  const checkSignature = async (baseUrl: string) => {
     try {
-      const res = await fetch(url, { method: 'HEAD' });
+      // Bust the cache on every probe and on the URL we hand to the <img>. The
+      // signature proxy URL is otherwise identical before and after a change,
+      // so without this the browser serves the stale image (or a cached 404
+      // from before an upload) for up to 5 minutes — making a just-saved
+      // signature look like it never saved. (Same trick the profile picture
+      // above already uses.)
+      const bust = `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}t=${Date.now()}`;
+      const res = await fetch(bust, { method: 'HEAD', cache: 'no-store' });
       if (res.ok) {
-        setSignatureUrl(url);
+        setSignatureUrl(bust);
       }
     } catch (e) {
       // ignore

@@ -10,6 +10,7 @@ import Loader from '../components/Loader';
 import RouteProgress from '../components/RouteProgress';
 import ErrorBoundary from '../components/ErrorBoundary';
 import GlobalErrorListener from '../components/GlobalErrorListener';
+import NetworkStatusBanner from '../components/NetworkStatusBanner';
 
 const SESSION_FLAG = 'the_circle_active_session';
 import SessionActivityGuard from '../components/SessionActivityGuard';
@@ -40,6 +41,10 @@ export default function App({ Component, pageProps: { session, ...pageProps } }:
       </Head>
       <ErrorBoundary>
         <RouteProgress />
+        {/* Mounted outside SessionGuard so the offline banner shows even on the
+            initial loading / sign-in screen — connectivity problems during auth
+            are surfaced too, not just after the app has loaded. */}
+        <NetworkStatusBanner />
         <SessionGuard>
           <UserProvider>
             <RBACProvider>

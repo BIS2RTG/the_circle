@@ -6,6 +6,26 @@ import { createCapexTrackerRow } from '@/lib/capexTrackerHooks';
 import { getRequestTypeLabel } from '@/lib/requestCode';
 import { buildAndNotifySteps } from '@/lib/requestSteps';
 
+/**
+ * Rebuild a request title whose value part is the "Draft" placeholder (e.g.
+ * "Hotel Booking: Draft") from the request's real metadata. Keeps the prefix
+ * before the last ": " and substitutes the most relevant content field. Returns
+ * the original title unchanged when it doesn't carry the placeholder.
+ */
+function deriveCleanTitle(title: string, metadata: any, description: string): string {
+  if (!title || !/:\s*draft\s*$/i.test(title)) return title;
+  const prefix = title.replace(/:\s*draft\s*$/i, '').trim();
+  const firstLine = (v: any) =>
+    typeof v === 'string' && v.trim() ? v.trim().split('\n')[0].trim() : '';
+  const value =
+    firstLine(metadata?.guestNames) ||
+    firstLine(metadata?.projectName) ||
+    (typeof metadata?.purposeOfTravel === 'string' ? metadata.purposeOfTravel.trim().slice(0, 50) : '') ||
+    firstLine(description) ||
+    '';
+  return prefix && value ? `${prefix}: ${value}` : title;
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -51,6 +71,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Only draft requests can be published
     if (request.status !== 'draft') {
       return res.status(400).json({ error: 'Only draft requests can be published' });
+    }
+
+    // A draft saved before its details were filled in gets a placeholder title
+    // like "Hotel Booking: Draft". On publish, rebuild the value part from the
+    // now-complete metadata so the live request never carries "Draft".
+    const cleanTitle = deriveCleanTitle(request.title, request.metadata || {}, request.description || '');
+    if (cleanTitle && cleanTitle !== request.title) {
+      request.title = cleanTitle;
+      await supabaseAdmin.from('requests').update({ title: cleanTitle }).eq('id', id);
     }
 
     // Build steps + notify the relevant approver(s). Single source of truth,

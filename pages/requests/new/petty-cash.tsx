@@ -7,15 +7,17 @@ import type { PreviewSection } from '../../../components/ui';
 import { useCurrentUser } from '../../../hooks/useCurrentUser';
 import { useUnsavedChangesPrompt, useFormAutosave } from '../../../hooks';
 import { useUserHrimsProfile } from '../../../hooks/useUserHrimsProfile';
+import { useRequestorIdentity } from '../../../hooks/useRequestorIdentity';
 import SignatureSelector, { type SignatureSelection } from '../../../components/approvals/SignatureSelector';
 import { OnBehalfOfField, type OnBehalfOf } from '../../../components/requests/OnBehalfOfField';
+import { isApproverRowLocked } from '../../../lib/approverLocking';
 import ApproverSectionLoader from '../../../components/requests/ApproverSectionLoader';
 
 // Cost-allocation business units mirror the travel-auth allocation list.
 // Code is stored in metadata; label is shown in the dropdown.
 const CHARGE_TO_OPTIONS: Array<{ code: string; label: string }> = [
     { code: 'CORP', label: 'Corporate (CORP)' },
-    { code: 'MRC', label: 'Montclaire Resort and Conferencing (MRC)' },
+    { code: 'MRC', label: 'Montclair Resort and Conferencing (MRC)' },
     { code: 'NAH', label: 'New Ambassador Hotel (NAH)' },
     { code: 'RTH', label: 'Rainbow Towers Hotel (RTH)' },
     { code: 'KHCC', label: 'KHCC Conference Centre (KHCC)' },
@@ -166,6 +168,9 @@ export default function PettyCashRequestPage() {
     // Watchers (reuse same pattern as voucher form).
     const [selectedWatchers, setSelectedWatchers] = useState<Array<{ id: string; display_name: string; email: string }>>([]);
     const [onBehalfOf, setOnBehalfOf] = useState<OnBehalfOf | null>(null);
+    // Requestor identity shown on the form + document — the principal when filing
+    // on behalf of someone (autofilled on selection), else the signed-in user.
+    const requestor = useRequestorIdentity(onBehalfOf);
     const [watcherSearch, setWatcherSearch] = useState('');
     const [showWatcherDropdown, setShowWatcherDropdown] = useState(false);
 
@@ -483,7 +488,9 @@ export default function PettyCashRequestPage() {
     const getFilteredUsersForRole = (roleKey: string) => {
         const term = approverSearch[roleKey] || '';
         const alreadySelectedIds = Object.values(selectedApprovers).filter(Boolean);
-        return users.filter(u => {
+        // The requester can never approve their own request — hide themselves from the picker.
+        const currentUserId = (session?.user as any)?.id;
+        return users.filter(u => u.id !== currentUserId).filter(u => {
             const matches = term
                 ? (u.display_name?.toLowerCase().includes(term.toLowerCase()) || u.email?.toLowerCase().includes(term.toLowerCase()))
                 : true;
@@ -1064,23 +1071,28 @@ export default function PettyCashRequestPage() {
                     {/* Requestor Information */}
                     <Card className="p-6">
                         <h3 className="text-sm font-semibold text-gray-700 mb-4 uppercase border-b pb-2">Requestor Information</h3>
+                        {requestor.isOnBehalf && (
+                            <p className="text-xs text-primary-700 bg-primary-50 border border-primary-200 rounded-lg px-3 py-2 mb-4">
+                                Showing details for <strong>{onBehalfOf?.name}</strong>, on whose behalf you are filing this request.
+                            </p>
+                        )}
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                             <div>
                                 <label className="block text-sm font-semibold text-gray-700 mb-1 uppercase">Name</label>
                                 <div className="px-4 py-2 rounded-xl border border-gray-200 bg-gray-50 text-gray-600">
-                                    {user?.display_name || session?.user?.name || 'N/A'}
+                                    {requestor.name || 'N/A'}
                                 </div>
                             </div>
                             <div>
                                 <label className="block text-sm font-semibold text-gray-700 mb-1 uppercase">Business Unit</label>
                                 <div className="px-4 py-2 rounded-xl border border-gray-200 bg-gray-50 text-gray-600">
-                                    {businessUnitName || 'N/A'}
+                                    {requestor.businessUnit || 'N/A'}
                                 </div>
                             </div>
                             <div>
                                 <label className="block text-sm font-semibold text-gray-700 mb-1 uppercase">Department</label>
                                 <div className="px-4 py-2 rounded-xl border border-gray-200 bg-gray-50 text-gray-600">
-                                    {departmentName || 'N/A'}
+                                    {requestor.department || 'N/A'}
                                 </div>
                             </div>
                             <div>
@@ -1558,6 +1570,7 @@ export default function PettyCashRequestPage() {
                                 const selectedUser = selectedUserId ? users.find(u => u.id === selectedUserId) : null;
                                 const filteredUsers = getFilteredUsersForRole(role.key);
                                 const isAutoResolved = autoResolvedRoles[role.key];
+                                const isLocked = isApproverRowLocked(role.key, isAutoResolved);
 
                                 return (
                                     <div key={role.key} className="relative">
@@ -1578,16 +1591,20 @@ export default function PettyCashRequestPage() {
                                                         <div className="flex-1 min-w-0">
                                                             <p className="text-sm font-medium text-gray-900 truncate">{selectedUser.display_name}</p>
                                                             <p className="text-xs text-gray-500 truncate">{selectedUser.email}</p>
-                                                            {isAutoResolved && <p className="text-xs text-green-600 mt-0.5">Auto-assigned from HRIMS</p>}
+                                                            {isAutoResolved && <p className="text-xs text-green-600 mt-0.5">Auto-assigned from HRIMS organogram{isLocked ? ' · locked' : ''}</p>}
                                                         </div>
+                                                        {/* Senior fixed approvers (CEO, HRD, directors) are locked once
+                                                            auto-resolved; departmental/managerial rows stay changeable. */}
+                                                        {!isLocked && (
                                                         <button
                                                             type="button"
                                                             onClick={() => { handleRemoveApprover(role.key); setAutoResolvedRoles(prev => ({ ...prev, [role.key]: false })); }}
                                                             className="p-1.5 rounded-lg hover:bg-danger-50 text-gray-400 hover:text-danger-500"
-                                                            title="Change approver"
+                                                            title="Remove approver"
                                                         >
                                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" /></svg>
                                                         </button>
+                                                        )}
                                                     </div>
                                                 ) : (
                                                     <div className="relative">

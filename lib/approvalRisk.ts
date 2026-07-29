@@ -35,6 +35,21 @@ export type ApprovalRisk = 'low' | 'medium' | 'high';
 export type AuthenticationMethod = 'session' | 'microsoft_mfa' | 'biometric';
 
 // ---------------------------------------------------------------------------
+// KILL SWITCH — identity verification on approvals.
+//
+// When true, EVERY approval is treated as low-risk / session-only: no
+// Microsoft MFA and no biometric ceremony is ever required, on any request.
+// This is the single choke point — both the browser (which hides the
+// "verify your identity before you can review" gate for low risk) and the
+// server (`pages/api/approvals/action.ts`, which skips enforcement when the
+// required auth is 'session') read the result of `getApprovalRisk`, so
+// flipping this one flag disables verification everywhere.
+//
+// To RE-ENABLE the risk-based verification, set this back to `false`.
+// ---------------------------------------------------------------------------
+export const APPROVAL_VERIFICATION_DISABLED = true;
+
+// ---------------------------------------------------------------------------
 // Thresholds / configuration — adjust here, not in call sites.
 // ---------------------------------------------------------------------------
 
@@ -224,6 +239,16 @@ function isSensitiveRequestType(type: string | null | undefined): boolean {
  * trust that they agree when given the same data.
  */
 export function getApprovalRisk(input: ApprovalRiskInput): RiskEvaluation {
+  // Kill switch: verification disabled org-wide → every approval is low-risk,
+  // satisfied by the authenticated session alone (no MFA / biometric ceremony).
+  if (APPROVAL_VERIFICATION_DISABLED) {
+    return {
+      risk: 'low',
+      reasons: ['Approval identity verification is currently disabled'],
+      requiredAuth: 'session',
+    };
+  }
+
   // Respect explicit risk override (e.g. a workflow author marked a step
   // "always high"). Still compute reasons for audit visibility. A workflow
   // declaring 'low' is bumped to the organisation-wide floor of 'medium' —

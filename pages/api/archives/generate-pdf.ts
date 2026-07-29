@@ -6,6 +6,7 @@ import PDFDocument from 'pdfkit';
 import path from 'path';
 import fs from 'fs';
 import { audit } from '@/lib/auditLog';
+import { resolveOnBehalfProfile } from '@/lib/onBehalf';
 import {
   signatureExists,
   userSignaturePath,
@@ -530,6 +531,22 @@ function humanizeRole(s: string): string {
   return s.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+// Human labels for the workflow role keys stored in metadata.approverRoles.
+// Used so signed approval blocks show the role (position) the person filled —
+// exactly as the form's approval section does — instead of "Approver N".
+const ROLE_LABELS: Record<string, string> = {
+  line_manager: 'Line Manager',
+  functional_head: 'Functional Head',
+  hrd: 'Chief Human Capital Officer',
+  ceo: 'CEO',
+  finance_manager: 'Finance Manager',
+  general_manager: 'General Manager',
+  procurement_manager: 'Procurement Manager',
+  finance_director: 'Finance Director',
+  managing_director: 'Managing Director',
+  corporate_hod: 'Corporate HOD',
+};
+
 /** Light-grey section bar with dark label. */
 function oHeading(doc: any, text: string, y: number, pw: number): number {
   if (y > 730) { doc.addPage(); y = 50; }
@@ -685,6 +702,7 @@ function renderTravelAuth(
   creatorDept: any,
   approvalSlots: OfficialApprovalSlot[] = [],
   selfSig: Buffer | null = null,
+  onBehalf: boolean = false,
 ): number {
   const pw = pageWidth;
 
@@ -721,12 +739,16 @@ function renderTravelAuth(
   doc.fontSize(8).fillColor(OFORM.ink).font('Helvetica').text('I have read these conditions and accept them.', 70, yPos + 0.5);
   yPos += 18;
 
-  // Signature of traveller
-  doc.fontSize(6.5).fillColor(OFORM.mute).font('Helvetica-Bold').text('SIGNATURE OF TRAVELLER', 55, yPos);
-  yPos += 10;
-  if (selfSig) { try { doc.image(selfSig, 55, yPos, { fit: [150, 34] }); } catch { /* ignore */ } yPos += 36; }
-  else { doc.moveTo(55, yPos + 16).lineTo(205, yPos + 16).strokeColor('#9ca3af').lineWidth(0.6).stroke(); yPos += 22; }
-  doc.font('Helvetica');
+  // Signature of traveller — omitted entirely when filed on behalf of someone
+  // (the principal never personally signed; the acceptance tick above is the
+  // only mark). Rendered only when the traveller filed for themselves.
+  if (!onBehalf) {
+    doc.fontSize(6.5).fillColor(OFORM.mute).font('Helvetica-Bold').text('SIGNATURE OF TRAVELLER', 55, yPos);
+    yPos += 10;
+    if (selfSig) { try { doc.image(selfSig, 55, yPos, { fit: [150, 34] }); } catch { /* ignore */ } yPos += 36; }
+    else { doc.moveTo(55, yPos + 16).lineTo(205, yPos + 16).strokeColor('#9ca3af').lineWidth(0.6).stroke(); yPos += 22; }
+    doc.font('Helvetica');
+  }
   yPos = oDocControl(doc, ['DOC NO: HR APX-27', 'DEPARTMENT: HUMAN RESOURCES', 'PAGE: 1 of 1'], yPos, pw);
   yPos += 6;
 
@@ -797,7 +819,10 @@ function renderCapex(
     { label: 'Unit', value: formData.unit || 'N/A' },
     { label: 'Department', value: formData.department || creatorDept?.name || 'N/A' },
   ], yPos, pw);
-  yPos = oFullRow(doc, 'Description of Project', formData.description || formData.projectName || 'N/A', yPos, pw, 40);
+  yPos = oFullRow(doc, 'Description of Project', formData.projectName || 'N/A', yPos, pw, 40);
+  if (formData.description) {
+    yPos = oFullRow(doc, 'Detailed Description', formData.description, yPos, pw, 40);
+  }
   yPos = oInfoRow(doc, [
     { label: 'Budget / Non-Budget / Emergency', value: (formData.budgetType || 'N/A').toString().replace(/_/g, ' ') },
     { label: 'Project Requested By', value: formData.requester || creator?.display_name || 'N/A' },
@@ -882,10 +907,14 @@ function renderHotelBooking(doc: any, formData: Record<string, any>, yPos: numbe
     yPos += 5;
   }
 
-  // Travel data if processTravelDocument
-  if (formData.travelData || formData.processTravelDocument) {
-    const td = formData.travelData || formData;
-    if (td.itinerary || td.budget) {
+  // Travel data if processTravelDocument. The travel authorisation is persisted
+  // under `travelDocument`; its cost allocation is a sibling (`travelCostAllocation`)
+  // entered by the requestor — merge it in so renderTravelAuth prints it under
+  // "Allocation Cost to Unit" (it reads td.costAllocation).
+  if (formData.travelData || formData.travelDocument || formData.processTravelDocument) {
+    const baseTd = formData.travelData || formData.travelDocument || formData;
+    if (baseTd.itinerary || baseTd.budget) {
+      const td = { ...baseTd, costAllocation: baseTd.costAllocation || formData.travelCostAllocation || {} };
       yPos = renderTravelAuth(doc, td, yPos, pageWidth, creator, creatorDept);
     }
   }
@@ -1015,6 +1044,28 @@ async function generatePdfBuffer(
     const resolvedSelf = await resolveSignatureSignedUrl(formData.signature_url);
     selfSignSignatureBuffer = resolvedSelf ? await fetchImageBuffer(resolvedSelf) : null;
   }
+  // Filed on behalf of someone? THAT person is the requestor/traveller on the
+  // document — resolve their profile once and use it for the header + signature.
+  const onBehalfProfile = await resolveOnBehalfProfile(request);
+
+  // Traveller signature: official forms (travel auth) print "Signature of
+  // Traveller" — the requestor's own saved signature. There's no per-request
+  // drawn traveller signature, so fall back to their registered signature at
+  // signatures/<travellerId>.png.
+  //
+  // On-behalf: the principal never personally signed (the assistant filed for
+  // them), so the conditions block shows the acceptance checkbox ONLY, with no
+  // signature. Skip loading any traveller signature in that case.
+  if (!selfSignSignatureBuffer && !onBehalfProfile) {
+    const travellerId = request.creator_id || request.creator?.id || null;
+    if (travellerId && (await signatureExists(userSignaturePath(travellerId)))) {
+      const resolvedTraveller = await resolveSignatureSignedUrl(userSignatureProxyUrl(travellerId));
+      selfSignSignatureBuffer = resolvedTraveller ? await fetchImageBuffer(resolvedTraveller) : null;
+    }
+  }
+  // Guard against a stray self-sign buffer (e.g. an assistant-drawn signature)
+  // ever printing as the principal's traveller signature on an on-behalf form.
+  const travellerSignatureBuffer = onBehalfProfile ? null : selfSignSignatureBuffer;
 
   return new Promise((resolve, reject) => {
     try {
@@ -1085,8 +1136,28 @@ async function generatePdfBuffer(
 
       let yPos = dividerY + 12;
 
-      const creator = Array.isArray(request.creator) ? request.creator[0] : request.creator;
-      const creatorDept = creator?.department ? (Array.isArray(creator.department) ? creator.department[0] : creator.department) : null;
+      let creator = Array.isArray(request.creator) ? request.creator[0] : request.creator;
+      let creatorDept = creator?.department ? (Array.isArray(creator.department) ? creator.department[0] : creator.department) : null;
+
+      // On-behalf: present the principal as the requestor throughout the
+      // document (name, department, business unit) — not the assistant who
+      // filed. formData.department/businessUnit were captured from the filer,
+      // so override them too.
+      if (onBehalfProfile) {
+        creator = {
+          ...creator,
+          id: onBehalfProfile.id,
+          display_name: onBehalfProfile.display_name,
+          email: onBehalfProfile.email,
+          job_title: onBehalfProfile.job_title,
+          department: onBehalfProfile.department,
+          business_unit: onBehalfProfile.business_unit,
+        };
+        creatorDept = onBehalfProfile.department || creatorDept;
+        if (onBehalfProfile.department?.name) formData.department = onBehalfProfile.department.name;
+        if (onBehalfProfile.business_unit?.name) formData.businessUnit = onBehalfProfile.business_unit.name;
+        if (onBehalfProfile.display_name) formData.requester = onBehalfProfile.display_name;
+      }
 
       // Generic "Request Information" grid — official forms carry their own
       // header fields (Name / Department / Date …), so skip it for those.
@@ -1130,11 +1201,21 @@ async function generatePdfBuffer(
       // Official-style approval slots (role, captured signature, name, date)
       // built from the request steps — used by the travel/capex renderers and,
       // for every other form, by the shared approval section below.
+      // Map approver user id -> workflow role. Steps almost always store
+      // approver_role = null (approvers were resolved by user id), so the role
+      // label comes from the metadata.approverRoles (roleKey -> userId) map.
+      const approverRolesMap = (request.metadata?.approverRoles || {}) as Record<string, any>;
+      const roleByUserId: Record<string, string> = {};
+      for (const [roleKey, uid] of Object.entries(approverRolesMap)) {
+        if (uid && typeof uid === 'string') roleByUserId[uid] = roleKey;
+      }
       const approvalSlots: OfficialApprovalSlot[] = (request.request_steps || []).map((step: any, index: number) => {
         const approval = step.approvals?.[0];
         const nm = step.approver?.display_name || approval?.approver?.display_name || '';
+        const roleKey = step.approver_role || roleByUserId[step.approver_user_id] || '';
+        const role = ROLE_LABELS[roleKey] || humanizeRole(roleKey) || `Approver ${index + 1}`;
         return {
-          role: humanizeRole(step.approver_role || `Approver ${index + 1}`),
+          role,
           name: step.is_redirected ? `pp ${nm}` : nm,
           date: approval?.signed_at || null,
           sig: signatureBuffers.get(index) || null,
@@ -1145,7 +1226,7 @@ async function generatePdfBuffer(
       // ── Form-type-specific content ──
       switch (formType) {
         case 'travel_authorization':
-          yPos = renderTravelAuth(doc, formData, yPos, pageWidth, creator, creatorDept, approvalSlots, selfSignSignatureBuffer);
+          yPos = renderTravelAuth(doc, formData, yPos, pageWidth, creator, creatorDept, approvalSlots, travellerSignatureBuffer, !!onBehalfProfile);
           break;
         case 'capex': {
           const capexData = formData.capex || formData;
@@ -1273,8 +1354,8 @@ async function generatePdfBuffer(
         { width: pageWidth, align: 'center' }
       );
 
-      doc.fontSize(7).fillColor('#d1d5db').text(
-        `Document ID: ${request.id}  |  Archived: ${new Date().toISOString()}`,
+      doc.fontSize(7).fillColor('#9ca3af').text(
+        `Generated from The Circle on ${formatDateTime(new Date().toISOString())}  |  Document ID: ${request.id}`,
         50,
         yPos + 70,
         { width: pageWidth, align: 'center' }

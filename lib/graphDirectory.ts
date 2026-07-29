@@ -34,6 +34,32 @@ export interface DirectoryUser {
 }
 
 /**
+ * Exchange-generated system / service mailboxes (health-monitoring, eDiscovery,
+ * migration, arbitration, the federation account, etc.). These are real,
+ * enabled directory objects, so they slip past the `accountEnabled` check and a
+ * name/UPN `$search`, but they are never valid approvers or watchers and must
+ * not be JIT-provisioned into `app_users`. Matched on the displayName/UPN
+ * localpart, which Microsoft always prefixes with one of these fixed strings.
+ */
+const SYSTEM_MAILBOX_PREFIXES = [
+  'healthmailbox',
+  'discoverysearchmailbox',
+  'systemmailbox',
+  'migration.',
+  'federatedemail.',
+  'exchange online-applicationaccount',
+];
+
+function isSystemMailbox(displayName?: string, userPrincipalName?: string, mail?: string): boolean {
+  const candidates = [displayName, userPrincipalName, mail]
+    .filter(Boolean)
+    .map((s) => (s as string).trim().toLowerCase());
+  return candidates.some((c) =>
+    SYSTEM_MAILBOX_PREFIXES.some((prefix) => c.startsWith(prefix))
+  );
+}
+
+/**
  * Search directory users by name or email using a delegated access token.
  * Returns up to `top` matches, or `null` if the token is missing or Graph is
  * unavailable (caller should fall back to app_users).
@@ -71,6 +97,7 @@ export async function searchDirectoryUsers(
   const json: any = await resp.json();
   return (json.value || [])
     .filter((u: any) => u.accountEnabled !== false)
+    .filter((u: any) => !isSystemMailbox(u.displayName, u.userPrincipalName, u.mail))
     .map((u: any) => ({
       azureOid: u.id,
       displayName: u.displayName || u.userPrincipalName || u.mail || 'Unknown',
@@ -116,6 +143,7 @@ export async function getDirectoryUserByEmail(
   const json: any = await resp.json();
   const u = (json.value || [])[0];
   if (!u || u.accountEnabled === false) return null;
+  if (isSystemMailbox(u.displayName, u.userPrincipalName, u.mail)) return null;
 
   return {
     azureOid: u.id,

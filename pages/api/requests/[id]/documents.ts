@@ -5,6 +5,7 @@ import { supabaseAdmin } from '../../../../lib/supabaseAdmin';
 import { audit } from '../../../../lib/auditLog';
 import { isPermanentWatcherOf } from '../../../../lib/permanentWatchers';
 import { assistantCanActOn } from '../../../../lib/assistantAssignments';
+import { getUserRBACProfile, hasPermission, PERMISSIONS } from '../../../../lib/rbac';
 import formidable from 'formidable';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -83,7 +84,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const isUploadAssistant =
       !isCreator && (await assistantCanActOn(userId, organizationId, request as any, 'can_upload'));
 
-    const canView = isCreator || isWatcher || canApproverView || isPermanentWatcher || isUploadAssistant;
+    let canView = isCreator || isWatcher || canApproverView || isPermanentWatcher || isUploadAssistant;
+    // Super admins / requests.view_all holders can view (not upload) any request's docs.
+    if (!canView && req.method === 'GET') {
+      const rbac = await getUserRBACProfile(userId);
+      if (rbac.is_super_admin || hasPermission(rbac, PERMISSIONS.REQUESTS_VIEW_ALL)) canView = true;
+    }
     const canUpload = isCreator || isWatcher || !!userStep || isUploadAssistant; // any approver + upload-assistant, not permanent watchers
 
     if (req.method === 'GET' && !canView) {

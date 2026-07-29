@@ -131,6 +131,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
+    // Merge in local app_users matches too. A Microsoft Graph $search can miss a
+    // person who is nonetheless already provisioned in app_users (e.g. their
+    // mailbox attributes changed, or the search tokenised the query oddly) —
+    // without this, an approver who "used to show" silently disappears from the
+    // picker. Dedupe by id and by email so Graph results stay authoritative.
+    const seenIds = new Set(results.map((r) => r.id));
+    const seenEmails = new Set(results.map((r) => (r.email || '').toLowerCase()));
+    for (const local of await searchAppUsers()) {
+      if (seenIds.has(local.id)) continue;
+      if (local.email && seenEmails.has(local.email.toLowerCase())) continue;
+      results.push(local);
+      seenIds.add(local.id);
+      if (local.email) seenEmails.add(local.email.toLowerCase());
+    }
+
     return res.status(200).json({ users: results, source: 'azure_ad' });
   } catch (error: any) {
     console.error('Users search API error:', error);

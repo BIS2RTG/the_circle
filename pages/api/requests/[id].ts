@@ -4,10 +4,12 @@ import { authOptions } from '../auth/[...nextauth]';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { validateBody, z } from '@/lib/validate';
 import { ApprovalEngine } from '@/lib/approvalEngine';
-import { assertValidOnBehalf } from '@/lib/onBehalf';
+import { assertValidOnBehalf, resolveOnBehalfProfile } from '@/lib/onBehalf';
 import { assistantCanActOn } from '@/lib/assistantAssignments';
 import { isPermanentWatcherOf } from '@/lib/permanentWatchers';
+import { getUserRBACProfile, hasPermission, PERMISSIONS } from '@/lib/rbac';
 import { audit } from '@/lib/auditLog';
+import { fetchHrimsDepartmentById, fetchHrimsBusinessUnitById } from '@/lib/hrimsClient';
 
 const UpdateRequestSchema = z.object({
   title: z.string().min(1).max(500).optional(),
@@ -54,12 +56,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           created_at,
           updated_at,
           creator_id,
+          organization_id,
           creator:app_users!requests_creator_id_fkey (
             id,
             display_name,
             email,
             profile_picture_url,
             department_id,
+            business_unit_id,
             job_title
           ),
           request_steps (
@@ -112,7 +116,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           )
         `)
         .eq('id', id)
-        .eq('organization_id', organizationId)
         .single();
 
       if (error) {
@@ -122,6 +125,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         throw error;
       }
 
+      // Elevated viewers — super admins and anyone granted requests.view_all
+      // (e.g. auditors) — can open ANY request. Resolved lazily and memoised so
+      // we only pay the RBAC lookup when a cheaper involvement check hasn't
+      // already cleared the user.
+      let rbacProfile: Awaited<ReturnType<typeof getUserRBACProfile>> | null = null;
+      const isElevatedViewer = async (): Promise<boolean> => {
+        if (!rbacProfile) rbacProfile = await getUserRBACProfile(userId);
+        return rbacProfile.is_super_admin || hasPermission(rbacProfile, PERMISSIONS.REQUESTS_VIEW_ALL);
+      };
+
+      // Org scoping: the query is intentionally NOT filtered by organization so
+      // that elevated viewers can reach a request in any organization. Normal
+      // users stay strictly org-scoped — a request outside their org is treated
+      // as non-existent (404, so we never reveal it lives in another org).
+      const sameOrg = request.organization_id === organizationId;
+      if (!sameOrg && !(await isElevatedViewer())) {
+        return res.status(404).json({ error: 'Request not found' });
+      }
+
       // SEQUENTIAL APPROVAL VISIBILITY CHECK
       // User can view the request if they are:
       // 1. The creator of the request
@@ -129,12 +151,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       // 3. An approver whose step is 'pending' (their turn) or 'approved'/'rejected' (already acted)
       // Approvers with 'waiting' status should NOT see the request until it's their turn
       const isCreator = request.creator_id === userId;
-      
+
       const watcherIds = request.metadata?.watchers || [];
-      const isWatcher = Array.isArray(watcherIds) && watcherIds.some((w: any) => 
+      const isWatcher = Array.isArray(watcherIds) && watcherIds.some((w: any) =>
         typeof w === 'string' ? w === userId : w?.id === userId
       );
-      
+
       // Check if user has an actionable or completed step (not waiting)
       const userStep = request.request_steps?.find(
         (step: any) => step.approver_user_id === userId
@@ -146,14 +168,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const isPermanentWatcher = await isPermanentWatcherOf(userId, organizationId, request as any);
 
       if (!isCreator && !isWatcher && !canApproverView && !isPermanentWatcher) {
-        // User is either not involved, or is a future approver whose turn hasn't come
-        if (userStep && userStep.status === 'waiting') {
-          return res.status(403).json({
-            error: 'This request is not yet ready for your review. You will be notified when it is your turn to approve.',
-            code: 'APPROVAL_NOT_YOUR_TURN'
-          });
+        // Finance admins can open any CAPEX (they manage funding from the
+        // capex-tracker and need the full request detail). isElevatedViewer()
+        // populates rbacProfile, so reuse it for the finance check.
+        const elevated = await isElevatedViewer();
+        const requestType = request.metadata?.type || request.metadata?.requestType;
+        const financeCanViewCapex =
+          requestType === 'capex' && !!rbacProfile && hasPermission(rbacProfile, 'finance.view_tracker');
+        if (!elevated && !financeCanViewCapex) {
+          // Not elevated, not involved, or a future approver whose turn hasn't come.
+          if (userStep && userStep.status === 'waiting') {
+            return res.status(403).json({
+              error: 'This request is not yet ready for your review. You will be notified when it is your turn to approve.',
+              code: 'APPROVAL_NOT_YOUR_TURN'
+            });
+          }
+          return res.status(403).json({ error: 'You do not have permission to view this request' });
         }
-        return res.status(403).json({ error: 'You do not have permission to view this request' });
       }
 
       // Sort request_steps by step_index
@@ -186,9 +217,32 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       const actualStatus = computeActualStatus(request.status, request.request_steps);
 
-      return res.status(200).json({ 
+      // Resolve the creator's department / business unit NAMES. The IDs on
+      // app_users reference the HRIMS database (a separate Supabase project),
+      // so they can't be joined in the query above — without this, previews
+      // fall back to '—' for department and business unit.
+      const creator: any = request.creator;
+      if (creator && (creator.department_id || creator.business_unit_id)) {
+        try {
+          const [dept, bu] = await Promise.all([
+            creator.department_id ? fetchHrimsDepartmentById(creator.department_id) : Promise.resolve(null),
+            creator.business_unit_id ? fetchHrimsBusinessUnitById(creator.business_unit_id) : Promise.resolve(null),
+          ]);
+          if (dept) creator.department = { id: dept.id, name: dept.name };
+          if (bu) creator.business_unit = { id: bu.id, name: bu.name };
+        } catch {
+          // HRIMS unavailable — previews keep their metadata-based fallbacks.
+        }
+      }
+
+      // When filed on behalf of someone, resolve THAT person as the requestor
+      // so the previews/document show their name, department and business unit.
+      const onBehalfProfile = await resolveOnBehalfProfile(request as any);
+
+      return res.status(200).json({
         request: {
           ...request,
+          onBehalfProfile,
           status: actualStatus,
           current_step: currentStepIndex >= 0 ? currentStepIndex + 1 : request.request_steps?.length || 0,
           total_steps: request.request_steps?.length || 0,

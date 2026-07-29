@@ -5,15 +5,20 @@ const errorMessages: Record<string, string> = {
   Configuration: "There is a problem with the server configuration. Check if all environment variables are set correctly.",
   AccessDenied: "Access denied. Your organization may not be registered or you don't have permission.",
   Verification: "The verification link has expired or has already been used.",
-  OAuthSignin: "Error starting the OAuth sign-in flow. Check Azure AD configuration.",
-  OAuthCallback: "Error during OAuth callback. Check the redirect URI in Azure AD.",
+  OAuthSignin: "We couldn't reach Microsoft to start sign-in. This is almost always a temporary network or connection problem, not a fault with the system — please check your internet connection and try again.",
+  OAuthCallback: "We couldn't complete sign-in with Microsoft. This is usually a temporary network or connection problem — please check your internet connection and try again.",
   OAuthCreateAccount: "Could not create user account.",
   EmailCreateAccount: "Could not create user account.",
-  Callback: "Error in authentication callback.",
+  Callback: "Error in authentication callback. This can happen when the connection to Microsoft is interrupted — please try again.",
   OAuthAccountNotLinked: "This email is already associated with another account.",
   SessionRequired: "Please sign in to access this page.",
   Default: "An authentication error occurred.",
 };
+
+// Auth errors that typically stem from a network/connectivity failure reaching
+// Microsoft rather than a real misconfiguration. For these we lead with the
+// connectivity explanation so users don't assume the system is broken.
+const NETWORK_RELATED_ERRORS = new Set(["OAuthSignin", "OAuthCallback", "Callback"]);
 
 // Threshold above which we treat the local clock as out of sync with the server.
 // Microsoft rejects tokens whose nbf is more than ~5 minutes in the future, so
@@ -35,6 +40,7 @@ export default function AuthError() {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [clockSkewMs, setClockSkewMs] = useState<number | null>(null);
+  const [offline, setOffline] = useState(false);
 
   useEffect(() => {
     if (!router.isReady) return;
@@ -76,23 +82,51 @@ export default function AuthError() {
     };
   }, [error]);
 
+  // Track the browser's own connectivity so we can tell the user plainly when
+  // THEY are offline (vs a server-side reachability problem we can't see).
+  useEffect(() => {
+    const update = () => setOffline(typeof navigator !== "undefined" && navigator.onLine === false);
+    update();
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    return () => {
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
+    };
+  }, []);
+
   const isClockSkew = clockSkewMs !== null;
-  const errorMessage = error ? errorMessages[error] || errorMessages.Default : errorMessages.Default;
+  const isNetworkError = !isClockSkew && (offline || (error !== null && NETWORK_RELATED_ERRORS.has(error)));
+  const errorMessage = offline
+    ? "You appear to be offline. Sign-in needs an internet connection to reach Microsoft. Reconnect and try again — the system itself is working fine."
+    : error
+    ? errorMessages[error] || errorMessages.Default
+    : errorMessages.Default;
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
       <div className="max-w-md w-full bg-white rounded-lg shadow-lg p-8 text-center">
-        <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
-          <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-          </svg>
+        <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${isNetworkError ? "bg-amber-100" : "bg-red-100"}`}>
+          {isNetworkError ? (
+            <svg className="w-8 h-8 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18.364 5.636a9 9 0 010 12.728m-12.728 0a9 9 0 010-12.728m9.9 2.829a5 5 0 010 7.07m-7.072 0a5 5 0 010-7.07M12 15a1 1 0 100-2 1 1 0 000 2z" />
+            </svg>
+          ) : (
+            <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+          )}
         </div>
-        
+
         <h1 className="text-2xl font-bold text-gray-900 mb-2">
-          {isClockSkew ? "Your computer's clock is wrong" : "Authentication Error"}
+          {isClockSkew
+            ? "Your computer's clock is wrong"
+            : isNetworkError
+            ? "Connection problem"
+            : "Authentication Error"}
         </h1>
 
-        {error && !isClockSkew && (
+        {error && !isClockSkew && !isNetworkError && (
           <p className="text-sm text-gray-500 mb-2">Error code: {error}</p>
         )}
 

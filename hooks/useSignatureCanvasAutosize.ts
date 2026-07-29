@@ -37,12 +37,23 @@ export function useSignatureCanvasAutosize(
 
     const resize = () => {
       const ratio = Math.max(window.devicePixelRatio || 1, 1);
-      const { offsetWidth, offsetHeight } = canvas;
+      // Measure with getBoundingClientRect(), NOT offsetWidth/offsetHeight.
+      // signature_pad derives every stroke coordinate from
+      // `event.clientX/Y - canvas.getBoundingClientRect().left/top`, so the
+      // backing store must be sized in that SAME coordinate space. Under the
+      // desktop `html { zoom: 0.9 }` rule these two measurements diverge
+      // (offsetWidth is the unzoomed layout width, getBoundingClientRect is the
+      // post-zoom visual width). Sizing off offsetWidth then made the ink drift
+      // further from the pen the closer you got to the right/bottom edge. Using
+      // the rect keeps the pen locked to the stroke at any zoom.
+      const rect = canvas.getBoundingClientRect();
+      const cssWidth = rect.width;
+      const cssHeight = rect.height;
       // Hidden (display:none) containers report 0 — the observer will fire
       // again once the canvas becomes visible.
-      if (!offsetWidth || !offsetHeight) return;
-      const targetW = Math.round(offsetWidth * ratio);
-      const targetH = Math.round(offsetHeight * ratio);
+      if (!cssWidth || !cssHeight) return;
+      const targetW = Math.round(cssWidth * ratio);
+      const targetH = Math.round(cssHeight * ratio);
       if (canvas.width === targetW && canvas.height === targetH) return;
 
       // Point groups are stored in CSS-pixel coordinates, so they can be

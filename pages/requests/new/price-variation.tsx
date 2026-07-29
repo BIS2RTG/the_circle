@@ -196,7 +196,10 @@ export default function PriceVariationPage() {
       .filter(([k]) => k !== roleKey)
       .map(([, v]) => v)
       .filter(Boolean);
+    // The requester can never approve their own request — hide themselves from the picker.
+    const currentUserId = (session?.user as any)?.id;
     return users
+      .filter((u) => u.id !== currentUserId)
       .filter((u) => !alreadySelected.includes(u.id))
       .filter((u) =>
         term

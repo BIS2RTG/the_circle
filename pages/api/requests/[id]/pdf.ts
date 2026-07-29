@@ -2,7 +2,32 @@ import { NextApiRequest, NextApiResponse } from 'next';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '../../auth/[...nextauth]';
 import { supabaseAdmin } from '../../../../lib/supabaseAdmin';
+import * as fs from 'fs';
+import * as path from 'path';
 import { formatDateTime } from '../../../../lib/formatDate';
+import { CAPEX_APPROVAL_SECTIONS } from '../../../../lib/capexApproval';
+import { buildCapexPdf, CapexPdfData, CapexAttachment } from '../../../../lib/capexPdf';
+import { getUserRBACProfile, hasPermission, PERMISSIONS } from '../../../../lib/rbac';
+
+const CAPEX_PAYBACK_LABELS: Record<string, string> = {
+  '<6m': 'Less than 6 months',
+  '6-12m': '6 to 12 months',
+  '1-2y': '1 to 2 years',
+  '2-3y': '2 to 3 years',
+  '>3y': 'More than 3 years',
+};
+
+/** Resolved CAPEX signature block: every standard role, filled or blank. */
+interface CapexApprovalCell {
+  label: string;
+  description: string;
+  name: string | null;
+  signedAt: string | null;
+  status: string | null;
+}
+interface CapexApprovalData {
+  sections: { title: string; cells: CapexApprovalCell[] }[];
+}
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') {
@@ -100,9 +125,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     );
     const canApproverView = userStep && userStep.status !== 'waiting';
     
-    if (!isCreator && !isWatcher && !canApproverView) {
+    // Super admins / requests.view_all holders can download ANY request's PDF.
+    const rbacForView = (!isCreator && !isWatcher && !canApproverView)
+      ? await getUserRBACProfile(userId)
+      : null;
+    const canViewAll = !!rbacForView && (rbacForView.is_super_admin || hasPermission(rbacForView, PERMISSIONS.REQUESTS_VIEW_ALL));
+
+    if (!isCreator && !isWatcher && !canApproverView && !canViewAll) {
       if (userStep && userStep.status === 'waiting') {
-        return res.status(403).json({ 
+        return res.status(403).json({
           error: 'This request is not yet ready for your review.',
           code: 'APPROVAL_NOT_YOUR_TURN'
         });
@@ -115,10 +146,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       request.request_steps.sort((a: any, b: any) => a.step_index - b.step_index);
     }
 
-    // Generate HTML for PDF
-    const html = generatePdfHtml(request);
+    // CAPEX renders as a true PDF that mirrors the official RTG form and appends
+    // the uploaded quotation files as real pages. Everything else keeps the
+    // lightweight print-to-PDF HTML.
+    const isCapex =
+      request.metadata?.type === 'capex' || request.metadata?.requestType === 'capex';
 
-    // Return HTML that can be printed/saved as PDF
+    if (isCapex) {
+      const pdfBytes = await buildCapexPdfForRequest(request, id);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="CAPEX-${request.id.substring(0, 8).toUpperCase()}.pdf"`);
+      return res.status(200).send(Buffer.from(pdfBytes));
+    }
+
+    // Generate HTML for non-CAPEX requests (print-to-PDF in the browser).
+    const html = generatePdfHtml(request, null);
     res.setHeader('Content-Type', 'text/html');
     res.setHeader('Content-Disposition', `inline; filename="request-${id}.html"`);
     return res.status(200).send(html);
@@ -128,7 +170,115 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 }
 
-function generatePdfHtml(request: any): string {
+// Build the official CAPEX PDF: map the request's metadata + resolved approver
+// names into the form layout, then append every uploaded document as real pages.
+async function buildCapexPdfForRequest(request: any, requestId: string): Promise<Uint8Array> {
+  const md = request.metadata || {};
+  const roleMap: Record<string, any> = md.approverRoles || {};
+
+  // Resolve approver display names: from request_steps where present, else app_users.
+  const nameById = new Map<string, string>();
+  for (const step of (request.request_steps || []) as any[]) {
+    if (!step.approver_user_id) continue;
+    const approver = Array.isArray(step.approver) ? step.approver[0] : step.approver;
+    if (approver?.display_name) nameById.set(step.approver_user_id, approver.display_name);
+  }
+  const assignedIds = Object.values(roleMap).filter(
+    (v): v is string => typeof v === 'string' && v.length > 0
+  );
+  const missingIds = assignedIds.filter((uid) => !nameById.has(uid));
+  if (missingIds.length > 0) {
+    const { data: extraUsers } = await supabaseAdmin
+      .from('app_users')
+      .select('id, display_name')
+      .in('id', missingIds);
+    for (const u of extraUsers || []) nameById.set(u.id, u.display_name);
+  }
+  const nameFor = (key: string) => {
+    const uid = roleMap[key];
+    return uid ? nameById.get(uid) || '' : '';
+  };
+
+  // Quotations (supplier + amount), preferred supplier + reason.
+  const quotes: any[] = Array.isArray(md.quotations) ? md.quotations : [];
+  const quotations = quotes.map((q) => ({
+    supplier: q.supplierName || '',
+    amount: q.amount || '',
+  }));
+  const preferred = quotes.find((q) => q.isSelectedSupplier);
+
+  // Money helpers.
+  const parseNum = (s: any) => parseFloat(String(s ?? '').replace(/[^0-9.-]/g, '')) || 0;
+  const fmtMoney = (n: number) =>
+    n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const isBudgeted = md.budgetType === 'budget';
+  const balance = isBudgeted ? fmtMoney(parseNum(md.budgetAmount) - parseNum(md.amountSpent)) : '';
+
+  const budgetTypeMap: Record<string, string> = {
+    budget: 'BUDGETED',
+    'non-budget': 'NON-BUDGETED',
+    emergency: 'EMERGENCY',
+  };
+  const budgetTypeDisplay = budgetTypeMap[md.budgetType] || (md.budgetType ? String(md.budgetType).toUpperCase() : '');
+  const payback = md.paybackPeriod ? CAPEX_PAYBACK_LABELS[md.paybackPeriod] || md.paybackPeriod : '';
+
+  const creator = Array.isArray(request.creator) ? request.creator[0] : request.creator;
+
+  const data: CapexPdfData = {
+    unit: md.unit || '',
+    department: md.department || '',
+    projectName: md.projectName || request.title || '',
+    budgetType: budgetTypeDisplay,
+    currency: md.currency || 'USD',
+    budgetAmount: md.budgetAmount || '',
+    amountSpent: md.amountSpent || '',
+    balance,
+    projectCost: md.amount || '',
+    balanceAfter: isBudgeted ? md.budgetBalance || '' : '',
+    justification: md.justification || '',
+    payback,
+    npv: md.npv || '',
+    irr: md.irr || '',
+    evaluation: md.evaluation || '',
+    quotations,
+    preferredSupplier: preferred?.supplierName || '',
+    reason: preferred?.selectionReason || md.quotationJustification || '',
+    fundingSource: md.fundingSource || '',
+    requestedBy: md.requester || creator?.display_name || md.department || '',
+    requestedByApprovers: CAPEX_APPROVAL_SECTIONS[0].roles.map((r) => ({ label: r.label, name: nameFor(r.key) })),
+    approvedByApprovers: CAPEX_APPROVAL_SECTIONS[1].roles.map((r) => ({ label: r.label, name: nameFor(r.key) })),
+    logo: (() => {
+      try {
+        const bytes = fs.readFileSync(path.join(process.cwd(), 'public/images/RTG_LOGO.png'));
+        return { bytes: new Uint8Array(bytes), type: 'png' as const };
+      } catch {
+        return null;
+      }
+    })(),
+  };
+
+  // Append every uploaded document (quotations + supporting files) as real pages.
+  const attachments: CapexAttachment[] = [];
+  const { data: docs } = await supabaseAdmin
+    .from('documents')
+    .select('filename, storage_path, mime_type, created_at')
+    .eq('request_id', requestId)
+    .order('created_at', { ascending: true });
+  for (const d of docs || []) {
+    try {
+      const { data: blob } = await supabaseAdmin.storage.from('quotations').download(d.storage_path);
+      if (!blob) continue;
+      const buf = Buffer.from(await blob.arrayBuffer());
+      attachments.push({ name: d.filename || 'attachment', mime: d.mime_type || '', bytes: new Uint8Array(buf) });
+    } catch (e) {
+      console.error('CAPEX PDF: failed to load attachment', d.storage_path, e);
+    }
+  }
+
+  return buildCapexPdf(data, attachments);
+}
+
+function generatePdfHtml(request: any, capexApproval: CapexApprovalData | null = null): string {
   const statusLabels: Record<string, string> = {
     pending: 'Pending',
     in_review: 'In Review',
@@ -223,6 +373,54 @@ function generatePdfHtml(request: any): string {
         </tr>
       `;
     });
+  }
+
+  // CAPEX signature block — the fixed standard workflow, grouped into
+  // "Project Requested By" / "Project Approved By". Every role prints, and roles
+  // left blank show an empty signature line so the omission is visible.
+  const esc = (s: any) =>
+    String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  let capexApprovalHtml = '';
+  if (capexApproval) {
+    capexApprovalHtml = capexApproval.sections
+      .map(
+        (section) => `
+      <div style="margin-bottom: 24px;">
+        <h3 style="font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #374151; margin: 0 0 10px 0;">${esc(section.title)}</h3>
+        <table style="width: 100%; border-collapse: collapse;">
+          <thead>
+            <tr style="background: #f3f4f6;">
+              <th style="padding: 8px 10px; text-align: left; font-weight: 600; border-bottom: 2px solid #e5e7eb; width: 34%;">Role</th>
+              <th style="padding: 8px 10px; text-align: left; font-weight: 600; border-bottom: 2px solid #e5e7eb; width: 26%;">Name</th>
+              <th style="padding: 8px 10px; text-align: left; font-weight: 600; border-bottom: 2px solid #e5e7eb; width: 24%;">Signature</th>
+              <th style="padding: 8px 10px; text-align: left; font-weight: 600; border-bottom: 2px solid #e5e7eb; width: 16%;">Date</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${section.cells
+              .map((cell) => {
+                const nameCell = cell.name
+                  ? `<span style="color:#111827;">${esc(cell.name)}</span>`
+                  : `<span style="color:#9ca3af; font-style: italic;">left blank</span>`;
+                const dateCell = cell.signedAt
+                  ? `<span>${esc(formatDate(cell.signedAt))}</span>`
+                  : `<span style="display:inline-block; min-width: 80px; border-bottom: 1px solid #9ca3af;">&nbsp;</span>`;
+                return `
+              <tr>
+                <td style="padding: 12px 10px; border-bottom: 1px solid #e5e7eb; font-weight: 500;">${esc(cell.label)}</td>
+                <td style="padding: 12px 10px; border-bottom: 1px solid #e5e7eb;">${nameCell}</td>
+                <td style="padding: 12px 10px; border-bottom: 1px solid #e5e7eb;"><span style="display:inline-block; width: 100%; min-width: 90px; border-bottom: 1px solid #9ca3af;">&nbsp;</span></td>
+                <td style="padding: 12px 10px; border-bottom: 1px solid #e5e7eb;">${dateCell}</td>
+              </tr>
+            `;
+              })
+              .join('')}
+          </tbody>
+        </table>
+      </div>
+    `
+      )
+      .join('');
   }
 
   return `
@@ -389,7 +587,12 @@ function generatePdfHtml(request: any): string {
   </div>
   ` : ''}
 
-  ${stepsHtml ? `
+  ${capexApproval ? `
+  <div class="section">
+    <h2 class="section-title">Approval</h2>
+    ${capexApprovalHtml}
+  </div>
+  ` : stepsHtml ? `
   <div class="section">
     <h2 class="section-title">Approval Workflow</h2>
     <table>
@@ -411,7 +614,7 @@ function generatePdfHtml(request: any): string {
   ` : ''}
 
   <div class="footer">
-    Generated on ${formatDateTime(new Date())} • The Circle Approval System
+    Generated from The Circle on ${formatDateTime(new Date())}
   </div>
 </body>
 </html>

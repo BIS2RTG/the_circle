@@ -34,7 +34,7 @@ const labelCellStyle: React.CSSProperties = { ...cellStyle, background: '#FAF7F0
 // list changes, update this constant alongside the form's.
 // ──────────────────────────────────────────────────────────────────────
 const TRAVEL_LOCATIONS: Record<string, string> = {
-    MRC: 'Montclaire Resort and Conferencing (MRC)',
+    MRC: 'Montclair Resort and Conferencing (MRC)',
     NAH: 'New Ambassador Hotel (NAH)',
     RTH: 'Rainbow Towers Hotel (RTH)',
     KHCC: 'KHCC Conference Centre',
@@ -80,6 +80,31 @@ const APPROVAL_ROLES: Array<{ key: string; label: string; description: string }>
 ];
 
 // ──────────────────────────────────────────────────────────────────────
+// Cost-allocation units — must match the codes the PDF renderer uses
+// (pages/api/archives/generate-pdf.ts) so the preview and the archived
+// document read identically.
+// ──────────────────────────────────────────────────────────────────────
+export const ALLOCATION_UNITS: Array<{ code: string; label: string }> = [
+    { code: 'Corp', label: 'Corporate / Head Office' },
+    { code: 'MRC', label: 'Montclair Resort & Conferencing' },
+    { code: 'NAH', label: 'New Ambassador Hotel' },
+    { code: 'RTH', label: 'Rainbow Towers Hotel' },
+    { code: 'KHCC', label: 'Kadoma Hotel & Conference Centre' },
+    { code: 'BRH', label: 'Bulawayo Rainbow Hotel' },
+    { code: 'VFRH', label: 'Victoria Falls Rainbow Hotel' },
+    { code: 'AZRL', label: "A'Zambezi River Lodge" },
+    { code: 'HEXA', label: 'Heritage Expeditions' },
+    { code: 'GWS', label: 'Gateway Stream' },
+];
+
+/** Read an allocation amount tolerant of upper/lower-case unit keys. */
+function allocationAmount(alloc: Record<string, any> | undefined, code: string): string {
+    if (!alloc) return '';
+    const v = alloc[code] ?? alloc[code.toLowerCase()] ?? alloc[code.toUpperCase()];
+    return v == null ? '' : String(v);
+}
+
+// ──────────────────────────────────────────────────────────────────────
 // Input shape — what the builder needs to render the full document.
 // ──────────────────────────────────────────────────────────────────────
 export interface TravelAuthPreviewInput {
@@ -102,6 +127,19 @@ export interface TravelAuthPreviewInput {
     isInternational?: boolean;
     isEmergencyRequest?: boolean;
     emergencyReason?: string;
+
+    /** Whether the traveller ticked "I have read and accept the conditions". */
+    acceptConditions?: boolean;
+    /** Traveller (requestor) name + saved-signature URL for the conditions block. */
+    travellerName?: string;
+    travellerSignatureUrl?: string | null;
+    /**
+     * True when the request was filed on behalf of someone. The principal never
+     * personally signed, so the conditions block shows the acceptance tick ONLY —
+     * the entire "Signature of Traveller" sub-block (label, signature line, name)
+     * is omitted.
+     */
+    onBehalf?: boolean;
 
     /** Itinerary rows; structure matches form state. */
     itinerary?: Array<{
@@ -127,6 +165,13 @@ export interface TravelAuthPreviewInput {
 
     /** Pre-computed grand total; falls back to summing the budget. */
     grandTotal?: string;
+
+    /**
+     * Requestor's allocation of the travel cost across business units, keyed by
+     * unit code (see ALLOCATION_UNITS). Entered on the form by the requestor —
+     * shown under the itinerary/budget on the document, matching the paper form.
+     */
+    costAllocation?: Record<string, string>;
 
     /**
      * Approval row data. For the form preview this is just the selected
@@ -174,12 +219,21 @@ export function buildTravelAuthPreviewSections(input: TravelAuthPreviewInput): P
         vehicleRegistration,
         isEmergencyRequest,
         emergencyReason,
+        acceptConditions,
+        travellerName,
+        travellerSignatureUrl,
+        onBehalf,
         itinerary = [],
         budget = {},
         grandTotal,
+        costAllocation = {},
         approvers = {},
         comments,
     } = input;
+
+    // Units that carry an allocation amount — used to decide whether to render
+    // the section at all (the paper form only shows ticked units of interest).
+    const allocatedUnits = ALLOCATION_UNITS.filter(u => allocationAmount(costAllocation, u.code) !== '');
 
     // Total distance + grand total fall back to derived values when not supplied.
     const totalKm = itinerary.reduce((sum, r) => sum + num(r?.km), 0);
@@ -260,6 +314,33 @@ export function buildTravelAuthPreviewSections(input: TravelAuthPreviewInput): P
                             Emergency travel reason: {emergencyReason || '—'}
                         </p>
                     )}
+                    <div style={{ marginTop: 10, display: 'flex', alignItems: 'flex-end', gap: 16, flexWrap: 'wrap' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{ display: 'inline-block', width: 12, height: 12, border: '1px solid #444', textAlign: 'center', lineHeight: '11px', fontSize: 10, fontWeight: 700 }}>
+                                {acceptConditions ? '✓' : ''}
+                            </span>
+                            <span>I have read these conditions and accept them.</span>
+                        </div>
+                        {/* Filed on behalf of someone → the principal never personally
+                            signed, so show the acceptance tick ONLY, with no signature
+                            block. Self-filed → render the "Signature of Traveller" block. */}
+                        {!onBehalf && (
+                            <div style={{ minWidth: 180 }}>
+                                <div style={{ fontSize: 9, fontWeight: 700, color: '#555', textTransform: 'uppercase' }}>Signature of Traveller</div>
+                                <div style={{ borderBottom: '1px solid #666', minHeight: 30, display: 'flex', alignItems: 'center' }}>
+                                    {travellerSignatureUrl ? (
+                                        <img
+                                            src={travellerSignatureUrl}
+                                            alt="Traveller signature"
+                                            style={{ maxHeight: 30, maxWidth: 160, display: 'block' }}
+                                            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                                        />
+                                    ) : null}
+                                </div>
+                                {travellerName ? <div style={{ fontSize: 10, marginTop: 2 }}>{travellerName}</div> : null}
+                            </div>
+                        )}
+                    </div>
                 </div>
             ),
         },
@@ -360,6 +441,34 @@ export function buildTravelAuthPreviewSections(input: TravelAuthPreviewInput): P
                 </table>
             ),
         },
+        // 5. Allocation Cost to Unit — filled in by the requestor. Tick the
+        // relevant unit(s) and indicate the cost. Mirrors the paper form.
+        {
+            title: 'Allocation Cost to Unit',
+            content: (
+                <div style={{ fontSize: 11, padding: '2px 0' }}>
+                    <div style={{ fontSize: 10, color: '#666', marginBottom: 6 }}>Tick relevant unit and indicate cost.</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px' }}>
+                        {ALLOCATION_UNITS.map(u => {
+                            const amount = allocationAmount(costAllocation, u.code);
+                            const ticked = amount !== '';
+                            return (
+                                <span key={u.code} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: ticked ? '#222' : '#9ca3af' }}>
+                                    <span style={{ display: 'inline-block', width: 12, height: 12, border: '1px solid #666', textAlign: 'center', lineHeight: '11px', fontSize: 10, fontWeight: 700 }}>
+                                        {ticked ? '✓' : ''}
+                                    </span>
+                                    <span style={{ fontWeight: ticked ? 700 : 400 }}>{u.code}</span>
+                                    {ticked && <span style={{ color: '#444' }}>USD {amount}</span>}
+                                </span>
+                            );
+                        })}
+                    </div>
+                    {allocatedUnits.length === 0 && (
+                        <div style={{ color: '#9ca3af', marginTop: 4 }}>No cost allocation specified.</div>
+                    )}
+                </div>
+            ),
+        },
         // 6. Approval row — same four columns as the form, populated with
         // signatures + signed-at when available on the persisted record.
         {
@@ -437,35 +546,62 @@ export function buildTravelAuthPreviewSections(input: TravelAuthPreviewInput): P
 // the [id]-page preview matches the form preview without each call site
 // having to do the conversion.
 // ──────────────────────────────────────────────────────────────────────
-export function travelAuthInputFromRequest(request: any): TravelAuthPreviewInput {
-    const metadata = request?.metadata || {};
-    const creator = request?.creator || {};
+export function travelAuthInputFromRequest(request: any, travelMeta?: any): TravelAuthPreviewInput {
+    const requestMeta = request?.metadata || {};
+    // When a travel document is BUNDLED inside another request (e.g. a
+    // complimentary booking that also processes travel), the travel-specific
+    // fields live under `travelMeta` (= metadata.travelDocument). The
+    // employee, approvers and submission timestamp still come from the parent
+    // request. When `travelMeta` is omitted this behaves exactly as before,
+    // so standalone travel authorisations are unaffected.
+    const metadata = travelMeta || requestMeta;
+    // When filed on behalf of someone, THAT person is the traveller/requestor —
+    // their name, department, business unit and signature go on the document,
+    // not the assistant's. `onBehalfProfile` is resolved server-side.
+    const onBehalf = !!request?.onBehalfProfile;
+    const creator = request?.onBehalfProfile || request?.creator || {};
     const steps: any[] = Array.isArray(request?.request_steps) ? request.request_steps : [];
 
-    // Resolve each role's name + signature from request_steps. We match by
-    // approver_role (line_manager, hrd, etc.); fall back to metadata's
-    // approverRoles map (id-only) when steps haven't been resolved with
-    // names yet.
     // Private bucket: render saved signatures through the authenticated proxy.
     const sigUrlFor = (userId?: string | null) =>
         userId ? `/api/signature/view?userId=${encodeURIComponent(userId)}` : null;
 
+    // Resolve each step's role. Persisted steps almost always store
+    // approver_role = null (approvers were resolved by user id, not role name),
+    // so keying purely on approver_role dropped EVERY signature. Build a
+    // userId -> roleKey map from metadata.approverRoles and resolve in order of
+    // reliability: the step's own approver_role, then the approverRoles map,
+    // then positional fallback. This mirrors how the CAPEX preview resolves
+    // signatures and is what makes them show up on the document.
+    const roleMap: Record<string, any> = requestMeta.approverRoles || {};
+    const userIdToRole: Record<string, string> = {};
+    for (const [roleKey, userId] of Object.entries(roleMap)) {
+        if (userId && typeof userId === 'string') userIdToRole[userId] = roleKey.toLowerCase();
+    }
+    const ROLE_ORDER = APPROVAL_ROLES.map(r => r.key);
+
+    const orderedSteps = [...steps].sort((a, b) => (a.step_index ?? 0) - (b.step_index ?? 0));
+
     const approvers: TravelAuthPreviewInput['approvers'] = {};
-    for (const step of steps) {
-        const role = String(step.approver_role || '').toLowerCase();
-        if (!role) continue;
-        const approval = Array.isArray(step.approvals) ? step.approvals[0] : null;
-        const approverName =
-            step.approver?.display_name || approval?.approver?.display_name || null;
+    orderedSteps.forEach((step, idx) => {
+        const approval = Array.isArray(step.approvals) ? step.approvals[0] : (step.approvals || null);
         const approverId =
             step.approver?.id || step.approver_user_id || approval?.approver?.id || approval?.approver_id || null;
+        const role =
+            String(step.approver_role || '').toLowerCase() ||
+            (approverId ? userIdToRole[approverId] : '') ||
+            ROLE_ORDER[idx] ||
+            '';
+        if (!role) return;
+        const approverName =
+            step.approver?.display_name || approval?.approver?.display_name || null;
         approvers[role] = {
             name: approverName || undefined,
             signatureUrl: approval?.signed_at ? sigUrlFor(approverId) : null,
             signedAt: approval?.signed_at || null,
             decision: approval?.decision || null,
         };
-    }
+    });
 
     // Aggregate any comments left during the approval chain into the
     // additional-comments box so they're visible on the document.
@@ -482,8 +618,12 @@ export function travelAuthInputFromRequest(request: any): TravelAuthPreviewInput
     return {
         employee: {
             name: creator.display_name,
-            department: metadata.department || creator.department?.name,
-            businessUnit: metadata.businessUnit || metadata.business_unit_name,
+            // On-behalf: the stored metadata.department/businessUnit belong to the
+            // ASSISTANT who filed, so prefer the principal's resolved unit names.
+            department: onBehalf ? creator.department?.name : (requestMeta.department || creator.department?.name),
+            businessUnit: onBehalf
+                ? creator.business_unit?.name
+                : (requestMeta.businessUnit || requestMeta.business_unit_name || creator.business_unit?.name),
         },
         requestTimestamp: request?.created_at
             ? new Date(request.created_at).toLocaleString('en-GB', {
@@ -498,9 +638,18 @@ export function travelAuthInputFromRequest(request: any): TravelAuthPreviewInput
         isInternational: metadata.type === 'international_travel_authorization',
         isEmergencyRequest: !!metadata.isEmergencyRequest,
         emergencyReason: metadata.emergencyReason,
+        acceptConditions: !!metadata.acceptConditions,
+        travellerName: creator.display_name || undefined,
+        // On-behalf: the principal never personally signed — the assistant filed
+        // for them — so the conditions block shows the acceptance tick only, with
+        // no signature block at all. Signatures render only when the traveller
+        // filed for themselves.
+        travellerSignatureUrl: onBehalf ? null : (creator.id ? sigUrlFor(creator.id) : null),
+        onBehalf,
         itinerary: metadata.itinerary,
         budget: metadata.budget,
         grandTotal: metadata.grandTotal,
+        costAllocation: metadata.costAllocation || requestMeta.travelCostAllocation || {},
         approvers,
         comments: comments || undefined,
     };

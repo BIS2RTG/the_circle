@@ -5,16 +5,17 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '../../api/auth/[...nextauth]';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { fetchHrimsEmployeeByEmail } from '@/lib/hrimsClient';
+import { resolveOnBehalfProfile } from '@/lib/onBehalf';
 import { formatDateTime } from '@/lib/formatDate';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AppLayout } from '../../../components/layout';
-import { Card, Button, Input } from '../../../components/ui';
+import { Card, Button, Input, RequestPreviewDocument, printPreviewDocument } from '../../../components/ui';
 import ApprovalConfirmModal, { type ApprovalConfirmResult } from '../../../components/approvals/ApprovalConfirmModal';
 import ElevationIndicator from '../../../components/approvals/ElevationIndicator';
 import { useToast } from '../../../components/ui/ToastProvider';
 import ConfirmDialog from '../../../components/ui/ConfirmDialog';
 import SignatureSelector, { type SignatureSelection } from '../../../components/approvals/SignatureSelector';
-import { ApprovedRequestPreviewInline } from '../../../components/requests/ApprovedRequestPreview';
+import { ApprovedRequestPreviewInline, buildPreviewForRequest } from '../../../components/requests/ApprovedRequestPreview';
 import { getApprovalRisk, type ApprovalRisk, type AuthenticationMethod } from '@/lib/approvalRisk';
 import Link from 'next/link';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -24,7 +25,8 @@ interface RequestDetail {
     id: string;
     title: string;
     description: string;
-    status: 'pending' | 'approved' | 'rejected' | 'in_review' | 'withdrawn' | 'draft';
+    status: 'pending' | 'approved' | 'rejected' | 'in_review' | 'withdrawn' | 'draft' | 'cancelled';
+    creator_id?: string;
     created_at: string;
     updated_at: string;
     current_step: number;
@@ -560,9 +562,13 @@ export const getServerSideProps: GetServerSideProps<CompHotelBookingDetailsPageP
       }
     }
 
+    // When filed on behalf of someone, resolve THAT person as the requestor.
+    const onBehalfProfile = await resolveOnBehalfProfile(request as any);
+
     const enrichedRequest = {
       ...request,
       creator,
+      onBehalfProfile,
       status: actualStatus as RequestDetail['status'],
       current_step: currentStepIndex >= 0 ? currentStepIndex + 1 : request.request_steps?.length || 0,
       total_steps: request.request_steps?.length || 0,
@@ -620,9 +626,18 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
     const [showRedirectModal, setShowRedirectModal] = useState(false);
     const [redirectStepInfo, setRedirectStepInfo] = useState<{ stepId: string; stepIndex: number; approverRole?: string; currentApproverName?: string } | null>(null);
     const [redirecting, setRedirecting] = useState(false);
+    const [showCancelModal, setShowCancelModal] = useState(false);
+    const [cancelReason, setCancelReason] = useState('');
+    const [cancelling, setCancelling] = useState(false);
+    const [unsubmitting, setUnsubmitting] = useState(false);
 
     const currentUserId = (session?.user as any)?.id;
-    const isCreator = request?.creator?.id === currentUserId;
+    // Authoritative creator_id (always present) with the embedded object as a
+    // fallback — relying only on the embed made the creator's action buttons
+    // (Unsubmit & Edit, Cancel, Delete) silently disappear.
+    const creatorId = (request as any)?.creator_id
+        || (Array.isArray(request?.creator) ? (request?.creator as any)[0]?.id : request?.creator?.id);
+    const isCreator = !!currentUserId && creatorId === currentUserId;
     const isDraft = request?.status === 'draft';
     const canPublish = isCreator && isDraft;
     const canDelete = isCreator && request?.status !== 'approved';
@@ -653,6 +668,95 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
 
     const effectivePendingStep = pendingStep || waitingStepThatShouldBePending;
     const isCurrentApprover = !!effectivePendingStep;
+
+    // Universal request actions — parity with /requests/[id]. Cancel is available
+    // to the requester or any approver at any active stage; Unsubmit & Edit pulls
+    // a still-pending request back to a draft while NO approver has acted; Reopen
+    // revives a cancelled request that wasn't already fully approved.
+    const isApproverOnRequest = (request?.request_steps || []).some(s => s.approver?.id === currentUserId);
+    const effectiveStatus = () => {
+        // computeActualStatus lives in getServerSideProps scope; recompute the
+        // same way from steps so terminal states win over stale step data.
+        const st = request?.status;
+        if (!request) return st;
+        if (['cancelled', 'withdrawn', 'draft', 'expired'].includes(st || '')) return st;
+        const steps = request.request_steps || [];
+        if (steps.length === 0) return st;
+        if (steps.some(s => s.status === 'rejected')) return 'rejected';
+        if (steps.every(s => s.status === 'approved')) return 'approved';
+        if (steps.some(s => s.status === 'pending' || s.status === 'waiting')) return 'pending';
+        return st;
+    };
+    const statusNow = effectiveStatus();
+    const noApproverActed = !(request?.request_steps || []).some(
+        s => s.status === 'approved' || s.status === 'rejected'
+    );
+    const canCancel = (isCreator || isApproverOnRequest)
+        && !!request && !['cancelled', 'withdrawn', 'draft'].includes(statusNow || '');
+    const canUnsubmit = isCreator && statusNow === 'pending' && noApproverActed;
+    const canRevive = isCreator && statusNow === 'cancelled'
+        && ((request?.metadata as any)?.cancellation?.previousStatus !== 'approved');
+
+    // Map a comp/hotel request type to its editable form route. Read BOTH
+    // metadata.type and metadata.requestType — hotel bookings submitted via the
+    // main path store the type only under requestType, so keying on `type` alone
+    // wrongly defaulted them to the voucher form on unsubmit/edit.
+    const compEditRoute = (): string => {
+        const t = request?.metadata?.type || request?.metadata?.requestType || (request as any)?.type;
+        if (t === 'hotel_booking') return 'hotel-booking';
+        if (t === 'external_hotel_booking') return 'external-hotel-booking';
+        return 'voucher';
+    };
+
+    const handleCancelRequest = async () => {
+        if (!id || !canCancel) return;
+        const reason = cancelReason.trim();
+        if (!reason) {
+            addToast({ type: 'error', title: 'Reason required', message: 'Please provide a reason for cancelling.' });
+            return;
+        }
+        setCancelling(true);
+        try {
+            const response = await fetch(`/api/requests/${id}/cancel`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reason }),
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Failed to cancel request');
+            addToast({ type: 'success', title: 'Request cancelled', message: 'The request has been cancelled and the other parties notified.' });
+            const refresh = await fetch(`/api/requests/${id}`);
+            if (refresh.ok) setRequest((await refresh.json()).request);
+            setShowCancelModal(false);
+            setCancelReason('');
+        } catch (err: any) {
+            console.error('Error cancelling request:', err);
+            addToast({ type: 'error', title: 'Cancellation failed', message: err.message || 'Failed to cancel request' });
+        } finally {
+            setCancelling(false);
+        }
+    };
+
+    const handleUnsubmit = async () => {
+        if (!id || (!canUnsubmit && !canRevive)) return;
+        setUnsubmitting(true);
+        try {
+            const response = await fetch(`/api/requests/${id}/unsubmit`, { method: 'POST' });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Failed to unsubmit request');
+            addToast({
+                type: 'success',
+                title: canRevive ? 'Request reopened' : 'Request unsubmitted',
+                message: 'Amend your request, then submit it again for approval.',
+            });
+            router.push(`/requests/new/${compEditRoute()}?edit=${id}`);
+        } catch (err: any) {
+            console.error('Error unsubmitting request:', err);
+            addToast({ type: 'error', title: 'Unsubmit failed', message: err.message || 'Failed to unsubmit request' });
+        } finally {
+            setUnsubmitting(false);
+        }
+    };
 
     // Record an "approver opened the request" event so the timeline can show
     // whether the assigned approver has actually looked at the request yet.
@@ -1060,9 +1164,18 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [id, activeTab]);
 
+    // Download as PDF by printing the same document the Preview tab renders —
+    // so a comp combined with a travel authorisation prints as two pages (the
+    // travel section carries pageBreakBefore), followed by the supporting
+    // documents list. Uses the browser's "Save as PDF".
+    const pdfDocRef = useRef<HTMLDivElement>(null);
+    const pdfPreview = request ? buildPreviewForRequest(request) : null;
     const handleDownloadPdf = () => {
-        if (!id) return;
-        window.open(`/api/requests/${id}/pdf`, '_blank');
+        if (pdfDocRef.current && pdfPreview) {
+            printPreviewDocument(pdfDocRef.current, pdfPreview.title);
+        } else if (id) {
+            window.open(`/api/requests/${id}/pdf`, '_blank');
+        }
     };
 
     const handleDownloadVoucher = () => {
@@ -1193,6 +1306,63 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
                 requestTitle={request?.title}
             />
 
+            {/* Off-screen document used by "Download PDF" — printPreviewDocument
+                clones this node's HTML into a print window (2 pages for a comp +
+                travel booking, plus the supporting-documents list). */}
+            {pdfPreview && (
+                <div aria-hidden="true" style={{ position: 'absolute', left: -99999, top: 0, width: 800 }}>
+                    <RequestPreviewDocument
+                        ref={pdfDocRef}
+                        title={pdfPreview.title}
+                        subtitle={pdfPreview.subtitle}
+                        sections={pdfPreview.sections}
+                        documentHeader={pdfPreview.documentHeader}
+                    />
+                </div>
+            )}
+
+            {/* Cancel Request Modal — requires a reason */}
+            {showCancelModal && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[120] p-4">
+                    <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl">
+                        <div className="flex items-center gap-4 mb-4">
+                            <div className="w-12 h-12 rounded-full bg-danger-100 flex items-center justify-center flex-shrink-0">
+                                <svg className="w-6 h-6 text-danger-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                                </svg>
+                            </div>
+                            <div>
+                                <h3 className="text-lg font-bold text-text-primary">Cancel Request</h3>
+                                <p className="text-sm text-text-secondary">The record is kept; the request is marked cancelled</p>
+                            </div>
+                        </div>
+                        <p className="text-text-secondary mb-3 text-sm">
+                            Cancelling &ldquo;<span className="font-medium text-text-primary">{request?.title}</span>&rdquo;
+                            {statusNow === 'approved' ? ' (currently approved)' : ''}. The requester and approvers
+                            will be notified. Please explain why this request is being cancelled.
+                        </p>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                            Reason for cancellation <span className="text-danger-600">*</span>
+                        </label>
+                        <textarea
+                            value={cancelReason}
+                            onChange={(e) => setCancelReason(e.target.value)}
+                            placeholder="e.g. Guest cancelled / duplicate request / no longer required…"
+                            className="w-full px-4 py-2.5 rounded-xl border border-gray-300 bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-danger-500 focus:border-transparent min-h-[100px] mb-5"
+                            autoFocus
+                        />
+                        <div className="flex gap-3 justify-end">
+                            <Button variant="outline" onClick={() => { setShowCancelModal(false); setCancelReason(''); }} disabled={cancelling}>
+                                Keep Request
+                            </Button>
+                            <Button variant="danger" onClick={handleCancelRequest} disabled={cancelling || !cancelReason.trim()} isLoading={cancelling}>
+                                {cancelling ? 'Cancelling…' : 'Cancel Request'}
+                            </Button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             <div className="max-w-[1400px] mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
 
                 {publishError && (
@@ -1230,11 +1400,16 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
                 )}
 
                 <nav className="flex items-center text-sm text-text-secondary mb-2">
-                    <Link href="/approvals" className="hover:text-primary-600 transition-colors flex items-center gap-1">
+                    {/* Approvers go back to Approval Tasks; the requester (and
+                        everyone else) go to My Requests. */}
+                    <Link
+                        href={isApproverOnRequest && !isCreator ? '/approvals' : '/requests/my-requests'}
+                        className="hover:text-primary-600 transition-colors flex items-center gap-1"
+                    >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
                         </svg>
-                        Back to Approval Tasks
+                        {isApproverOnRequest && !isCreator ? 'Back to Approval Tasks' : 'Back to My Requests'}
                     </Link>
                     <span className="mx-2 text-gray-300">/</span>
                     <span className="text-text-primary font-medium truncate max-w-xs">{request.title}</span>
@@ -1257,17 +1432,14 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
                         <h1 className="text-3xl font-bold text-text-primary font-heading leading-tight mb-2">
                             {request.title}
                         </h1>
-                        {/* Show guest name or identifier if available */}
-                        {metadata.guestNames && (
-                            <p className="text-primary-600 font-medium text-lg mt-1">
-                                {metadata.guestNames}
-                            </p>
-                        )}
-                        {!metadata.guestNames && (metadata.guestTitle || metadata.guestFirstName) && (
-                            <p className="text-primary-600 font-medium text-lg mt-1">
-                                {metadata.guestTitle} {metadata.guestFirstName}
-                            </p>
-                        )}
+                        {/* Guest name — the requestor is normally the guest, so fall
+                            back to the creator's name when none was entered. */}
+                        <p className="text-primary-600 font-medium text-lg mt-1">
+                            {metadata.guestNames
+                                || [metadata.guestTitle, metadata.guestFirstName].filter(Boolean).join(' ')
+                                || request.creator?.display_name
+                                || '—'}
+                        </p>
                         <div className="text-text-secondary text-lg leading-relaxed max-w-3xl">
                             {request.description}
                         </div>
@@ -1287,7 +1459,7 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
                                 variant="outline" 
                                 className="gap-2 bg-white text-primary-600 border-primary-200 hover:bg-primary-50" 
                                 onClick={() => {
-                                    const reqType = request?.metadata?.type || (request as any)?.type;
+                                    const reqType = request?.metadata?.type || request?.metadata?.requestType || (request as any)?.type;
                                     if (reqType === 'hotel_booking') {
                                         router.push(`/requests/new/hotel-booking?edit=${id}`);
                                     } else if (reqType === 'external_hotel_booking') {
@@ -1336,6 +1508,33 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
                                 Review Request
                             </Button>
                         )}
+                        {/* Unsubmit & Edit — creator only, while pending and no approver has acted */}
+                        {canUnsubmit && (
+                            <Button variant="outline" className="gap-2 bg-white text-text-secondary border-gray-200 hover:bg-gray-50" onClick={handleUnsubmit} disabled={unsubmitting} isLoading={unsubmitting}>
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                </svg>
+                                {unsubmitting ? 'Unsubmitting…' : 'Unsubmit & Edit'}
+                            </Button>
+                        )}
+                        {/* Reopen & Edit — creator only, revive a cancelled request */}
+                        {canRevive && (
+                            <Button variant="outline" className="gap-2 bg-white text-primary-700 border-primary-200 hover:bg-primary-50" onClick={handleUnsubmit} disabled={unsubmitting} isLoading={unsubmitting}>
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                </svg>
+                                {unsubmitting ? 'Reopening…' : 'Reopen & Edit'}
+                            </Button>
+                        )}
+                        {/* Cancel Request — requester or approver, at any active stage */}
+                        {canCancel && (
+                            <Button variant="outline" className="gap-2 bg-white text-danger-600 border-danger-200 hover:bg-danger-50" onClick={() => { setCancelReason(''); setShowCancelModal(true); }}>
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                                </svg>
+                                Cancel Request
+                            </Button>
+                        )}
                     </div>
                 </div>
 
@@ -1368,7 +1567,7 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
                                                 <div>
                                                     <span className="text-xs font-semibold text-primary-600 uppercase tracking-wider">Guest Information</span>
                                                     <h2 className="text-2xl font-bold text-text-primary mt-1 font-heading">
-                                                        {metadata.guestNames || (metadata.guestTitle && metadata.guestFirstName ? `${metadata.guestTitle} ${metadata.guestFirstName}` : metadata.voucherNumber ? `Voucher #${metadata.voucherNumber}` : `Request #${request.id.substring(0, 8)}`)}
+                                                        {metadata.guestNames || (metadata.guestTitle && metadata.guestFirstName ? `${metadata.guestTitle} ${metadata.guestFirstName}` : request.creator?.display_name || (metadata.voucherNumber ? `Voucher #${metadata.voucherNumber}` : `Request #${request.id.substring(0, 8)}`))}
                                                     </h2>
                                                     <div className="flex items-center gap-2 mt-2">
                                                         {metadata.isExternalGuest ? (
@@ -1475,30 +1674,56 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
                                                             <span className="font-medium text-gray-900">{accommodationLabels[unit.accommodationType] || unit.accommodationType || 'N/A'}</span>
                                                         </div>
 
-                                                        {/* Accommodation Details - shown for types that include accommodation */}
+                                                        {/* Accommodation Details — render the fields this unit actually
+                                                            carries. Hotel bookings store arrival/departure dates and
+                                                            nights; voucher requests store a validity period, people and
+                                                            room type. Rendering the wrong shape used to show N/A for
+                                                            everything the user had filled in. */}
                                                         {!['meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only'].includes(unit.accommodationType) && (
-                                                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                                                                <div>
-                                                                    <span className="text-gray-500 block">Validity Period</span>
-                                                                    <span className="font-medium text-gray-900">{unit.voucherValidityPeriod || 'N/A'}</span>
+                                                            (unit.arrivalDate || unit.departureDate) ? (
+                                                                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                                                                    <div>
+                                                                        <span className="text-gray-500 block">Arrival Date</span>
+                                                                        <span className="font-medium text-gray-900">{unit.arrivalDate || 'N/A'}</span>
+                                                                    </div>
+                                                                    <div>
+                                                                        <span className="text-gray-500 block">Departure Date</span>
+                                                                        <span className="font-medium text-gray-900">{unit.departureDate || 'N/A'}</span>
+                                                                    </div>
+                                                                    <div>
+                                                                        <span className="text-gray-500 block">No. of Nights</span>
+                                                                        <span className="font-medium text-gray-900">{unit.numberOfNights || 'N/A'}</span>
+                                                                    </div>
+                                                                    <div>
+                                                                        <span className="text-gray-500 block">No. of Rooms</span>
+                                                                        <span className="font-medium text-gray-900">{unit.numberOfRooms || 'N/A'}</span>
+                                                                    </div>
                                                                 </div>
-                                                                <div>
-                                                                    <span className="text-gray-500 block">No. of People</span>
-                                                                    <span className="font-medium text-gray-900">{unit.numberOfPeople || 'N/A'}</span>
+                                                            ) : (
+                                                                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                                                                    <div>
+                                                                        <span className="text-gray-500 block">Validity Period</span>
+                                                                        <span className="font-medium text-gray-900">{unit.voucherValidityPeriod || 'N/A'}</span>
+                                                                    </div>
+                                                                    <div>
+                                                                        <span className="text-gray-500 block">No. of People</span>
+                                                                        <span className="font-medium text-gray-900">{unit.numberOfPeople || 'N/A'}</span>
+                                                                    </div>
+                                                                    <div>
+                                                                        <span className="text-gray-500 block">No. of Rooms</span>
+                                                                        <span className="font-medium text-gray-900">{unit.numberOfRooms || 'N/A'}</span>
+                                                                    </div>
+                                                                    <div>
+                                                                        <span className="text-gray-500 block">Room Type</span>
+                                                                        <span className="font-medium text-gray-900">{unit.roomType || 'N/A'}</span>
+                                                                    </div>
                                                                 </div>
-                                                                <div>
-                                                                    <span className="text-gray-500 block">No. of Nights</span>
-                                                                    <span className="font-medium text-gray-900">{unit.numberOfRooms || 'N/A'}</span>
-                                                                </div>
-                                                                <div>
-                                                                    <span className="text-gray-500 block">Room Type</span>
-                                                                    <span className="font-medium text-gray-900">{unit.roomType || 'N/A'}</span>
-                                                                </div>
-                                                            </div>
+                                                            )
                                                         )}
 
-                                                        {/* Meal Details - shown for types that include meals */}
-                                                        {['meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only', 'accommodation_and_meals', 'accommodation_meals_drink'].includes(unit.accommodationType) && (
+                                                        {/* Meal Details — only when this unit carries meal fields */}
+                                                        {(['meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only'].includes(unit.accommodationType)
+                                                            || unit.numberOfMeals || unit.mealPeopleCount) && (
                                                             <div className={`grid grid-cols-2 gap-4 text-sm ${!['meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only'].includes(unit.accommodationType) ? 'mt-4 pt-4 border-t border-gray-100' : ''}`}>
                                                                 <div>
                                                                     <span className="text-gray-500 block">Number of Meals</span>
@@ -1839,20 +2064,24 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
                                                     <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Request ID</span>
                                                     <p className="text-gray-900 font-mono text-sm">#{request.id.substring(0, 8).toUpperCase()}</p>
                                                 </div>
-                                                <div className="space-y-1">
-                                                    <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Submitted By</span>
-                                                    <div className="flex items-center gap-2">
-                                                        <img
-                                                            src={request.creator.profile_picture_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(request.creator.display_name || 'User')}&background=random&size=24`}
-                                                            alt={request.creator.display_name}
-                                                            className="w-6 h-6 rounded-full"
-                                                        />
-                                                        <div>
-                                                            <p className="text-gray-900 font-medium">{request.creator.display_name}</p>
-                                                            <p className="text-xs text-gray-500">{request.creator.job_title || 'Employee'}</p>
+                                                {/* A comp requester is usually the guest — only surface
+                                                    "Submitted By" when it was filed on behalf of someone else. */}
+                                                {(metadata.onBehalfOf?.userId || metadata.onBehalfOf?.name) && (
+                                                    <div className="space-y-1">
+                                                        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Submitted By</span>
+                                                        <div className="flex items-center gap-2">
+                                                            <img
+                                                                src={request.creator.profile_picture_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(request.creator.display_name || 'User')}&background=random&size=24`}
+                                                                alt={request.creator.display_name}
+                                                                className="w-6 h-6 rounded-full"
+                                                            />
+                                                            <div>
+                                                                <p className="text-gray-900 font-medium">{request.creator.display_name}</p>
+                                                                <p className="text-xs text-gray-500">{request.creator.job_title || 'Employee'}</p>
+                                                            </div>
                                                         </div>
                                                     </div>
-                                                </div>
+                                                )}
                                                 <div className="space-y-1">
                                                     <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Submitted On</span>
                                                     <p className="text-gray-900">{new Date(request.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })}</p>

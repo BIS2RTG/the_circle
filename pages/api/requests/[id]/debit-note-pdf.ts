@@ -6,7 +6,7 @@ import { signatureExists, userSignaturePath, userSignatureProxyUrl } from '../..
 
 const UNIT_LABELS: Record<string, string> = {
   CORP: 'Corporate (CORP)',
-  MRC: 'Montclaire Resort and Conferencing (MRC)',
+  MRC: 'Montclair Resort and Conferencing (MRC)',
   NAH: 'New Ambassador Hotel (NAH)',
   RTH: 'Rainbow Towers Hotel (RTH)',
   KHCC: 'KHCC Conference Centre (KHCC)',

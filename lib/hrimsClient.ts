@@ -223,6 +223,28 @@ export async function fetchHrimsDepartments(
   return (data || []) as HrimsDepartment[];
 }
 
+/** Fetch a single department by id (null when missing or HRIMS unconfigured). */
+export async function fetchHrimsDepartmentById(id: string): Promise<HrimsDepartment | null> {
+  if (!hrimsClient || !id) return null;
+  const { data } = await hrimsClient
+    .from('departments')
+    .select('id, name, code, department_head_id, business_unit_id')
+    .eq('id', id)
+    .maybeSingle();
+  return (data as HrimsDepartment) || null;
+}
+
+/** Fetch a single business unit by id (null when missing or HRIMS unconfigured). */
+export async function fetchHrimsBusinessUnitById(id: string): Promise<HrimsBusinessUnit | null> {
+  if (!hrimsClient || !id) return null;
+  const { data } = await hrimsClient
+    .from('business_units')
+    .select('id, name, code, type, is_active')
+    .eq('id', id)
+    .maybeSingle();
+  return (data as HrimsBusinessUnit) || null;
+}
+
 /**
  * Resolve the approval chain from the organogram for a given employee.
  * Walks up the organogram tree from the employee's position to the root,

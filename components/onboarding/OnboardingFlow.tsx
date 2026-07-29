@@ -221,13 +221,11 @@ export default function OnboardingFlow({ user, needsProfileSetup, hasSignature, 
           setSavingProfile(false);
           return;
         }
-        if (!reportsTo) {
-          setProfileError('Please select who you report to.');
-          setSavingProfile(false);
-          return;
-        }
         // AD-only user: save the Circle profile and queue the reporting line
-        // for HR to add to the HRIMS organogram.
+        // for HR to add to the HRIMS organogram. The manager is RECOMMENDED but
+        // optional: a new joiner's manager may not be in The Circle yet (the
+        // picker only finds people who have signed in), and blocking on it used
+        // to prevent the whole profile — including the department — from saving.
         const res = await fetch('/api/onboarding/reporting-line', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -235,14 +233,17 @@ export default function OnboardingFlow({ user, needsProfileSetup, hasSignature, 
             business_unit_id: selectedBuId,
             department_id: selectedDeptId,
             job_title: jobTitle.trim(),
-            reports_to_user_id: reportsTo.id,
+            reports_to_user_id: reportsTo?.id ?? null,
           }),
         });
-        if (!res.ok) throw new Error();
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          throw new Error(d?.error);
+        }
       }
       go(step + 1);
-    } catch {
-      setProfileError('We couldn’t save your details. Please try again.');
+    } catch (err: any) {
+      setProfileError(err?.message || 'We couldn’t save your details. Please try again.');
     } finally {
       setSavingProfile(false);
     }
@@ -281,7 +282,20 @@ export default function OnboardingFlow({ user, needsProfileSetup, hasSignature, 
     }
   };
 
-  const manualComplete = !!selectedBuId && !!selectedDeptId && !!jobTitle.trim() && !!reportsTo;
+  // The person at the top of the org (Group Chief Executive) reports to the
+  // board, who are not Circle users — so we don't ask them "who do you report
+  // to?". Detected from the job title they enter.
+  const isTopRole = /\b(group chief executive|chief executive officer|\bceo\b|group ceo|managing director)\b/i.test(jobTitle);
+  useEffect(() => {
+    if (isTopRole && reportsTo) setReportsTo(null);
+  }, [isTopRole, reportsTo]);
+
+  // NOTE: the manager (reportsTo) is deliberately NOT required here — it's
+  // optional in the UI and the API. Requiring it used to leave users whose
+  // manager hadn't signed in yet stuck with a disabled Continue button, so
+  // they abandoned onboarding and their department/business unit were never
+  // saved (department_id/business_unit_id stayed NULL in app_users).
+  const manualComplete = !!selectedBuId && !!selectedDeptId && !!jobTitle.trim();
   const hrimsReady = !hrimsLoading && (hrimsFound || manualComplete || !needsProfileSetup);
 
   // ---- per-step content ----------------------------------------------------
@@ -388,6 +402,7 @@ export default function OnboardingFlow({ user, needsProfileSetup, hasSignature, 
             />
           </div>
 
+          {!isTopRole && (
           <ManagerPicker
             selected={reportsTo}
             onSelect={(u) => { setReportsTo(u); setManagerSearch(''); setManagerResults([]); setManagerOpen(false); }}
@@ -399,6 +414,7 @@ export default function OnboardingFlow({ user, needsProfileSetup, hasSignature, 
             open={managerOpen}
             onOpen={() => setManagerOpen(true)}
           />
+          )}
         </div>
       )}
     </div>,
@@ -712,8 +728,11 @@ function ManagerPicker({
   return (
     <div>
       <label className="block text-sm font-medium text-text-primary mb-1.5">
-        Who do you report to? <span className="text-danger">*</span>
+        Who do you report to? <span className="text-text-muted font-normal">(optional)</span>
       </label>
+      <p className="text-xs text-text-muted mb-1.5">
+        If you can’t find your manager yet (they may not have signed in), you can leave this and set it later.
+      </p>
       {selected ? (
         <div className="flex items-center gap-3 bg-primary-50 border border-primary-200 p-3 rounded-lg">
           <div className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center flex-shrink-0">

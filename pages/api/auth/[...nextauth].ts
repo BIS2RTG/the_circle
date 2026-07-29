@@ -8,6 +8,42 @@ import { IDLE_TIMEOUT_SECONDS } from "../../../lib/sessionTimeout";
 import { saveMsTokens, MS_SCOPE } from "../../../lib/msTokenStore";
 import { verifyApprovalLinkToken } from "../../../lib/approvalLinkToken";
 
+/**
+ * Identity normalisation for Azure sign-ins.
+ *
+ * - `*@rtgzim.onmicrosoft.com` accounts are blocked outright (users must sign
+ *   in with their real `@rtg.co.zw` mailbox identity).
+ * - Admin accounts (`firstname.lastname-a@rtg.co.zw`) must NOT spawn a second
+ *   Circle profile: when the matching base account (`firstname.lastname@rtg.co.zw`)
+ *   exists, the session is linked to that original app_users row instead.
+ */
+const BLOCKED_EMAIL_DOMAINS = [/@rtgzim\.onmicrosoft\.com$/i];
+
+export function isBlockedEmail(email: string | null | undefined): boolean {
+  if (!email) return false;
+  return BLOCKED_EMAIL_DOMAINS.some((re) => re.test(email.trim()));
+}
+
+/** kilford.runhare-a@rtg.co.zw -> kilford.runhare@rtg.co.zw (null if not an admin variant). */
+export function adminBaseEmail(email: string | null | undefined): string | null {
+  if (!email) return null;
+  const m = email.trim().match(/^(.+)-a@(rtg\.co\.zw)$/i);
+  return m ? `${m[1]}@${m[2]}` : null;
+}
+
+/** Resolve the email an Azure profile signed in with, across all claim shapes. */
+function emailFromProfile(profile: any, user: any, fallback?: unknown): string | null {
+  return (
+    profile?.email ||
+    profile?.preferred_username ||
+    profile?.upn ||
+    profile?.mail ||
+    user?.email ||
+    (typeof fallback === "string" ? fallback : null) ||
+    null
+  );
+}
+
 // DEMO MODE — staging only. When DEMO_MODE=true (set ONLY on the staging
 // deployment, never in production) we additionally enable an email/password
 // "Credentials" provider so controlled, non-Microsoft demo accounts can sign
@@ -36,6 +72,11 @@ const providers: NextAuthOptions["providers"] = [
     clientId: process.env.AZURE_CLIENT_ID || "",
     clientSecret: process.env.AZURE_CLIENT_SECRET || "",
     tenantId: process.env.AZURE_TENANT || "common",
+    // next-auth's underlying openid-client defaults to a 3.5s timeout on the
+    // server-to-Microsoft calls (OIDC discovery, token exchange, JWKS). On
+    // slower networks / VPNs that isn't enough and the callback fails with
+    // "outgoing request timed out after 3500ms". Give it real headroom.
+    httpOptions: { timeout: 20000 },
     authorization: {
       params: {
         scope: MS_SCOPE,
@@ -175,7 +216,7 @@ export const authOptions: NextAuthOptions = {
     // Idle timeout: the cookie's exp is this far in the future and is rolled
     // forward whenever the client refreshes the session on user activity (see
     // SessionActivityGuard). Once it lapses, getServerSession/getToken return
-    // null and every protected API responds 401. The absolute (30 min) ceiling
+    // null and every protected API responds 401. The absolute (2 hour) ceiling
     // is enforced separately in middleware via the `loginAt` claim.
     maxAge: IDLE_TIMEOUT_SECONDS, // 15 minutes of inactivity
     updateAge: 60, // re-issue the rolling token at most once per minute
@@ -222,6 +263,14 @@ export const authOptions: NextAuthOptions = {
           return false;
         }
 
+        // Block *.onmicrosoft.com fallback identities — users must sign in
+        // with their real mailbox account (e.g. name@rtg.co.zw).
+        const signInEmail = emailFromProfile(profile, user);
+        if (isBlockedEmail(signInEmail)) {
+          console.log(`Sign-in denied: onmicrosoft account ${signInEmail}`);
+          return false;
+        }
+
         // profile contains oid and tid from Azure AD
         const tid = (profile as any)?.tid;
         if (!tid) {
@@ -258,7 +307,7 @@ export const authOptions: NextAuthOptions = {
       try {
         // Stamp the absolute-timeout anchor on every fresh sign-in (account is
         // only present at sign-in). Refreshes carry it forward untouched, so the
-        // 30-minute absolute ceiling is measured from the original login.
+        // 2-hour absolute ceiling is measured from the original login.
         if (account) {
           (token as any).loginAt = Date.now();
         }
@@ -327,13 +376,61 @@ export const authOptions: NextAuthOptions = {
             token.org_id = org.id;
             token.azure_oid = oid;
 
-            // Check if user already exists
-            const { data: existingUser } = await supabaseAdmin
-              .from("app_users")
-              .select("id, role, profile_picture_url, display_name")
-              .eq("organization_id", org.id)
-              .eq("azure_oid", oid)
-              .single();
+            // Resolve the Circle profile for this sign-in:
+            //  1) Admin accounts (name-a@rtg.co.zw) link to the BASE account row
+            //     when it exists — an admin sign-in must never create or use a
+            //     separate Circle profile.
+            //  2) Otherwise the row keyed by this azure_oid.
+            //  3) Otherwise adopt an existing row with the same email (covers
+            //     rows created before this Azure identity was seen) instead of
+            //     inserting a duplicate.
+            const userSelect = "id, role, profile_picture_url, display_name, email, azure_oid";
+            const emailStr = typeof email === "string" ? email : "";
+            const baseEmail = adminBaseEmail(emailStr);
+
+            let existingUser: any = null;
+            // Matched a row that belongs to a DIFFERENT Azure identity (base
+            // account / pre-seeded email row) — never overwrite its identity
+            // fields with this sign-in's.
+            let matchedByFallback = false;
+
+            if (baseEmail) {
+              const { data } = await supabaseAdmin
+                .from("app_users")
+                .select(userSelect)
+                .eq("organization_id", org.id)
+                .ilike("email", baseEmail)
+                .order("created_at", { ascending: true })
+                .limit(1)
+                .maybeSingle();
+              if (data) {
+                existingUser = data;
+                matchedByFallback = true;
+              }
+            }
+            if (!existingUser) {
+              const { data } = await supabaseAdmin
+                .from("app_users")
+                .select(userSelect)
+                .eq("organization_id", org.id)
+                .eq("azure_oid", oid)
+                .maybeSingle();
+              existingUser = data;
+            }
+            if (!existingUser && emailStr) {
+              const { data } = await supabaseAdmin
+                .from("app_users")
+                .select(userSelect)
+                .eq("organization_id", org.id)
+                .ilike("email", emailStr)
+                .order("created_at", { ascending: true })
+                .limit(1)
+                .maybeSingle();
+              if (data) {
+                existingUser = data;
+                matchedByFallback = true;
+              }
+            }
 
             let profilePictureUrl = existingUser?.profile_picture_url || null;
             let displayName = existingUser?.display_name || token.name || user?.name || null;
@@ -377,32 +474,53 @@ export const authOptions: NextAuthOptions = {
               }
             }
 
-            // Upsert user record in app_users
-            const upsertData: any = {
-              organization_id: org.id,
-              azure_oid: oid,
-              email: email,
-              display_name: displayName,
-            };
+            let appUser: { id: string; role: string | null } | null = null;
 
-            // Only set profile_picture_url if we fetched one and user doesn't have one
-            if (profilePictureUrl && !existingUser?.profile_picture_url) {
-              upsertData.profile_picture_url = profilePictureUrl;
-            }
+            if (matchedByFallback && existingUser) {
+              // Linked to the original account (admin variant or email match).
+              // Leave its email/azure_oid/display_name untouched — only
+              // backfill a missing profile picture.
+              if (profilePictureUrl && !existingUser.profile_picture_url) {
+                await supabaseAdmin
+                  .from("app_users")
+                  .update({ profile_picture_url: profilePictureUrl })
+                  .eq("id", existingUser.id);
+              }
+              appUser = { id: existingUser.id, role: existingUser.role ?? null };
+              // Present the ORIGINAL account's email on the session so HRIMS
+              // matching and display use the base identity, not the -a variant.
+              if (existingUser.email) {
+                token.email = existingUser.email;
+              }
+            } else {
+              // Upsert user record in app_users
+              const upsertData: any = {
+                organization_id: org.id,
+                azure_oid: oid,
+                email: email,
+                display_name: displayName,
+              };
 
-            const { data: appUser, error: userError } = await supabaseAdmin
-              .from("app_users")
-              .upsert(upsertData, { onConflict: "organization_id,azure_oid" })
-              .select("id, role")
-              .single();
+              // Only set profile_picture_url if we fetched one and user doesn't have one
+              if (profilePictureUrl && !existingUser?.profile_picture_url) {
+                upsertData.profile_picture_url = profilePictureUrl;
+              }
 
-            if (userError) {
-              console.error("Supabase error upserting user in jwt:", userError.message);
+              const { data: upserted, error: userError } = await supabaseAdmin
+                .from("app_users")
+                .upsert(upsertData, { onConflict: "organization_id,azure_oid" })
+                .select("id, role")
+                .single();
+
+              if (userError) {
+                console.error("Supabase error upserting user in jwt:", userError.message);
+              }
+              appUser = upserted;
             }
 
             if (appUser) {
               token.user_id = appUser.id;
-              token.role = appUser.role;
+              token.role = appUser.role ?? undefined;
               // Note: profile_picture_url and display_name are NOT stored in JWT to reduce cookie size
               // They should be fetched from the database when needed via useCurrentUser hook
 
@@ -434,7 +552,7 @@ export const authOptions: NextAuthOptions = {
         }
       }
       // Surface the login time so the client guard can enforce the absolute
-      // (30 min) timeout and show the matching UX.
+      // (2 hour) timeout and show the matching UX.
       if (typeof (token as any).loginAt === "number") {
         (session as any).loginAt = (token as any).loginAt;
       }

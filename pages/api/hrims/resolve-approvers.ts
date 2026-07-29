@@ -455,16 +455,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         general_manager,
         procurement_manager,
         corporate_hod,
-        projects_manager,
         managing_director,
         finance_director,
         capexCeo,
       ] = await Promise.all([
         resolveFirstPositionTitle(['Finance Manager', 'Accountant']),
         resolveDepartmentHead(),
-        resolveFirstPositionTitle(['Procurement Manager', 'Head of Procurement']),
+        // Procurement and Projects Manager is one person; match either title variant.
+        resolveFirstPositionTitle(['Procurement and Projects Manager', 'Procurement Manager', 'Head of Procurement', 'Projects Manager', 'Project Manager']),
         resolveFirstPositionTitle(['Corporate Head of Department', 'Head of Department']),
-        resolveFirstPositionTitle(['Projects Manager', 'Project Manager']),
         resolveFirstPositionTitle(['Chief Operating Officer', 'COO', 'Managing Director', 'MD']),
         resolveFirstPositionTitle(['Chief Finance Officer', 'CFO', 'Finance Director', 'Director of Finance']),
         resolveFirstPositionTitle(['CEO', 'Chief Executive Officer']),
@@ -473,7 +472,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       approvers.general_manager = general_manager;
       approvers.procurement_manager = procurement_manager;
       approvers.corporate_hod = corporate_hod;
-      approvers.projects_manager = projects_manager;
       approvers.managing_director = managing_director;
       approvers.finance_director = finance_director;
       approvers.ceo = capexCeo;
@@ -637,6 +635,39 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     } else {
       return res.status(400).json({ error: 'Invalid form type. Must be: travel, hotel-booking, voucher, capex, petty-cash, inter-unit-debit-note, or inter-unit-credit-note' });
+    }
+
+    // De-duplicate auto-resolved approvers: the same person must never occupy
+    // two roles in one approval workflow. This happens for executives (and people
+    // who report close to them) whose Line Manager and/or Functional Head resolve
+    // to the same senior person as a fixed role — e.g. the CEO being auto-filled
+    // as both Functional Head and CEO. Process roles from most to least senior and
+    // clear any repeat of a userId already claimed by a more senior role, so the
+    // junior/chain role (Line Manager, Functional Head) is left EMPTY to be filled
+    // manually rather than duplicating a senior approver.
+    const DEDUP_PRIORITY: Record<string, string[]> = {
+      travel: ['ceo', 'hrd', 'functional_head', 'line_manager'],
+      'hotel-booking': ['ceo', 'hrd', 'functional_head', 'line_manager'],
+      capex: [
+        'ceo', 'finance_director', 'managing_director', 'corporate_hod',
+        'procurement_manager', 'general_manager', 'finance_manager',
+      ],
+      voucher: ['ceo', 'commercial_director'],
+      'petty-cash': ['finance_manager', 'accountant', 'department_head'],
+      'inter-unit-debit-note': ['from_finance_manager', 'to_accountant'],
+      'inter-unit-credit-note': ['from_finance_manager', 'to_accountant'],
+    };
+    const dedupOrder = DEDUP_PRIORITY[formType] || Object.keys(approvers);
+    const claimedUserIds = new Set<string>();
+    for (const roleKey of dedupOrder) {
+      const a = approvers[roleKey];
+      if (!a) continue;
+      if (claimedUserIds.has(a.userId)) {
+        approvers[roleKey] = null;
+        debug.push(`DEDUP: cleared "${roleKey}" — ${a.displayName} already fills a more senior role`);
+      } else {
+        claimedUserIds.add(a.userId);
+      }
     }
 
     console.log('[resolve-approvers] Debug trace:', debug.join(' | '));

@@ -1318,7 +1318,7 @@ export class ApprovalEngine {
 
     const { data: request } = await supabaseAdmin
       .from('requests')
-      .select('creator_id, status, organization_id, title, metadata, request_steps(status, approver_user_id)')
+      .select('creator_id, status, organization_id, title, metadata, request_steps(status, approver_user_id, step_index)')
       .eq('id', requestId)
       .single();
 
@@ -1361,11 +1361,16 @@ export class ApprovalEngine {
       }
     }
 
-    // Who was waiting on this so we can tell them it's been pulled back.
-    const pendingApproverIds = Array.from(
+    // Only the approver(s) ACTIVELY holding the request now (step status
+    // 'pending') are told it was pulled back. Downstream approvers are still
+    // 'waiting' and were never notified about this request in the first place, so
+    // emailing the whole approval chain on unsubmit is just noise. Sequential →
+    // the current approver only; parallel → everyone, who were all genuinely
+    // notified when it was submitted.
+    const activeApproverIds = Array.from(
       new Set(
         steps
-          .filter((s) => (s.status === 'pending' || s.status === 'waiting') && s.approver_user_id)
+          .filter((s) => s.status === 'pending' && s.approver_user_id)
           .map((s) => s.approver_user_id as string)
       )
     );
@@ -1403,7 +1408,11 @@ export class ApprovalEngine {
     const note = isRevive
       ? `The requester reopened ${requestRef} to amend and resubmit it.`
       : `The requester pulled back ${requestRef} to amend it. No action is needed for now — you'll be re-notified if it's resubmitted.`;
-    for (const approverId of pendingApproverIds) {
+
+    // Notify ONLY the currently-active approver(s) — never the downstream
+    // 'waiting' chain. This applies to every request type (previously only CAPEX
+    // was limited this way, so travel/comp/etc. emailed everyone in the workflow).
+    for (const approverId of activeApproverIds) {
       try {
         await this.notifyApprover(requestId, approverId, request.organization_id, userId, note);
       } catch (e) {
