@@ -77,7 +77,7 @@ const navSections: NavSection[] = [
         icon: <ListChecks {...iconProps} />,
       },
       {
-        href: '/requests/drafts',
+        href: '/requests/my-requests?tab=drafts',
         label: 'My Drafts',
         icon: <FilePen {...iconProps} />,
       },

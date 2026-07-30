@@ -17,6 +17,7 @@ interface Assignment {
   can_edit: boolean;
   can_withdraw: boolean;
   can_manage_notifications: boolean;
+  can_gatekeep: boolean;
   assistant: OrgUser | null;
   principal: OrgUser | null;
 }
@@ -38,6 +39,7 @@ interface PrincipalCaps {
   can_edit: boolean;
   can_withdraw: boolean;
   can_manage_notifications: boolean;
+  can_gatekeep: boolean;
   can_watch: boolean;
 }
 
@@ -46,7 +48,7 @@ interface AssistantGroup {
   principals: Map<string, PrincipalCaps>;
 }
 
-/** The six capabilities, in display order. `watch` is stored in permanent_watchers. */
+/** The capabilities, in display order. `watch` is stored in permanent_watchers. */
 const CAPS: { key: keyof PrincipalCaps; label: string; short: string }[] = [
   { key: 'can_file', label: 'File on their behalf', short: 'File' },
   { key: 'can_watch', label: 'Watch their requests', short: 'Watch' },
@@ -54,6 +56,7 @@ const CAPS: { key: keyof PrincipalCaps; label: string; short: string }[] = [
   { key: 'can_edit', label: 'Edit / amend', short: 'Edit' },
   { key: 'can_withdraw', label: 'Withdraw / resubmit', short: 'Withdraw' },
   { key: 'can_manage_notifications', label: 'Receive notifications', short: 'Notif' },
+  { key: 'can_gatekeep', label: 'Screen approvals before them', short: 'Screen' },
 ];
 
 /** Debounced Azure-AD-backed user search (falls back to app_users server-side). */
@@ -194,6 +197,7 @@ export default function AssistantAssignmentsCard() {
           can_edit: false,
           can_withdraw: false,
           can_manage_notifications: false,
+          can_gatekeep: false,
           can_watch: false,
         });
       }
@@ -209,6 +213,7 @@ export default function AssistantAssignmentsCard() {
       p.can_edit = a.can_edit;
       p.can_withdraw = a.can_withdraw;
       p.can_manage_notifications = a.can_manage_notifications;
+      p.can_gatekeep = a.can_gatekeep;
     }
     // Admin watcher rows (watcher = assistant, owner = principal). The endpoint
     // already returns only admin-managed rows, so no origin heuristic here.
@@ -245,6 +250,7 @@ export default function AssistantAssignmentsCard() {
           can_edit: caps.can_edit,
           can_withdraw: caps.can_withdraw,
           can_manage_notifications: caps.can_manage_notifications,
+          can_gatekeep: caps.can_gatekeep,
         }),
       });
       if (!res.ok) throw new Error((await res.json()).error || 'Failed to update');
@@ -296,6 +302,7 @@ export default function AssistantAssignmentsCard() {
       can_edit: false,
       can_withdraw: false,
       can_manage_notifications: false,
+      can_gatekeep: false,
       can_watch: false,
     });
   };
@@ -336,6 +343,11 @@ export default function AssistantAssignmentsCard() {
         Assign an assistant to act for specific people. An assistant can act for multiple people, each with
         their own capabilities. The assistant is the filer of record and receives the approval updates; the
         person they file for is notified once the request is fully approved.
+        <span className="block mt-1">
+          <strong>Screen approvals before them</strong> routes that person&apos;s incoming approval
+          notifications and emails to the assistant first — the assistant reviews each request and either
+          forwards it to them or returns it to the requestor with a comment.
+        </span>
       </p>
 
       {error && <p className="text-sm text-danger-600 mb-3">{error}</p>}
