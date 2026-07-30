@@ -327,12 +327,12 @@ export function buildTravelAuthPreviewSections(input: TravelAuthPreviewInput): P
                         {!onBehalf && (
                             <div style={{ minWidth: 180 }}>
                                 <div style={{ fontSize: 9, fontWeight: 700, color: '#555', textTransform: 'uppercase' }}>Signature of Traveller</div>
-                                <div style={{ borderBottom: '1px solid #666', minHeight: 30, display: 'flex', alignItems: 'center' }}>
+                                <div style={{ borderBottom: '1px solid #666', minHeight: 48, display: 'flex', alignItems: 'center' }}>
                                     {travellerSignatureUrl ? (
                                         <img
                                             src={travellerSignatureUrl}
                                             alt="Traveller signature"
-                                            style={{ maxHeight: 30, maxWidth: 160, display: 'block' }}
+                                            style={{ maxHeight: 48, maxWidth: 200, objectFit: 'contain', display: 'block' }}
                                             onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
                                         />
                                     ) : null}
@@ -499,12 +499,12 @@ export function buildTravelAuthPreviewSections(input: TravelAuthPreviewInput): P
                                         <div style={{ fontSize: 9, fontWeight: 700, color: '#555', textTransform: 'uppercase' }}>Name</div>
                                         <div style={{ fontSize: 11, marginBottom: 8 }}>{a?.name || '—'}</div>
                                         <div style={{ fontSize: 9, fontWeight: 700, color: '#555', textTransform: 'uppercase' }}>Signature</div>
-                                        <div style={{ borderBottom: '1px solid #666', minHeight: 32, marginTop: 4, marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                        <div style={{ borderBottom: '1px solid #666', minHeight: 56, marginTop: 4, marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                                             {a?.signatureUrl ? (
                                                 <img
                                                     src={a.signatureUrl}
                                                     alt={`${a.name || r.label} signature`}
-                                                    style={{ maxHeight: 32, maxWidth: '100%', display: 'block' }}
+                                                    style={{ maxHeight: 56, maxWidth: '100%', objectFit: 'contain', display: 'block' }}
                                                 />
                                             ) : null}
                                         </div>

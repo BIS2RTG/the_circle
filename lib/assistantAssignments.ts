@@ -18,7 +18,8 @@ export type AssistantCapability =
   | 'can_upload'
   | 'can_edit'
   | 'can_withdraw'
-  | 'can_manage_notifications';
+  | 'can_manage_notifications'
+  | 'can_gatekeep';
 
 export interface AssistantCapabilities {
   can_file: boolean;
@@ -26,6 +27,7 @@ export interface AssistantCapabilities {
   can_edit: boolean;
   can_withdraw: boolean;
   can_manage_notifications: boolean;
+  can_gatekeep: boolean;
 }
 
 export interface AssignedPrincipal {
@@ -104,7 +106,7 @@ export async function getAssistantCapabilities(
   if (!assistantId || !principalId || !organizationId) return null;
   const { data, error } = await supabaseAdmin
     .from('assistant_assignments')
-    .select('can_file, can_upload, can_edit, can_withdraw, can_manage_notifications')
+    .select('can_file, can_upload, can_edit, can_withdraw, can_manage_notifications, can_gatekeep')
     .eq('organization_id', organizationId)
     .eq('assistant_id', assistantId)
     .eq('principal_id', principalId)
@@ -241,4 +243,92 @@ export async function fanoutToNotificationAssistants(
   } catch (error) {
     console.error('fanoutToNotificationAssistants failed:', error);
   }
+}
+
+// ============================================================================
+// Gatekeeping — screen a principal's approvals before they reach the principal
+// ============================================================================
+
+/**
+ * The assistants who SCREEN `principalId`'s incoming approvals (can_gatekeep =
+ * true) — i.e. they receive the approval notification/email first and decide
+ * whether it goes forward to the boss or back to the requestor. Returns their
+ * user ids (excluding the principal). Returns [] (never throws).
+ */
+export async function getGatekeepersFor(
+  principalId: string,
+  organizationId: string
+): Promise<string[]> {
+  if (!principalId || !organizationId) return [];
+  const { data, error } = await supabaseAdmin
+    .from('assistant_assignments')
+    .select('assistant_id')
+    .eq('organization_id', organizationId)
+    .eq('principal_id', principalId)
+    .eq('can_gatekeep', true);
+
+  if (error) {
+    console.error('getGatekeepersFor failed:', error);
+    return [];
+  }
+  return (data || [])
+    .map((r: any) => r.assistant_id)
+    .filter((id: string) => id && id !== principalId);
+}
+
+/** Whether `assistantId` gatekeeps `principalId`'s approvals (can_gatekeep = true). */
+export async function isGatekeeperFor(
+  assistantId: string,
+  principalId: string,
+  organizationId: string
+): Promise<boolean> {
+  if (!assistantId || !principalId || !organizationId) return false;
+  const { data, error } = await supabaseAdmin
+    .from('assistant_assignments')
+    .select('id')
+    .eq('organization_id', organizationId)
+    .eq('assistant_id', assistantId)
+    .eq('principal_id', principalId)
+    .eq('can_gatekeep', true)
+    .limit(1);
+
+  if (error) {
+    console.error('isGatekeeperFor query failed:', error);
+    return false;
+  }
+  return (data?.length || 0) > 0;
+}
+
+/**
+ * The principals whose approvals `assistantId` screens (can_gatekeep = true),
+ * mapped to app_users for display. Mirrors getPrincipalsForAssistant. Returns
+ * [] (never throws). Used by the screening queue.
+ */
+export async function getGatekeptPrincipals(
+  assistantId: string,
+  organizationId: string
+): Promise<AssignedPrincipal[]> {
+  if (!assistantId || !organizationId) return [];
+
+  const { data, error } = await supabaseAdmin
+    .from('assistant_assignments')
+    .select('principal:app_users!assistant_assignments_principal_id_fkey ( id, display_name, email, job_title )')
+    .eq('organization_id', organizationId)
+    .eq('assistant_id', assistantId)
+    .eq('can_gatekeep', true);
+
+  if (error) {
+    console.error('getGatekeptPrincipals failed:', error);
+    return [];
+  }
+
+  return (data || [])
+    .map((row: any) => row.principal)
+    .filter(Boolean)
+    .map((p: any) => ({
+      userId: p.id,
+      name: p.display_name || p.email,
+      email: p.email,
+      positionTitle: p.job_title || '',
+    }));
 }

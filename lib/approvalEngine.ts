@@ -24,7 +24,12 @@ import { sendUserNotificationEmail, escapeHtml, appBaseUrl } from './notificatio
 import { approvalLinkUrl } from './approvalLinkToken';
 import { getUserPreferences } from './userPreferences';
 import { getActiveDelegateFor } from './delegations';
-import { assistantCanActOn, fanoutToNotificationAssistants } from './assistantAssignments';
+import {
+  assistantCanActOn,
+  fanoutToNotificationAssistants,
+  getGatekeepersFor,
+  isGatekeeperFor,
+} from './assistantAssignments';
 
 // ============================================================================
 // Types
@@ -342,38 +347,47 @@ export class ApprovalEngine {
       return { success: false, error: 'No approval steps could be created' };
     }
     
-    // Insert all steps
-    const { error: stepsError } = await supabaseAdmin
+    // Insert all steps (returning ids so we can address the newly-active
+    // step(s) when deciding whether to screen them through a gatekeeper).
+    const { data: insertedSteps, error: stepsError } = await supabaseAdmin
       .from('request_steps')
-      .insert(stepsToCreate);
-    
+      .insert(stepsToCreate)
+      .select('id, step_index, approver_user_id, status');
+
     if (stepsError) {
       console.error('Failed to create request steps:', stepsError);
       return { success: false, error: 'Failed to create approval steps' };
     }
-    
+
+    const created = (insertedSteps || []).slice().sort((a, b) => a.step_index - b.step_index);
+
     if (useParallelApprovals) {
-      // PARALLEL: Notify ALL approvers immediately
-      for (const step of stepsToCreate) {
-        await this.notifyApprover(
+      // PARALLEL: Announce to ALL approvers immediately (each gatekept independently).
+      for (const step of created) {
+        await this.announceStepForApproval(
           requestId,
+          step.id,
           step.approver_user_id,
           organizationId,
           creatorId,
-          `New approval request requires your attention (Parallel approval - ${stepsToCreate.length} approvers)`
+          `New approval request requires your attention (Parallel approval - ${created.length} approvers)`
         );
       }
     } else {
-      // SEQUENTIAL: Notify only the first approver
-      await this.notifyApprover(
-        requestId,
-        stepsToCreate[0].approver_user_id,
-        organizationId,
-        creatorId,
-        'New approval request requires your attention'
-      );
+      // SEQUENTIAL: Announce only the first approver.
+      const first = created[0];
+      if (first) {
+        await this.announceStepForApproval(
+          requestId,
+          first.id,
+          first.approver_user_id,
+          organizationId,
+          creatorId,
+          'New approval request requires your attention'
+        );
+      }
     }
-    
+
     return { success: true };
   }
   
@@ -868,9 +882,11 @@ export class ApprovalEngine {
         const nextStepNumber = currentStep.step_index + 1;
         const stepsInfo = totalSteps ? ` (Step ${nextStepNumber} of ${totalSteps})` : '';
 
-        // SEQUENTIAL NOTIFICATION: Notify the next approver only when their turn comes
-        await this.notifyApprover(
+        // SEQUENTIAL NOTIFICATION: Announce to the next approver only when their
+        // turn comes — routed through screening if that approver has a gatekeeper.
+        await this.announceStepForApproval(
           requestId,
+          nextStep.id,
           nextApproverId,
           request.organization_id,
           approverId,
@@ -1541,6 +1557,288 @@ export class ApprovalEngine {
       }
     } catch (e) {
       console.error('Failed to send cancellation notifications:', e);
+    }
+
+    return { success: true };
+  }
+
+  /**
+   * Announce that an approval step is now active.
+   *
+   * Normally notifies the approver directly (notifyApprover). But if the
+   * approver has one or more gatekeeping assistants (can_gatekeep), the step is
+   * parked in `pending_screen` and the GATEKEEPER(S) are notified instead — they
+   * screen the request and either forward it to the approver or return it to the
+   * requestor. The approver is NOT notified until the request is forwarded.
+   */
+  private static async announceStepForApproval(
+    requestId: string,
+    stepId: string,
+    approverId: string | null,
+    organizationId: string,
+    senderId: string,
+    message: string
+  ): Promise<void> {
+    if (!approverId) return;
+
+    const gatekeepers = await getGatekeepersFor(approverId, organizationId);
+    if (gatekeepers.length === 0) {
+      // No screening — the normal path.
+      await this.notifyApprover(requestId, approverId, organizationId, senderId, message);
+      return;
+    }
+
+    // Park the step for screening so it never surfaces on the boss's desk yet.
+    await supabaseAdmin
+      .from('request_steps')
+      .update({ screening_status: 'pending_screen' })
+      .eq('id', stepId);
+
+    // Resolve the boss's name for the gatekeeper's notification.
+    const { data: boss } = await supabaseAdmin
+      .from('app_users')
+      .select('display_name, email')
+      .eq('id', approverId)
+      .maybeSingle();
+    const bossName = boss?.display_name || boss?.email || 'the person you assist';
+
+    const title = `Screen a request for ${bossName}`;
+    const screenMessage =
+      `${message}\n\nThis request is waiting on ${bossName}. Review it, then either forward it to ${bossName} ` +
+      `or return it to the requestor with a comment.`;
+
+    for (const gatekeeperId of gatekeepers) {
+      try {
+        await supabaseAdmin.from('notifications').insert({
+          organization_id: organizationId,
+          recipient_id: gatekeeperId,
+          sender_id: senderId,
+          type: 'task',
+          title,
+          message: screenMessage,
+          metadata: {
+            request_id: requestId,
+            step_id: stepId,
+            screening: true,
+            principal_id: approverId,
+            action_label: 'Screen Request',
+            action_url: `/approvals?tab=screening`,
+          },
+          is_read: false,
+        });
+      } catch (error) {
+        console.error('Failed to notify gatekeeper:', error);
+      }
+
+      // Mirror by email (gated by the gatekeeper's approval-tasks preference).
+      await sendUserNotificationEmail({
+        userId: gatekeeperId,
+        actorUserId: senderId,
+        kind: 'approval_tasks',
+        subject: `Screen a request for ${bossName} — The Circle`,
+        heading: `A request is waiting to be screened for ${escapeHtml(bossName)}`,
+        bodyHtml: `<p>${escapeHtml(screenMessage).replace(/\n/g, '<br>')}</p>`,
+        actionUrl: `${appBaseUrl()}/approvals?tab=screening`,
+        actionLabel: 'Screen the request',
+      });
+    }
+  }
+
+  /**
+   * Forward a screened step to the approver (the boss).
+   *
+   * Called when a gatekeeping assistant decides an incoming approval is fit to
+   * proceed. Verifies the caller gatekeeps the step's approver and the step is
+   * still awaiting screening, marks the screen resolved, then notifies the boss
+   * exactly as a normal activation would (task + approval email).
+   */
+  static async forwardScreenedStep(
+    requestId: string,
+    stepId: string,
+    screenerId: string,
+    comment?: string
+  ): Promise<{ success: boolean; error?: string }> {
+    const { data: step } = await supabaseAdmin
+      .from('request_steps')
+      .select('id, request_id, approver_user_id, screening_status')
+      .eq('id', stepId)
+      .eq('request_id', requestId)
+      .maybeSingle();
+
+    if (!step) return { success: false, error: 'Approval step not found' };
+    if (step.screening_status !== 'pending_screen') {
+      return { success: false, error: 'This request has already been screened' };
+    }
+    if (!step.approver_user_id) return { success: false, error: 'This step has no approver' };
+
+    const { data: request } = await supabaseAdmin
+      .from('requests')
+      .select('organization_id, title, metadata')
+      .eq('id', requestId)
+      .maybeSingle();
+    if (!request) return { success: false, error: 'Request not found' };
+
+    const orgId = request.organization_id;
+    if (!(await isGatekeeperFor(screenerId, step.approver_user_id, orgId))) {
+      return { success: false, error: 'You are not authorised to screen this request' };
+    }
+
+    // Resolve the screen.
+    await supabaseAdmin
+      .from('request_steps')
+      .update({ screening_status: 'forwarded', screener_id: screenerId, screened_at: new Date().toISOString() })
+      .eq('id', stepId);
+
+    const requestRef = (request.metadata as any)?.referenceCode || `"${request.title}"`;
+    const trimmed = (comment || '').trim();
+    const note = trimmed
+      ? `${requestRef} is ready for your approval. Forwarded by your assistant with a note: "${truncate(trimmed, 240)}"`
+      : `${requestRef} is ready for your approval. Forwarded by your assistant.`;
+
+    // Notify the boss exactly like a normal activation.
+    await this.notifyApprover(requestId, step.approver_user_id, orgId, screenerId, note);
+
+    try {
+      await recordAuditEvent({
+        organizationId: orgId,
+        category: 'workflow',
+        action: 'request.screened_forwarded',
+        severity: 'notice',
+        targetType: 'request',
+        targetId: requestId,
+        requestId,
+        details: { stepId, screenerId, comment: trimmed || null },
+      });
+    } catch (e) {
+      console.error('Failed to record screening-forward audit:', e);
+    }
+
+    return { success: true };
+  }
+
+  /**
+   * Return a screened request to the requestor's Drafts with a comment.
+   *
+   * Called when a gatekeeping assistant decides an incoming approval is NOT fit
+   * to proceed. Verifies the caller gatekeeps the step's approver and the step
+   * is still awaiting screening, then pulls the whole request back to an
+   * editable draft (clearing steps, like unsubmit) with the assistant's comment
+   * recorded, and notifies the requestor. The boss is never notified.
+   */
+  static async returnScreenedRequest(
+    requestId: string,
+    stepId: string,
+    screenerId: string,
+    comment: string
+  ): Promise<{ success: boolean; error?: string }> {
+    const trimmed = (comment || '').trim();
+    if (!trimmed) return { success: false, error: 'A comment is required to return a request' };
+
+    const { data: step } = await supabaseAdmin
+      .from('request_steps')
+      .select('id, request_id, approver_user_id, screening_status')
+      .eq('id', stepId)
+      .eq('request_id', requestId)
+      .maybeSingle();
+
+    if (!step) return { success: false, error: 'Approval step not found' };
+    if (step.screening_status !== 'pending_screen') {
+      return { success: false, error: 'This request has already been screened' };
+    }
+    if (!step.approver_user_id) return { success: false, error: 'This step has no approver' };
+
+    const { data: request } = await supabaseAdmin
+      .from('requests')
+      .select('creator_id, organization_id, title, metadata')
+      .eq('id', requestId)
+      .maybeSingle();
+    if (!request) return { success: false, error: 'Request not found' };
+
+    const orgId = request.organization_id;
+    if (!(await isGatekeeperFor(screenerId, step.approver_user_id, orgId))) {
+      return { success: false, error: 'You are not authorised to screen this request' };
+    }
+
+    // Resolve the screener + boss names for the record + notification.
+    const [{ data: screener }, { data: boss }] = await Promise.all([
+      supabaseAdmin.from('app_users').select('display_name, email').eq('id', screenerId).maybeSingle(),
+      supabaseAdmin.from('app_users').select('display_name, email').eq('id', step.approver_user_id).maybeSingle(),
+    ]);
+    const screenerName = screener?.display_name || screener?.email || 'an assistant';
+    const bossName = boss?.display_name || boss?.email || 'the approver';
+
+    const metadata: Record<string, any> = { ...(request.metadata || {}) };
+    const history = Array.isArray(metadata.screeningReturns) ? metadata.screeningReturns : [];
+    const entry = {
+      returnedBy: screenerId,
+      returnedByName: screenerName,
+      bossId: step.approver_user_id,
+      bossName,
+      comment: trimmed,
+      returnedAt: new Date().toISOString(),
+    };
+    history.push(entry);
+    metadata.screeningReturns = history;
+    metadata.lastScreeningReturn = entry;
+    delete metadata.current_step;
+    delete metadata.total_steps;
+
+    // Clear steps and pull the request back to an editable draft.
+    const { error: delErr } = await supabaseAdmin.from('request_steps').delete().eq('request_id', requestId);
+    if (delErr) {
+      console.error('Failed to clear steps on screening return:', delErr);
+      return { success: false, error: 'Failed to return request' };
+    }
+
+    const { error: updErr } = await supabaseAdmin
+      .from('requests')
+      .update({ status: 'draft', metadata, updated_at: new Date().toISOString() })
+      .eq('id', requestId);
+    if (updErr) {
+      console.error('Failed to return request to draft:', updErr);
+      return { success: false, error: 'Failed to return request' };
+    }
+
+    // Notify the requestor (task + email) with the comment.
+    const requestRef = (metadata as any)?.referenceCode || request.title || 'your request';
+    const message =
+      `${screenerName} (assistant to ${bossName}) returned ${requestRef} for changes before it goes forward.\n\n` +
+      `Comment: "${truncate(trimmed, 400)}"\n\nAmend it in your Drafts and resubmit.`;
+    await this.notifyRequester(
+      requestId,
+      request.creator_id,
+      orgId,
+      message,
+      request.metadata?.type || request.metadata?.requestType,
+      { title: 'Request returned for changes', senderId: screenerId, actionLabel: 'Open draft' }
+    );
+
+    // Timeline + audit (best-effort).
+    try {
+      await supabaseAdmin.from('request_modifications').insert({
+        request_id: requestId,
+        modified_by: screenerId,
+        modification_type: 'screening_return',
+        field_name: null,
+        old_value: null,
+        new_value: trimmed,
+      });
+    } catch (e) {
+      console.error('Failed to record screening_return modification:', e);
+    }
+    try {
+      await recordAuditEvent({
+        organizationId: orgId,
+        category: 'workflow',
+        action: 'request.screened_returned',
+        severity: 'notice',
+        targetType: 'request',
+        targetId: requestId,
+        requestId,
+        details: { stepId, screenerId, comment: trimmed },
+      });
+    } catch (e) {
+      console.error('Failed to record screening-return audit:', e);
     }
 
     return { success: true };

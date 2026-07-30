@@ -146,7 +146,7 @@ function buildApprovalSignaturesSection(request: any): PreviewSection {
                         <th style={{ ...headCellStyle, width: '8%' }}>Step</th>
                         <th style={headCellStyle}>Role</th>
                         <th style={headCellStyle}>Approver</th>
-                        <th style={{ ...headCellStyle, width: '18%' }}>Signature</th>
+                        <th style={{ ...headCellStyle, width: '30%' }}>Signature</th>
                         <th style={headCellStyle}>Decision</th>
                         <th style={headCellStyle}>Signed At</th>
                         <th style={headCellStyle}>Verification</th>
@@ -182,7 +182,7 @@ function buildApprovalSignaturesSection(request: any): PreviewSection {
                                             <img
                                                 src={sigUrl}
                                                 alt={`${approverName} signature`}
-                                                style={{ maxHeight: 48, maxWidth: '100%', display: 'block' }}
+                                                style={{ height: 80, maxHeight: 80, width: 'auto', maxWidth: '100%', objectFit: 'contain', display: 'block' }}
                                                 onError={(e) => {
                                                     // If the file isn't uploaded for this user, hide the broken-image icon.
                                                     (e.target as HTMLImageElement).style.display = 'none';

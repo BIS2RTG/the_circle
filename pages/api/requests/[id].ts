@@ -5,7 +5,7 @@ import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { validateBody, z } from '@/lib/validate';
 import { ApprovalEngine } from '@/lib/approvalEngine';
 import { assertValidOnBehalf, resolveOnBehalfProfile } from '@/lib/onBehalf';
-import { assistantCanActOn } from '@/lib/assistantAssignments';
+import { assistantCanActOn, isGatekeeperFor } from '@/lib/assistantAssignments';
 import { isPermanentWatcherOf } from '@/lib/permanentWatchers';
 import { getUserRBACProfile, hasPermission, PERMISSIONS } from '@/lib/rbac';
 import { audit } from '@/lib/auditLog';
@@ -73,6 +73,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             approver_role,
             approver_user_id,
             status,
+            screening_status,
             due_at,
             created_at,
             activated_at,
@@ -167,7 +168,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       // approver on this request has (they named this viewer as their watcher).
       const isPermanentWatcher = await isPermanentWatcherOf(userId, organizationId, request as any);
 
-      if (!isCreator && !isWatcher && !canApproverView && !isPermanentWatcher) {
+      // Gatekeeper: an assistant who screens an approver on this request may open
+      // it while a step of theirs is awaiting screening — so they can review it
+      // before forwarding to the boss or returning it to the requestor.
+      let isScreeningGatekeeper = false;
+      const screeningApproverIds = (request.request_steps || [])
+        .filter((s: any) => s.screening_status === 'pending_screen' && s.approver_user_id)
+        .map((s: any) => s.approver_user_id as string);
+      for (const approverId of Array.from(new Set(screeningApproverIds))) {
+        if (await isGatekeeperFor(userId, approverId, organizationId)) {
+          isScreeningGatekeeper = true;
+          break;
+        }
+      }
+
+      if (!isCreator && !isWatcher && !canApproverView && !isPermanentWatcher && !isScreeningGatekeeper) {
         // Finance admins can open any CAPEX (they manage funding from the
         // capex-tracker and need the full request detail). isElevatedViewer()
         // populates rbacProfile, so reuse it for the finance check.

@@ -62,6 +62,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           approver_role,
           approver_user_id,
           status,
+          screening_status,
           due_at,
           created_at,
           activated_at,
@@ -78,10 +79,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(500).json({ error: 'Failed to fetch pending approvals' });
     }
 
-    // Only return requests where the current user's step is actually pending
+    // Only return requests where the current user's step is actually pending AND
+    // not currently being screened by a gatekeeping assistant (those are hidden
+    // from the boss until the assistant forwards them).
     const filteredData = (data || []).filter((req: any) => {
       const userStep = req.request_steps?.find(
-        (step: any) => step.approver_user_id === userId && step.status === 'pending'
+        (step: any) =>
+          step.approver_user_id === userId &&
+          step.status === 'pending' &&
+          step.screening_status !== 'pending_screen'
       );
       return !!userStep;
     });

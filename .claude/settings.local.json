@@ -224,7 +224,10 @@
       "Read(//c/Program Files/LibreOffice/program/**)",
       "Read(//c/Program Files/Pandoc/**)",
       "Bash(grep -rn \"requests/comp/\\\\|/comp/\\\\${\" pages/ components/ lib/)",
-      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(JSON.stringify\\(p.scripts,null,2\\)\\)\")"
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(JSON.stringify\\(p.scripts,null,2\\)\\)\")",
+      "mcp__861faebf-71a3-42b9-aade-8f0f23fed2e0__list_tables",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\('sharp:', \\(p.dependencies||{}\\).sharp || \\(p.devDependencies||{}\\).sharp || 'NOT INSTALLED'\\); console.log\\('canvas:', \\(p.dependencies||{}\\).canvas||'no'\\);\")",
+      "Bash(node -e \"console.log\\('sharp version', require\\('sharp/package.json'\\).version\\)\")"
     ]
   }
 }
