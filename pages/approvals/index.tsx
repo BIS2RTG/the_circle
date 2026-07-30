@@ -13,7 +13,6 @@ import {
   Building2,
   Banknote,
   Landmark,
-  Receipt,
   ArrowLeftRight,
   BookText,
   TrendingUp,
@@ -135,11 +134,12 @@ const TYPE_META: Record<string, { label: string; Icon: LucideIcon }> = {
   international_travel_authorization: { label: 'Travel', Icon: Plane },
   travel_auth: { label: 'Travel', Icon: Plane },
   travel: { label: 'Travel', Icon: Plane },
-  hotel_booking: { label: 'Hotel & Accommodation', Icon: Building2 },
-  external_hotel_booking: { label: 'Hotel & Accommodation', Icon: Building2 },
-  accommodation: { label: 'Hotel & Accommodation', Icon: Building2 },
-  voucher_request: { label: 'Vouchers', Icon: Receipt },
-  voucher: { label: 'Vouchers', Icon: Receipt },
+  // "Comps" — complimentary requests (hotel bookings + vouchers) share one folder.
+  hotel_booking: { label: 'Comps', Icon: Building2 },
+  external_hotel_booking: { label: 'Comps', Icon: Building2 },
+  accommodation: { label: 'Comps', Icon: Building2 },
+  voucher_request: { label: 'Comps', Icon: Building2 },
+  voucher: { label: 'Comps', Icon: Building2 },
   petty_cash: { label: 'Petty Cash', Icon: Banknote },
   capex: { label: 'CAPEX', Icon: Landmark },
   'price-variation': { label: 'Price Variation', Icon: TrendingUp },
@@ -1155,8 +1155,9 @@ export default function ApprovalsPage({ initialPendingApprovals, initialWatching
               <Button variant="ghost" className="mt-4" onClick={clearAllFilters}>Clear filters</Button>
             )}
           </Card>
-        ) : typeFilter === 'all' && groupedData.length > 1 ? (
-          /* Grouped folders view */
+        ) : typeFilter === 'all' && groupedData.length >= 1 ? (
+          /* Grouped folders view — always foldered so each form type reads as
+             its own section (Comps, CAPEX, Travel, …), even a single group. */
           <div className="space-y-6">
             {groupedData.map(({ label, Icon, items }) => {
               const collapsed = collapsedTypes.has(label);

@@ -1169,6 +1169,7 @@ export const getServerSideProps: GetServerSideProps<RequestDetailsPageProps> = a
           status,
           due_at,
           created_at,
+          activated_at,
           first_viewed_at,
           last_viewed_at,
           is_redirected,

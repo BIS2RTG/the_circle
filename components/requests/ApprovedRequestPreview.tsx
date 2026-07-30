@@ -182,7 +182,7 @@ function buildApprovalSignaturesSection(request: any): PreviewSection {
                                             <img
                                                 src={sigUrl}
                                                 alt={`${approverName} signature`}
-                                                style={{ maxHeight: 48, maxWidth: '100%', display: 'block' }}
+                                                style={{ height: 60, maxHeight: 60, maxWidth: '100%', objectFit: 'contain', display: 'block' }}
                                                 onError={(e) => {
                                                     // If the file isn't uploaded for this user, hide the broken-image icon.
                                                     (e.target as HTMLImageElement).style.display = 'none';
