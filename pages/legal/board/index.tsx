@@ -90,6 +90,13 @@ export default function BoardGovernanceHub() {
       await loadOverview(year);
       setLoading(false);
       didInit.current = true;
+      // Opportunistically fire any due scheduled invitation sends. Vercel crons
+      // don't run on preview/staging, so this makes scheduled sends work there.
+      if (canManageMeetings) {
+        fetch('/api/legal/bgm/dispatch', { method: 'POST' }).then((r) => (r.ok ? r.json() : null)).then((d) => {
+          if (d?.dispatched) loadMeetings(year);
+        }).catch(() => {});
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
