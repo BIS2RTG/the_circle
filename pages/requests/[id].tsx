@@ -12,13 +12,10 @@ import { AppLayout } from '../../components/layout';
 import { Card, Button, Input } from '../../components/ui';
 import DynamicFormDetails from '../../components/DynamicFormDetails';
 import CashReceiptConfirmation from '../../components/requests/CashReceiptConfirmation';
-import ApprovalConfirmModal, { type ApprovalConfirmResult } from '../../components/approvals/ApprovalConfirmModal';
-import ElevationIndicator from '../../components/approvals/ElevationIndicator';
 import { useToast } from '../../components/ui/ToastProvider';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import SignatureSelector, { type SignatureSelection } from '../../components/approvals/SignatureSelector';
 import ApprovedRequestPreview, { ApprovedRequestPreviewInline } from '../../components/requests/ApprovedRequestPreview';
-import { getApprovalRisk, type ApprovalRisk, type AuthenticationMethod } from '@/lib/approvalRisk';
 import { getErrorMessage } from '@/lib/getErrorMessage';
 import { isNetworkError } from '@/lib/networkError';
 import Link from 'next/link';
@@ -1343,16 +1340,8 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
     const [reviewProcessing, setReviewProcessing] = useState(false);
     const [reviewError, setReviewError] = useState<string | null>(null);
     const [userSignatureUrl, setUserSignatureUrl] = useState<string | null>(null);
-    const [showApprovalConfirm, setShowApprovalConfirm] = useState(false);
     const [pendingApprovalAction, setPendingApprovalAction] = useState<'approve' | 'reject' | null>(null);
-    const [approvalRisk, setApprovalRisk] = useState<ApprovalRisk>('low');
-    const [approvalRiskReasons, setApprovalRiskReasons] = useState<string[]>([]);
-    const [hasBiometric, setHasBiometric] = useState(false);
     const [signatureSelection, setSignatureSelection] = useState<SignatureSelection>({ type: 'saved' });
-    /** Tracks whether the user has cleared the auth gate for this approval. Null means
-     *  not yet evaluated; 'session' means low-risk (no extra auth needed); otherwise
-     *  the rank of the elevation that satisfies the current request's risk. */
-    const [authClearedFor, setAuthClearedFor] = useState<'none' | 'session' | 'microsoft_mfa' | 'biometric'>('none');
     const [showRejectConfirm, setShowRejectConfirm] = useState(false);
     const [hrdCostAllocation, setHrdCostAllocation] = useState<Record<string, string>>({
         corp: '', mrc: '', nah: '', rth: '', khcc: '', brh: '', vfrh: '', azam: '',
@@ -1622,86 +1611,11 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
         }
     }, [showReviewModal, currentUserId]);
 
-    // Evaluate risk + check elevation status when the review modal opens.
-    // Drives whether the signature picker is gated behind a verification step.
-    useEffect(() => {
-        if (!showReviewModal || !request) {
-            setAuthClearedFor('none');
-            return;
-        }
-        const steps = request.request_steps || [];
-        const stepIdx = effectivePendingStep?.step_index ?? 0;
-        const evalResult = getApprovalRisk({
-            value: request.metadata?.amount ?? request.metadata?.total_amount ?? null,
-            workflowCategory: request.metadata?.workflow_category || request.metadata?.category || null,
-            requestType: request.metadata?.type || request.metadata?.requestType || null,
-            currentStepIndex: stepIdx,
-            totalSteps: steps.length,
-            formData: request.metadata?.formData || request.metadata?.form_data || null,
-        });
-        setApprovalRisk(evalResult.risk);
-        setApprovalRiskReasons(evalResult.reasons);
-
-        if (evalResult.risk === 'low') {
-            setAuthClearedFor('session');
-            return;
-        }
-        // Probe the elevation cookie. If it satisfies the required auth rank
-        // we let the user proceed straight to signature selection; otherwise
-        // the modal will gate signing behind a verification ceremony.
-        let cancelled = false;
-        const requiredRank = evalResult.risk === 'high' ? 2 : 1;
-        const rankMethod = (m: string | null | undefined) =>
-            m === 'biometric' ? 2 : m === 'microsoft_mfa' ? 1 : 0;
-        const refresh = () => {
-            fetch('/api/auth/elevation')
-                .then(r => r.ok ? r.json() : null)
-                .then((data) => {
-                    if (cancelled) return;
-                    // Mirror the server's inclusivity rule: for HIGH-risk approvals
-                    // a microsoft_mfa elevation is an acceptable fallback when the
-                    // user can't / won't use biometrics (see action.ts).
-                    const provides = rankMethod(data?.method);
-                    const satisfies = data?.elevated && (
-                        provides >= requiredRank ||
-                        (requiredRank === 2 && provides >= 1)
-                    );
-                    if (satisfies) {
-                        setAuthClearedFor(data.method);
-                    } else {
-                        setAuthClearedFor('none');
-                    }
-                })
-                .catch(() => { if (!cancelled) setAuthClearedFor('none'); });
-        };
-        refresh();
-        const onUpdate = () => refresh();
-        window.addEventListener('elevation-updated', onUpdate);
-        return () => {
-            cancelled = true;
-            window.removeEventListener('elevation-updated', onUpdate);
-        };
-    }, [showReviewModal, request, effectivePendingStep]);
-
-    /** True when the current user must complete a step-up ceremony before
-     *  they can pick a signature and submit an approval. */
-    const needsAuthFirst = showReviewModal && approvalRisk !== 'low' && authClearedFor === 'none';
-
     const handleApprovalAction = async (action: 'approve' | 'reject') => {
         if (!id || !effectivePendingStep) return;
 
         if (action === 'reject' && !reviewComment.trim()) {
             setReviewError('Please provide a reason for rejection');
-            return;
-        }
-
-        // Block both approve AND reject until the user passes the required
-        // authentication ceremony. Rejection commits a decision attributable
-        // to the user and must be tied to a verified identity.
-        if (needsAuthFirst) {
-            setPendingApprovalAction(action);
-            setShowApprovalConfirm(true);
-            setReviewError(null);
             return;
         }
 
@@ -1733,62 +1647,17 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
             }
         }
 
-        // Evaluate risk client-side (server re-evaluates authoritatively)
-        const steps = request?.request_steps || [];
-        const currentStepIndex = effectivePendingStep.step_index ?? 0;
-        const riskEval = getApprovalRisk({
-            value: request?.metadata?.amount ?? request?.metadata?.total_amount ?? null,
-            workflowCategory: request?.metadata?.workflow_category || request?.metadata?.category || null,
-            requestType: request?.metadata?.type || request?.metadata?.requestType || null,
-            currentStepIndex,
-            totalSteps: steps.length,
-            formData: request?.metadata?.formData || request?.metadata?.form_data || null,
-        });
-
-        setApprovalRisk(riskEval.risk);
-        setApprovalRiskReasons(riskEval.reasons);
-
-        // Check if user has biometric credentials (for high-risk UI)
-        if (riskEval.risk === 'high') {
-            try {
-                const credRes = await fetch('/api/webauthn/credentials');
-                if (credRes.ok) {
-                    const credData = await credRes.json();
-                    setHasBiometric((credData.credentials || []).some((c: any) => c.is_active));
-                }
-            } catch { /* proceed without biometric info */ }
-        }
-
-        setPendingApprovalAction(action);
-        setShowApprovalConfirm(true);
+        // Identity re-verification (biometric / Microsoft MFA step-up) has been
+        // removed from the review flow — approve and reject submit directly with
+        // the authenticated session. The server still records the decision with
+        // full audit context.
+        await submitDecision(action);
     };
 
-    const handleApprovalConfirmed = async (result: ApprovalConfirmResult) => {
-        if (!id || !effectivePendingStep || !pendingApprovalAction) return;
+    const submitDecision = async (action: 'approve' | 'reject') => {
+        if (!id || !effectivePendingStep) return;
 
-        // Surface a toast as soon as the ceremony succeeds (before submission)
-        // so the user gets immediate feedback that their elevation is active.
-        if (result.elevation && !result.elevation.reused) {
-            const minutes = Math.max(1, Math.round((result.elevation.expiresAt - Date.now()) / 60000));
-            addToast({
-                type: 'success',
-                title: `You are verified for ${minutes} minute${minutes === 1 ? '' : 's'}`,
-                message: `You can approve without re-authentication.`,
-                duration: 8000,
-            });
-            // Notify the floating indicator to refresh immediately.
-            try { window.dispatchEvent(new Event('elevation-updated')); } catch { /* SSR */ }
-        }
-
-        // If the ceremony was triggered to clear the auth gate (signature not
-        // yet chosen/validated, or reject not yet confirmed), close the auth
-        // modal and let the user finish in the review modal — DO NOT submit yet.
-        if (needsAuthFirst) {
-            setShowApprovalConfirm(false);
-            setAuthClearedFor(result.authMethod);
-            return;
-        }
-
+        setPendingApprovalAction(action);
         setReviewProcessing(true);
         setReviewError(null);
 
@@ -1796,10 +1665,9 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
             const body: Record<string, any> = {
                 requestId: id,
                 stepId: effectivePendingStep.id,
-                action: pendingApprovalAction,
+                action,
                 comment: reviewComment || undefined,
-                stepUpToken: result.stepUpToken,
-                authMethod: result.authMethod,
+                authMethod: 'session',
                 signatureType: signatureSelection.type,
                 deviceInfo: {
                     userAgent: navigator.userAgent,
@@ -1815,7 +1683,7 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
             }
 
             // HRD cost allocation for travel_authorization approvals
-            if (isHrdApprovingTravelAuth && pendingApprovalAction === 'approve') {
+            if (isHrdApprovingTravelAuth && action === 'approve') {
                 body.costAllocation = hrdCostAllocation;
                 // For hotel bookings the HRD also picks the category that
                 // used to be on the form. Pass it through so the action
@@ -1832,7 +1700,7 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
             });
 
             if (!response.ok) {
-                let actionError = `Failed to ${pendingApprovalAction} request`;
+                let actionError = `Failed to ${action} request`;
                 try {
                     const errorData = await response.json();
                     actionError = errorData.error || actionError;
@@ -1854,21 +1722,14 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
             }
 
             setShowReviewModal(false);
-            setShowApprovalConfirm(false);
             setReviewComment('');
             setPendingApprovalAction(null);
             setSignatureSelection({ type: 'saved' });
         } catch (err: any) {
-            setReviewError(getErrorMessage(err, `Failed to ${pendingApprovalAction} request`));
-            setShowApprovalConfirm(false);
+            setReviewError(getErrorMessage(err, `Failed to ${action} request`));
         } finally {
             setReviewProcessing(false);
         }
-    };
-
-    const handleApprovalConfirmCancel = () => {
-        setShowApprovalConfirm(false);
-        setPendingApprovalAction(null);
     };
 
     const handlePublish = async () => {
@@ -2707,21 +2568,7 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
     return (
         <AppLayout title={`Request #${request.id.substring(0, 8)}`}>
             <style dangerouslySetInnerHTML={{ __html: pulseKeyframes }} />
-            
-            {/* Risk-Based Approval Verification Modal */}
-            <ApprovalConfirmModal
-                isOpen={showApprovalConfirm}
-                risk={approvalRisk}
-                action={pendingApprovalAction || 'approve'}
-                requestId={id as string}
-                stepId={effectivePendingStep?.id || ''}
-                hasBiometric={hasBiometric}
-                riskReasons={approvalRiskReasons}
-                onConfirmed={handleApprovalConfirmed}
-                onCancel={handleApprovalConfirmCancel}
-                busy={reviewProcessing}
-            />
-            <ElevationIndicator />
+
             {/* Form-style preview — available at any status so the requester and
                 approvers can see the formatted document, with approval signatures
                 appended (the signature section just renders the approvals that
@@ -4335,44 +4182,19 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                                     </div>
                                 )}
 
-                                {/* Auth gate: signature selection is hidden until the user
-                                    completes the required step-up ceremony (medium/high risk). */}
-                                {needsAuthFirst ? (
-                                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-                                        <div className="flex items-start gap-3">
-                                            <svg className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                                            </svg>
-                                            <div>
-                                                <h4 className="text-sm font-semibold text-amber-900">
-                                                    Identity verification required
-                                                </h4>
-                                                <p className="text-xs text-amber-800 mt-1">
-                                                    {approvalRisk === 'high'
-                                                        ? 'This is a high-risk approval. Verify with biometrics or Microsoft MFA before signing.'
-                                                        : 'Verify with Microsoft MFA before signing this approval.'}
-                                                </p>
-                                                <p className="text-xs text-amber-700 mt-2">
-                                                    Your signature options will appear after verification.
-                                                </p>
-                                            </div>
-                                        </div>
-                                    </div>
-                                ) : (
-                                    <div className="bg-primary-50 border border-primary-100 rounded-xl p-4">
-                                        <div className="text-xs text-primary-600 uppercase tracking-wide font-medium mb-2">Your Signature</div>
-                                        <SignatureSelector
-                                            savedSignatureUrl={userSignatureUrl}
-                                            userDisplayName={(session?.user as any)?.name || request?.creator?.display_name}
-                                            value={signatureSelection}
-                                            onChange={setSignatureSelection}
-                                            disabled={reviewProcessing}
-                                        />
-                                        <p className="text-xs text-primary-600 mt-2">
-                                            Your signature will be attached to this approval.
-                                        </p>
-                                    </div>
-                                )}
+                                <div className="bg-primary-50 border border-primary-100 rounded-xl p-4">
+                                    <div className="text-xs text-primary-600 uppercase tracking-wide font-medium mb-2">Your Signature</div>
+                                    <SignatureSelector
+                                        savedSignatureUrl={userSignatureUrl}
+                                        userDisplayName={(session?.user as any)?.name || request?.creator?.display_name}
+                                        value={signatureSelection}
+                                        onChange={setSignatureSelection}
+                                        disabled={reviewProcessing}
+                                    />
+                                    <p className="text-xs text-primary-600 mt-2">
+                                        Your signature will be attached to this approval.
+                                    </p>
+                                </div>
 
                                 {reviewError && (
                                     <div className="p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
@@ -4410,39 +4232,28 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                                 >
                                     Cancel
                                 </Button>
-                                {/* Reject is intentionally hidden until the approver has cleared
-                                    the identity-verification gate. A rejection is just as
-                                    accountability-sensitive as an approval — it must be tied to a
-                                    verified identity. Once verified, both Approve and Reject
-                                    become available. */}
-                                {!needsAuthFirst && (
-                                    <Button
-                                        variant="danger"
-                                        onClick={() => {
-                                            if (!reviewComment.trim()) {
-                                                setReviewError('Please provide a reason for rejection');
-                                                return;
-                                            }
-                                            setReviewError(null);
-                                            setShowRejectConfirm(true);
-                                        }}
-                                        disabled={reviewProcessing}
-                                        className="min-w-[5rem]"
-                                    >
-                                        {reviewProcessing ? '...' : 'Reject'}
-                                    </Button>
-                                )}
+                                <Button
+                                    variant="danger"
+                                    onClick={() => {
+                                        if (!reviewComment.trim()) {
+                                            setReviewError('Please provide a reason for rejection');
+                                            return;
+                                        }
+                                        setReviewError(null);
+                                        setShowRejectConfirm(true);
+                                    }}
+                                    disabled={reviewProcessing}
+                                    className="min-w-[5rem]"
+                                >
+                                    {reviewProcessing ? '...' : 'Reject'}
+                                </Button>
                                 <Button
                                     variant="primary"
                                     onClick={() => handleApprovalAction('approve')}
-                                    disabled={reviewProcessing || (!needsAuthFirst && isHrdApprovingTravelAuth && !hrdAllocationValid)}
+                                    disabled={reviewProcessing || (isHrdApprovingTravelAuth && !hrdAllocationValid)}
                                     className="min-w-[6rem]"
                                 >
-                                    {reviewProcessing
-                                        ? 'Processing...'
-                                        : needsAuthFirst
-                                            ? 'Verify Identity'
-                                            : 'Approve'}
+                                    {reviewProcessing ? 'Processing...' : 'Approve'}
                                 </Button>
                             </div>
                         </div>

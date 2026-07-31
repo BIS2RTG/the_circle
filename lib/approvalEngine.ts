@@ -1607,6 +1607,9 @@ export class ApprovalEngine {
       bodyHtml: `<p>${escapeHtml(message).replace(/\n/g, '<br>')}</p>`,
       actionUrl: approvalLinkUrl(appBaseUrl(), approverId, requestId),
       actionLabel: 'Review & Sign',
+      // The CTA is a magic-link (not /requests/<id>), so pass the id explicitly
+      // for the delivery log rather than letting it fall back to null.
+      requestId,
     });
   }
   

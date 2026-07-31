@@ -7,6 +7,7 @@ import { GetServerSideProps } from 'next';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '../api/auth/[...nextauth]';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { computeViewerStatus, type ViewerStatusBucket } from '@/lib/recentActivityStatus';
 import { AppLayout } from '@/components/layout';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -65,6 +66,10 @@ interface RecentActivity {
   id: string;
   title: string;
   status: string;
+  /** Status from the signed-in user's perspective (drives the badge). */
+  viewerStatus: ViewerStatusBucket;
+  /** Human label for the badge, e.g. "You approved" / "Awaiting you" / "Pending". */
+  viewerStatusLabel: string;
   created_at: string;
   creator: {
     display_name: string | null;
@@ -196,10 +201,16 @@ export const getServerSideProps: GetServerSideProps<DashboardProps> = async (con
         return false;
       }).slice(0, 10); // Take only first 10 after filtering
 
-      recentActivity = filteredRequests.map((req: any) => ({
-        ...req,
-        creator: Array.isArray(req.creator) ? req.creator[0] : req.creator,
-      })) as RecentActivity[];
+      recentActivity = filteredRequests.map((req: any) => {
+        const viewer = computeViewerStatus(req, userId);
+        const { request_steps, ...rest } = req;
+        return {
+          ...rest,
+          creator: Array.isArray(req.creator) ? req.creator[0] : req.creator,
+          viewerStatus: viewer.status,
+          viewerStatusLabel: viewer.label,
+        };
+      }) as RecentActivity[];
     }
   } catch (error) {
     console.error('Error fetching dashboard data:', error);
@@ -418,7 +429,11 @@ export default function Dashboard({
                   recentActivity.slice(0, 5).map((activity) => {
                     const creatorName = activity.creator?.display_name || activity.creator?.email?.split('@')[0] || 'Unknown';
                     const requestType = activity.metadata?.type || 'Request';
-                    const statusDisplay = activity.status.charAt(0).toUpperCase() + activity.status.slice(1);
+                    // Badge reflects the request from THIS user's perspective:
+                    // an approver who has signed sees "You approved" rather than
+                    // the request's still-in-progress "Pending".
+                    const statusDisplay = activity.viewerStatusLabel;
+                    const badgeStatus = activity.viewerStatus;
 
                     return (
                       <Link
@@ -441,9 +456,9 @@ export default function Dashboard({
                         </div>
                         <span className={cn(
                           "px-2 py-0.5 rounded-md text-[11px] font-medium border",
-                          activity.status === 'approved' && "bg-emerald-50 text-emerald-700 border-emerald-100",
-                          (activity.status === 'pending' || activity.status === 'draft') && "bg-amber-50 text-amber-700 border-amber-100",
-                          activity.status === 'rejected' && "bg-rose-50 text-rose-700 border-rose-100",
+                          badgeStatus === 'approved' && "bg-emerald-50 text-emerald-700 border-emerald-100",
+                          badgeStatus === 'pending' && "bg-amber-50 text-amber-700 border-amber-100",
+                          badgeStatus === 'rejected' && "bg-rose-50 text-rose-700 border-rose-100",
                         )}>
                           {statusDisplay}
                         </span>

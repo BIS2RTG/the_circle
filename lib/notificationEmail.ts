@@ -13,7 +13,7 @@ import { supabaseAdmin } from './supabaseAdmin';
 import { sendAppGraphMail, isGraphAppMailConfigured, AppMailAttachment } from './graphAppMail';
 import { sendEmail as sendResendEmail } from './email';
 import { sendGraphMail } from './graphMail';
-import { getValidMsAccessToken } from './msTokenStore';
+import { getValidMsAccessToken, getAnyValidDelegatedSenderId } from './msTokenStore';
 import { appBaseUrl, emailLogoUrl, brandedEmailShell } from './emailShell';
 import { getUserPreferences, UserPreferences } from './userPreferences';
 
@@ -165,6 +165,18 @@ export async function sendUserNotificationEmail(params: {
       return { sent: false, reason: 'no_email' };
     }
 
+    // The recipient's organisation — used for the org-relay fallback below so
+    // we only ever borrow a mailbox belonging to the same organisation.
+    let organizationId: string | null = null;
+    {
+      const { data: recipientRow } = await supabaseAdmin
+        .from('app_users')
+        .select('organization_id')
+        .eq('id', params.userId)
+        .maybeSingle();
+      organizationId = recipientRow?.organization_id || null;
+    }
+
     const actionUrl = params.actionUrl
       ? params.actionUrl.startsWith('http')
         ? params.actionUrl
@@ -229,6 +241,33 @@ export async function sendUserNotificationEmail(params: {
     if (params.userId && params.userId !== params.actorUserId) {
       attempts.push(delegatedAttempt(params.userId, 'graph_delegated_recipient'));
     }
+    // Last-resort org relay: when neither the actor nor the recipient has a
+    // connected mailbox (the common case — most users never connect Microsoft)
+    // and no service-mailbox/Resend transport is configured, borrow ANY
+    // connected mailbox in the recipient's organisation. This is what stops
+    // approval emails from silently dropping once a workflow reaches a
+    // token-less approver — e.g. the final CAPEX sign-offs never getting
+    // notified because the approver before them hadn't connected Microsoft.
+    attempts.push({
+      label: 'graph_delegated_org_relay',
+      run: async () => {
+        const senderId = await getAnyValidDelegatedSenderId(organizationId, [
+          params.actorUserId,
+          params.userId,
+        ]);
+        if (!senderId) return false;
+        const token = await getValidMsAccessToken(senderId);
+        if (!token) return false;
+        await sendGraphMail({
+          accessToken: token,
+          to: { email: to },
+          subject: params.subject,
+          html,
+          saveToSentItems: false,
+        });
+        return true;
+      },
+    });
 
     for (const attempt of attempts) {
       try {
