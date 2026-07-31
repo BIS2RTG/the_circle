@@ -615,6 +615,7 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
     const [pendingApprovalAction, setPendingApprovalAction] = useState<'approve' | 'reject' | null>(null);
     const [signatureSelection, setSignatureSelection] = useState<SignatureSelection>({ type: 'saved' });
     const [showRejectConfirm, setShowRejectConfirm] = useState(false);
+    const [showApproveConfirm, setShowApproveConfirm] = useState(false);
     const [showRedirectModal, setShowRedirectModal] = useState(false);
     const [redirectStepInfo, setRedirectStepInfo] = useState<{ stepId: string; stepIndex: number; approverRole?: string; currentApproverName?: string } | null>(null);
     const [redirecting, setRedirecting] = useState(false);
@@ -807,8 +808,14 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
             }
         }
 
-        // Identity re-verification has been removed from the review flow —
-        // approve and reject submit directly with the authenticated session.
+        // The approver confirms the decision in a lightweight dialog before it
+        // is recorded. Reject already routes through its own confirmation, so
+        // only the approve path opens the confirm dialog here.
+        if (action === 'approve') {
+            setReviewError(null);
+            setShowApproveConfirm(true);
+            return;
+        }
         await submitDecision(action);
     };
 
@@ -1152,6 +1159,25 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
                 onConfirm={async () => {
                     setShowRejectConfirm(false);
                     await handleApprovalAction('reject');
+                }}
+            />
+            <ConfirmDialog
+                isOpen={showApproveConfirm}
+                title="Approve this request?"
+                message={
+                    <span>
+                        Approve &ldquo;<span className="font-medium text-gray-900">{request?.title}</span>&rdquo;?
+                        Your signature will be applied and the request will move to the next approver
+                        (or be finalised if you are the last approver).
+                    </span>
+                }
+                confirmLabel="Approve"
+                cancelLabel="Go back"
+                busy={reviewProcessing}
+                onCancel={() => setShowApproveConfirm(false)}
+                onConfirm={async () => {
+                    setShowApproveConfirm(false);
+                    await submitDecision('approve');
                 }}
             />
 

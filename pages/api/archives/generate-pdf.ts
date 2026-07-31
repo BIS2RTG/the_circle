@@ -1209,11 +1209,18 @@ async function generatePdfBuffer(
       for (const [roleKey, uid] of Object.entries(approverRolesMap)) {
         if (uid && typeof uid === 'string') roleByUserId[uid] = roleKey;
       }
+      // On complimentary booking forms the `functional_head` slot is the COO
+      // (see lib/fixedApprovers) — label it accordingly on the signed document.
+      // Scoped by request type so travel authorisations keep "Functional Head".
+      const reqTypeForRole = (request.metadata?.type || request.metadata?.category || '') as string;
+      const isCompBooking = reqTypeForRole === 'hotel_booking' || reqTypeForRole === 'external_hotel_booking';
       const approvalSlots: OfficialApprovalSlot[] = (request.request_steps || []).map((step: any, index: number) => {
         const approval = step.approvals?.[0];
         const nm = step.approver?.display_name || approval?.approver?.display_name || '';
         const roleKey = step.approver_role || roleByUserId[step.approver_user_id] || '';
-        const role = ROLE_LABELS[roleKey] || humanizeRole(roleKey) || `Approver ${index + 1}`;
+        const role = (isCompBooking && roleKey === 'functional_head')
+          ? 'Chief Operating Officer'
+          : (ROLE_LABELS[roleKey] || humanizeRole(roleKey) || `Approver ${index + 1}`);
         return {
           role,
           name: step.is_redirected ? `pp ${nm}` : nm,

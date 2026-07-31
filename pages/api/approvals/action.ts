@@ -201,7 +201,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (uploaded) {
           signatureUrl = uploaded;
           signatureReference = uploaded;
+        } else {
+          // Upload failed (transient storage error). Persist the drawn image
+          // INLINE as a data URL rather than leaving it null — otherwise the
+          // preview/PDF fall back to the approver's SAVED signature, showing a
+          // signature they didn't actually sign with. The document preview
+          // renders data: URLs directly and the PDF generator passes them
+          // through, so the approver's real mark is always what's shown.
+          signatureUrl = signatureData;
+          signatureReference = signatureData;
         }
+        resolvedSignatureType = 'manual';
       } else {
         // Default: use the user's saved signature from the private bucket.
         // Existence is checked via the service role; the persisted reference is

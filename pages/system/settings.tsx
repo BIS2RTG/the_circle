@@ -9,14 +9,11 @@ import { Card, Button } from '@/components/ui';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useUserHrimsProfile } from '@/hooks/useUserHrimsProfile';
 import dynamic from 'next/dynamic';
-import BiometricSetupModal from '@/components/approvals/BiometricSetupModal';
 import {
   Pencil,
   SlidersHorizontal,
   Bell,
-  ShieldCheck,
   PenLine,
-  Fingerprint,
   Check,
   CloudUpload,
 } from 'lucide-react';
@@ -177,10 +174,6 @@ export default function Settings({ initialSignatureUrl }: SettingsProps) {
   const [serverPrefs, setServerPrefs] = useState<ServerPreferences>(DEFAULT_SERVER_PREFS);
   const [integration, setIntegration] = useState<IntegrationStatus | null>(null);
 
-  const [biometricCredentials, setBiometricCredentials] = useState<any[]>([]);
-  const [loadingBiometrics, setLoadingBiometrics] = useState(false);
-  const [showBiometricSetup, setShowBiometricSetup] = useState(false);
-
   // Load notification/auto-archiving preferences (stored server-side so the
   // workflow engine can honour them when sending emails and syncing PDFs).
   useEffect(() => {
@@ -264,33 +257,6 @@ export default function Settings({ initialSignatureUrl }: SettingsProps) {
       setSaveError(err.message || 'Failed to save preferences');
     } finally {
       setSaving(false);
-    }
-  };
-
-  const fetchBiometricCredentials = async () => {
-    setLoadingBiometrics(true);
-    try {
-      const res = await fetch('/api/webauthn/credentials');
-      if (res.ok) {
-        const data = await res.json();
-        setBiometricCredentials(data.credentials || []);
-      }
-    } catch (err) {
-      console.error('Failed to load biometric credentials:', err);
-    } finally {
-      setLoadingBiometrics(false);
-    }
-  };
-
-  useEffect(() => { fetchBiometricCredentials(); }, []);
-
-  const handleDeleteCredential = async (id: string) => {
-    if (!confirm('Remove this device? You will need to re-register it to use biometric verification.')) return;
-    try {
-      const res = await fetch(`/api/webauthn/credentials/${id}`, { method: 'DELETE' });
-      if (res.ok) setBiometricCredentials((prev) => prev.filter((c) => c.id !== id));
-    } catch (err) {
-      console.error('Failed to delete credential:', err);
     }
   };
 
@@ -455,51 +421,6 @@ export default function Settings({ initialSignatureUrl }: SettingsProps) {
               <SectionCard icon={PenLine} title="Digital signature" subtitle="Used to authorise your requests and approvals.">
                 <SignaturePad initialUrl={signatureUrl || undefined} onSave={(url) => setSignatureUrl(url)} />
               </SectionCard>
-
-              <SectionCard icon={ShieldCheck} title="Security" subtitle="Manage biometric verification for high-risk approvals.">
-                <div className="flex items-center justify-between mb-4">
-                  <p className="text-sm text-text-secondary">Use Windows Hello, Touch ID, or Face ID to verify sensitive approvals.</p>
-                  <Button variant="outline" onClick={() => setShowBiometricSetup(true)} className="shrink-0">Register device</Button>
-                </div>
-
-                {loadingBiometrics ? (
-                  <div className="text-sm text-text-secondary py-4 text-center">Loading devices…</div>
-                ) : biometricCredentials.length === 0 ? (
-                  <div className="p-4 bg-neutral-50 rounded-xl border border-border text-center">
-                    <p className="text-sm text-text-secondary">No biometric devices registered yet.</p>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {biometricCredentials.map((cred: any) => (
-                      <div key={cred.id} className="flex items-center justify-between p-4 bg-neutral-50 rounded-xl border border-border">
-                        <div className="flex items-center gap-3 min-w-0">
-                          <span className="text-neutral-700 shrink-0">
-                            <Fingerprint className="w-5 h-5" strokeWidth={1.5} />
-                          </span>
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium text-text-primary truncate">
-                              {cred.device_name || 'Biometric Device'}
-                              {cred.usable_here === false && (
-                                <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200 align-middle">
-                                  Different environment
-                                </span>
-                              )}
-                            </p>
-                            <p className="text-xs text-text-secondary">
-                              Added {new Date(cred.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })}
-                              {cred.last_used_at ? ` • Last used ${new Date(cred.last_used_at).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })}` : ''}
-                              {cred.usable_here === false && cred.rp_id ? ` • Registered on ${cred.rp_id}` : ''}
-                            </p>
-                          </div>
-                        </div>
-                        <button onClick={() => handleDeleteCredential(cred.id)} className="text-sm text-danger hover:text-danger-600 font-medium shrink-0">
-                          Remove
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </SectionCard>
             </div>
 
             {/* Right: profile photo + HRIMS identity (read-only) */}
@@ -552,15 +473,6 @@ export default function Settings({ initialSignatureUrl }: SettingsProps) {
             </div>
           </div>
         </div>
-
-        <BiometricSetupModal
-          isOpen={showBiometricSetup}
-          onClose={() => setShowBiometricSetup(false)}
-          onSuccess={() => {
-            setShowBiometricSetup(false);
-            fetchBiometricCredentials();
-          }}
-        />
       </AppLayout>
     </>
   );

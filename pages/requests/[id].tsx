@@ -8,7 +8,7 @@ import { authOptions } from '../api/auth/[...nextauth]';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { resolveOnBehalfProfile } from '@/lib/onBehalf';
 import { getUserRBACProfile, hasPermission } from '@/lib/rbac';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { AppLayout } from '../../components/layout';
 import { Card, Button, Input } from '../../components/ui';
@@ -1367,6 +1367,17 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
     const [pendingApprovalAction, setPendingApprovalAction] = useState<'approve' | 'reject' | null>(null);
     const [signatureSelection, setSignatureSelection] = useState<SignatureSelection>({ type: 'saved' });
     const [showRejectConfirm, setShowRejectConfirm] = useState(false);
+    const [showApproveConfirm, setShowApproveConfirm] = useState(false);
+
+    // Screening (gatekeeping assistant): when this request has a step parked
+    // for the current user to screen before their boss sees it, they can
+    // Forward it on or Return it to the requestor — same actions as the
+    // Approvals › Screening tab, surfaced here on the request itself.
+    const [screening, setScreening] = useState<{ stepId: string; bossName: string | null } | null>(null);
+    const [screenBusy, setScreenBusy] = useState(false);
+    const [screenError, setScreenError] = useState<string | null>(null);
+    const [showScreenReturn, setShowScreenReturn] = useState(false);
+    const [screenReturnComment, setScreenReturnComment] = useState('');
     const [hrdCostAllocation, setHrdCostAllocation] = useState<Record<string, string>>({
         corp: '', mrc: '', nah: '', rth: '', khcc: '', brh: '', vfrh: '', azam: '',
     });
@@ -1462,6 +1473,91 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
         fetch(`/api/requests/${id}/view`, { method: 'POST' }).catch(() => { /* silent */ });
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [id, currentUserId]);
+
+    // Is this request currently waiting for the signed-in user to SCREEN it
+    // (as a gatekeeping assistant) before it reaches the boss? The screening
+    // queue endpoint already encodes the gatekeeper authorisation, so we just
+    // check whether this request is in it and grab the step id + boss name.
+    const loadScreening = useCallback(async () => {
+        if (!id || typeof id !== 'string') { setScreening(null); return; }
+        try {
+            const res = await fetch('/api/approvals/screening');
+            if (!res.ok) { setScreening(null); return; }
+            const list = await res.json();
+            const entry = Array.isArray(list) ? list.find((r: any) => r.id === id) : null;
+            setScreening(
+                entry
+                    ? { stepId: entry.screening_step_id, bossName: entry.screening_boss?.name || null }
+                    : null
+            );
+        } catch {
+            setScreening(null);
+        }
+    }, [id]);
+
+    useEffect(() => {
+        loadScreening();
+        // Re-check when the request status changes (e.g. after forwarding it on).
+    }, [loadScreening, request?.status]);
+
+    const handleScreenForward = async () => {
+        if (!screening) return;
+        setScreenBusy(true);
+        setScreenError(null);
+        try {
+            const res = await fetch('/api/approvals/screen', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ requestId: id, stepId: screening.stepId, action: 'forward' }),
+            });
+            if (!res.ok) throw new Error((await res.json()).error || 'Failed to forward');
+            addToast({
+                type: 'success',
+                title: 'Forwarded for approval',
+                message: `Sent to ${screening.bossName || 'the approver'}.`,
+            });
+            const r = await fetch(`/api/requests/${id}`);
+            if (r.ok) setRequest((await r.json()).request);
+            await loadScreening();
+        } catch (e: any) {
+            setScreenError(e?.message || 'Failed to forward');
+        } finally {
+            setScreenBusy(false);
+        }
+    };
+
+    const submitScreenReturn = async () => {
+        if (!screening || !screenReturnComment.trim()) return;
+        setScreenBusy(true);
+        setScreenError(null);
+        try {
+            const res = await fetch('/api/approvals/screen', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    requestId: id,
+                    stepId: screening.stepId,
+                    action: 'return',
+                    comment: screenReturnComment.trim(),
+                }),
+            });
+            if (!res.ok) throw new Error((await res.json()).error || 'Failed to return');
+            addToast({
+                type: 'success',
+                title: 'Returned to requestor',
+                message: 'The requester has been notified to amend and resubmit.',
+            });
+            setShowScreenReturn(false);
+            setScreenReturnComment('');
+            const r = await fetch(`/api/requests/${id}`);
+            if (r.ok) setRequest((await r.json()).request);
+            await loadScreening();
+        } catch (e: any) {
+            setScreenError(e?.message || 'Failed to return');
+        } finally {
+            setScreenBusy(false);
+        }
+    };
 
     // Travel authorisations and hotel bookings both require HRD cost allocation.
     // Travel auths always carry a grand total to allocate against; hotel
@@ -1671,10 +1767,16 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
             }
         }
 
-        // Identity re-verification (biometric / Microsoft MFA step-up) has been
-        // removed from the review flow — approve and reject submit directly with
-        // the authenticated session. The server still records the decision with
-        // full audit context.
+        // Identity re-verification (biometric / Microsoft MFA step-up) is not
+        // used, but the approver still confirms the decision in a lightweight
+        // dialog before it is recorded. Reject already routes through its own
+        // confirmation (showRejectConfirm) before reaching here, so only the
+        // approve path needs to open the confirm dialog.
+        if (action === 'approve') {
+            setReviewError(null);
+            setShowApproveConfirm(true);
+            return;
+        }
         await submitDecision(action);
     };
 
@@ -2646,6 +2748,49 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                             {isCritical ? 'CRITICAL' : 'HIGH PRIORITY'}
                         </div>
                     </div>
+                )}
+
+                {/* Screening (gatekeeping assistant) — Forward / Return actions */}
+                {screening && (
+                    <Card className="!p-5 border-[#C9B896] bg-[#F3EADC]/50">
+                        <div className="flex items-start gap-4">
+                            <div className="w-10 h-10 rounded-lg bg-[#9A7545]/15 text-[#5E4426] flex items-center justify-center flex-shrink-0">
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                </svg>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                                <h3 className="text-sm font-semibold text-[#5E4426]">
+                                    Screen this request{screening.bossName ? ` for ${screening.bossName}` : ''}
+                                </h3>
+                                <p className="text-sm text-[#5E4426]/80 mt-0.5">
+                                    Review it before it reaches {screening.bossName || 'the approver'}. Forward it on for
+                                    approval, or return it to the requestor with a comment for changes.
+                                </p>
+                                {screenError && (
+                                    <p className="text-sm text-red-600 font-medium mt-2">{screenError}</p>
+                                )}
+                                <div className="flex flex-wrap gap-3 mt-3">
+                                    <Button
+                                        variant="primary"
+                                        onClick={handleScreenForward}
+                                        disabled={screenBusy}
+                                    >
+                                        {screenBusy ? 'Working…' : `Forward${screening.bossName ? ` to ${screening.bossName.split(' ')[0]}` : ''}`}
+                                    </Button>
+                                    <Button
+                                        variant="outline"
+                                        onClick={() => { setScreenError(null); setShowScreenReturn(true); }}
+                                        disabled={screenBusy}
+                                        className="bg-white"
+                                    >
+                                        Return to requestor
+                                    </Button>
+                                </div>
+                            </div>
+                        </div>
+                    </Card>
                 )}
 
                 {/* Publish Error Alert */}
@@ -3969,6 +4114,68 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                         await handleApprovalAction('reject');
                     }}
                 />
+
+                {/* Approve Confirmation */}
+                <ConfirmDialog
+                    isOpen={showApproveConfirm}
+                    title="Approve this request?"
+                    message={
+                        <span>
+                            Approve &ldquo;<span className="font-medium text-gray-900">{request?.title}</span>&rdquo;?
+                            Your signature will be applied and the request will move to the next approver
+                            (or be finalised if you are the last approver).
+                        </span>
+                    }
+                    confirmLabel="Approve"
+                    cancelLabel="Go back"
+                    busy={reviewProcessing}
+                    onCancel={() => setShowApproveConfirm(false)}
+                    onConfirm={async () => {
+                        setShowApproveConfirm(false);
+                        await submitDecision('approve');
+                    }}
+                />
+
+                {/* Screening: Return-to-requestor comment modal */}
+                {showScreenReturn && (
+                    <div
+                        className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 p-4"
+                        onClick={() => { if (!screenBusy) setShowScreenReturn(false); }}
+                    >
+                        <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                            <h3 className="text-lg font-semibold text-gray-900 mb-1">Return to requestor</h3>
+                            <p className="text-sm text-gray-500 mb-4">
+                                &ldquo;<span className="font-medium text-gray-900">{request?.title}</span>&rdquo; will go back to the
+                                requestor&apos;s Drafts with your comment, and they&apos;ll be notified.
+                            </p>
+                            <textarea
+                                value={screenReturnComment}
+                                onChange={(e) => setScreenReturnComment(e.target.value)}
+                                placeholder="Explain what needs to change before this can go forward…"
+                                rows={4}
+                                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-none"
+                                autoFocus
+                            />
+                            {screenError && <p className="text-sm text-red-600 font-medium mt-2">{screenError}</p>}
+                            <div className="flex justify-end gap-3 mt-4">
+                                <Button
+                                    variant="outline"
+                                    onClick={() => { setShowScreenReturn(false); setScreenReturnComment(''); }}
+                                    disabled={screenBusy}
+                                >
+                                    Cancel
+                                </Button>
+                                <Button
+                                    variant="danger"
+                                    onClick={submitScreenReturn}
+                                    disabled={screenBusy || !screenReturnComment.trim()}
+                                >
+                                    {screenBusy ? 'Returning…' : 'Return with comment'}
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+                )}
 
                 {/* Delete Confirmation Modal */}
                 {showDeleteConfirm && (

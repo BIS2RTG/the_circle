@@ -3,9 +3,7 @@ import { createPortal } from 'react-dom';
 import dynamic from 'next/dynamic';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useSession } from 'next-auth/react';
-import { startRegistration, browserSupportsWebAuthn } from '@simplewebauthn/browser';
 import { useSuppressToastsWhileOpen } from '../ui/ToastProvider';
-import { friendlyWebauthnError } from '@/lib/webauthnErrors';
 
 const SignaturePad = dynamic(() => import('../SignaturePad'), {
   ssr: false,
@@ -44,7 +42,7 @@ interface OnboardingFlowProps {
   onComplete: () => void;
 }
 
-const STEPS = ['Welcome', 'HRIMS', 'Signature', 'Device', 'Ready'] as const;
+const STEPS = ['Welcome', 'HRIMS', 'Signature', 'Ready'] as const;
 
 const slide = {
   enter: (dir: number) => ({ x: dir > 0 ? 60 : -60, opacity: 0 }),
@@ -88,12 +86,6 @@ export default function OnboardingFlow({ user, needsProfileSetup, hasSignature, 
 
   // Step 3 — signature
   const [signatureSaved, setSignatureSaved] = useState(hasSignature);
-
-  // Step 4 — device
-  const [deviceStatus, setDeviceStatus] = useState<'idle' | 'registering' | 'success' | 'error'>('idle');
-  const [deviceError, setDeviceError] = useState<string | null>(null);
-  const [deviceName, setDeviceName] = useState('');
-  const webauthnSupported = typeof window !== 'undefined' && browserSupportsWebAuthn();
 
   // Lock body scroll while the overlay is up.
   useEffect(() => {
@@ -249,39 +241,6 @@ export default function OnboardingFlow({ user, needsProfileSetup, hasSignature, 
     }
   };
 
-  const registerDevice = async () => {
-    setDeviceStatus('registering');
-    setDeviceError(null);
-    try {
-      const optsRes = await fetch('/api/webauthn/register/options', { method: 'POST' });
-      if (!optsRes.ok) {
-        const err = await optsRes.json().catch(() => ({}));
-        throw new Error(err.error || 'Failed to start registration');
-      }
-      const options = await optsRes.json();
-      let attestationResponse;
-      try {
-        attestationResponse = await startRegistration({ optionsJSON: options });
-      } catch (err: any) {
-        // Never surface the raw WebAuthn/spec error (e.g. the timed-out /
-        // not-allowed message with a w3.org link) — map it to calm copy.
-        throw new Error(friendlyWebauthnError(err, 'register'));
-      }
-      const verifyRes = await fetch('/api/webauthn/register/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ attestationResponse, deviceName: deviceName.trim() || undefined }),
-      });
-      const verifyJson = await verifyRes.json();
-      if (!verifyRes.ok) throw new Error(verifyJson.error || 'Registration could not be verified.');
-      setDeviceStatus('success');
-      setTimeout(() => go(step + 1), 900);
-    } catch (err: any) {
-      setDeviceStatus('error');
-      setDeviceError(err?.message || 'Something went wrong.');
-    }
-  };
-
   // The person at the top of the org (Group Chief Executive) reports to the
   // board, who are not Circle users — so we don't ask them "who do you report
   // to?". Detected from the job title they enter.
@@ -303,8 +262,7 @@ export default function OnboardingFlow({ user, needsProfileSetup, hasSignature, 
     <OnbImage key="v0" src="/images/welcome.svg" alt="Welcome to The Circle" />,
     <OnbImage key="v1" src="/images/RTGAtlas_Connection.svg" alt="Connecting to RTG Atlas HRIMS" />,
     <OnbImage key="v2" src="/images/Signature.svg" alt="Register your signature" />,
-    <OnbImage key="v3" src="/images/Device_reg.svg" alt="Register your device" />,
-    <OnbImage key="v4" src="/images/done.svg" alt="You're all set" />,
+    <OnbImage key="v3" src="/images/done.svg" alt="You're all set" />,
   ];
 
   const bodies = [
@@ -435,53 +393,18 @@ export default function OnboardingFlow({ user, needsProfileSetup, hasSignature, 
       )}
     </div>,
 
-    // 3 — Device
+    // 3 — Ready
     <div key="b3" className="space-y-5">
-      <Eyebrow>Step 4 · Secure</Eyebrow>
-      <h2 className="text-2xl font-bold tracking-tight text-text-primary">Register this device</h2>
-      <p className="text-text-secondary leading-relaxed">
-        Add a secure passkey by registering this device so approvals can be confirmed with a single touch. Works on
-        any device.
-      </p>
-      {!webauthnSupported && (
-        <Alert tone="warning">
-          This browser can’t register a passkey. You can skip this — you’ll verify with Microsoft
-          instead — or open The Circle in Chrome, Edge, or Safari to set one up.
-        </Alert>
-      )}
-      {deviceError && <Alert tone="danger">{deviceError}</Alert>}
-      {deviceStatus === 'success' ? (
-        <div className="flex items-center gap-2 text-sm text-success-600 font-medium">
-          <CheckIcon /> Device registered successfully.
-        </div>
-      ) : (
-        <label className="block">
-          <span className="text-xs font-medium text-text-secondary">Device name (optional)</span>
-          <input
-            type="text"
-            value={deviceName}
-            onChange={(e) => setDeviceName(e.target.value)}
-            placeholder="e.g. Work laptop"
-            maxLength={60}
-            disabled={deviceStatus === 'registering'}
-            className="mt-1 w-full px-3 py-2.5 border border-neutral-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-          />
-        </label>
-      )}
-    </div>,
-
-    // 4 — Ready
-    <div key="b4" className="space-y-5">
       <Eyebrow>All set</Eyebrow>
       <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-text-primary">
         You’re ready to go
       </h2>
       <p className="text-text-secondary leading-relaxed">
-        Your profile is linked, your signature is registered and your device is secured. Everything’s
+        Your profile is linked and your signature is registered. Everything’s
         in place — welcome to a faster, clearer way to get approvals done.
       </p>
       <ul className="space-y-2.5">
-        {['HRIMS profile connected', 'Digital signature registered', 'Account secured'].map((t) => (
+        {['HRIMS profile connected', 'Digital signature registered'].map((t) => (
           <li key={t} className="flex items-center gap-3 text-sm text-text-primary">
             <span className="flex h-6 w-6 items-center justify-center rounded-full bg-success-100 text-success-600">
               <CheckIcon />
@@ -502,19 +425,14 @@ export default function OnboardingFlow({ user, needsProfileSetup, hasSignature, 
         return { label: 'Continue', disabled: !hrimsReady || savingProfile, onClick: saveProfile, loading: savingProfile };
       case 2:
         return { label: 'Continue', disabled: !signatureSaved, onClick: () => go(3), loading: false };
-      case 3:
-        if (deviceStatus === 'success' || !webauthnSupported)
-          return { label: 'Continue', disabled: false, onClick: () => go(4), loading: false };
-        return { label: 'Register device', disabled: deviceStatus === 'registering', onClick: registerDevice, loading: deviceStatus === 'registering' };
       default:
         return { label: 'Enter The Circle', disabled: false, onClick: onComplete, loading: false };
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, consent, hrimsReady, savingProfile, signatureSaved, deviceStatus, webauthnSupported,
-      hrimsFound, selectedBuId, selectedDeptId, jobTitle, reportsTo, deviceName]);
+  }, [step, consent, hrimsReady, savingProfile, signatureSaved,
+      hrimsFound, selectedBuId, selectedDeptId, jobTitle, reportsTo]);
 
-  const showBack = step > 0 && step < 4;
-  const showSkip = step === 3 && deviceStatus !== 'success' && deviceStatus !== 'registering';
+  const showBack = step > 0 && step < 3;
 
   const overlay = (
     <div className="fixed inset-0 z-[130] flex items-center justify-center p-3 sm:p-4 bg-neutral-900/50 backdrop-blur-sm">
@@ -559,14 +477,6 @@ export default function OnboardingFlow({ user, needsProfileSetup, hasSignature, 
         <div className="flex items-center justify-between gap-4 border-t border-border px-7 sm:px-9 py-4 bg-neutral-50/60">
           <Dots total={STEPS.length} active={step} />
           <div className="flex items-center gap-2">
-            {showSkip && (
-              <button
-                onClick={() => go(4)}
-                className="px-4 py-2.5 text-sm font-medium text-text-secondary hover:text-text-primary transition-colors"
-              >
-                Skip for now
-              </button>
-            )}
             {showBack && (
               <button
                 onClick={() => go(step - 1)}
