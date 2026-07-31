@@ -227,7 +227,11 @@
       "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(JSON.stringify\\(p.scripts,null,2\\)\\)\")",
       "mcp__861faebf-71a3-42b9-aade-8f0f23fed2e0__list_tables",
       "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\('sharp:', \\(p.dependencies||{}\\).sharp || \\(p.devDependencies||{}\\).sharp || 'NOT INSTALLED'\\); console.log\\('canvas:', \\(p.dependencies||{}\\).canvas||'no'\\);\")",
-      "Bash(node -e \"console.log\\('sharp version', require\\('sharp/package.json'\\).version\\)\")"
+      "Bash(node -e \"console.log\\('sharp version', require\\('sharp/package.json'\\).version\\)\")",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\('next', p.dependencies.next\\); console.log\\('vercel/functions', p.dependencies['@vercel/functions']||'NONE'\\); console.log\\('runtime hints:'\\); \")",
+      "Bash(node -e \"console.log\\(require\\('@vercel/functions/package.json'\\).version\\)\")",
+      "Bash(node -e \"console.log\\(typeof require\\('@vercel/functions'\\).waitUntil\\)\")",
+      "Bash(node -e \"console.log\\('waitUntil:', typeof require\\('@vercel/functions'\\).waitUntil\\)\")"
     ]
   }
 }

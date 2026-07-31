@@ -22,6 +22,7 @@ import { onCapexApproved, onCapexRejected, onCapexResubmitted, onCapexCancelled 
 import { autoCreatePettyCashFromTravelAuth } from './autoPettyCash';
 import { sendUserNotificationEmail, escapeHtml, appBaseUrl } from './notificationEmail';
 import { approvalLinkUrl } from './approvalLinkToken';
+import { runInBackground } from './backgroundTask';
 import { getUserPreferences } from './userPreferences';
 import { getActiveDelegateFor } from './delegations';
 import {
@@ -754,16 +755,20 @@ export class ApprovalEngine {
       const approvedSteps = allSteps?.filter(s => s.status === 'approved') || [];
       const totalSteps = allSteps?.length || 0;
       
-      // Notify the requestor about this approval
+      // Notify the requestor about this approval (best-effort, deferred).
       const requestType = request?.metadata?.type || request?.metadata?.requestType;
       if (request) {
-        await this.notifyRequester(
-          requestId,
-          request.creator_id,
-          request.organization_id,
-          `${approverLabel} approved ${requestRef} — ${approvedSteps.length} of ${totalSteps} parallel approvals received.${commentSuffix}`,
-          requestType,
-          { title: `Approval received (${approvedSteps.length}/${totalSteps})`, senderId: approverId }
+        runInBackground(
+          () =>
+            this.notifyRequester(
+              requestId,
+              request.creator_id,
+              request.organization_id,
+              `${approverLabel} approved ${requestRef} — ${approvedSteps.length} of ${totalSteps} parallel approvals received.${commentSuffix}`,
+              requestType,
+              { title: `Approval received (${approvedSteps.length}/${totalSteps})`, senderId: approverId }
+            ),
+          'approval:notify-requester-parallel'
         );
       }
 
@@ -774,45 +779,52 @@ export class ApprovalEngine {
           .update({ status: 'approved' })
           .eq('id', requestId);
 
+        // Everything below is best-effort follow-up (final notifications, PDF
+        // archive generation, Microsoft push, CAPEX/price-variation hooks). None
+        // of it is needed to record the decision, and the archive/MS push in
+        // particular take several seconds — run it after the response so the
+        // final approver isn't left waiting.
         if (request) {
-          await this.notifyRequester(
-            requestId,
-            request.creator_id,
-            request.organization_id,
-            `Your request ${requestRef} has been fully approved. All ${totalSteps} approvers have signed off — the request is now finalised and the approved document is available to download.`,
-            requestType,
-            { title: 'Request fully approved', senderId: approverId, sendEmail: false }
-          );
+          runInBackground(async () => {
+            await this.notifyRequester(
+              requestId,
+              request.creator_id,
+              request.organization_id,
+              `Your request ${requestRef} has been fully approved. All ${totalSteps} approvers have signed off — the request is now finalised and the approved document is available to download.`,
+              requestType,
+              { title: 'Request fully approved', senderId: approverId, sendEmail: false }
+            );
 
-          // On-behalf: notify the principal exactly once — only now, on full
-          // approval. Throughout the flow the assistant (creator) got the
-          // progress updates; this is the principal's single notification.
-          await this.notifyOnBehalfPrincipalOnApproval(requestId, request, requestRef, requestType, approverId);
+            // On-behalf: notify the principal exactly once — only now, on full
+            // approval. Throughout the flow the assistant (creator) got the
+            // progress updates; this is the principal's single notification.
+            await this.notifyOnBehalfPrincipalOnApproval(requestId, request, requestRef, requestType, approverId);
 
-          // Travel-auth: prompt requester to optionally process a petty cash voucher.
-          await this.maybeNotifyPettyCashCta(requestId, request, requestType);
+            // Travel-auth: prompt requester to optionally process a petty cash voucher.
+            await this.maybeNotifyPettyCashCta(requestId, request, requestType);
 
-          // Auto-generate and store PDF archive, then push it to Microsoft 365
-          // (Teams channel + SharePoint). Both are best-effort.
-          try {
-            const archiveResult = await generateAndStoreArchive(requestId, request.organization_id, approverId);
-            console.log(`Archive generated for request ${requestId}`);
-            await this.pushApprovedPdfToMicrosoft(requestId, request, archiveResult);
-          } catch (archiveError) {
-            console.error('Failed to generate archive:', archiveError);
-          }
+            // Auto-generate and store PDF archive, then push it to Microsoft 365
+            // (Teams channel + SharePoint). Both are best-effort.
+            try {
+              const archiveResult = await generateAndStoreArchive(requestId, request.organization_id, approverId);
+              console.log(`Archive generated for request ${requestId}`);
+              await this.pushApprovedPdfToMicrosoft(requestId, request, archiveResult);
+            } catch (archiveError) {
+              console.error('Failed to generate archive:', archiveError);
+            }
 
-          // CAPEX Tracker: flip status to awaiting funding. Safe for all types — hook guards internally.
-          await onCapexApproved(requestId, approverId);
+            // CAPEX Tracker: flip status to awaiting funding. Safe for all types — hook guards internally.
+            await onCapexApproved(requestId, approverId);
 
-          // Price Variation: if this was a variation raised against an approved
-          // CAPEX, stamp + notify the parent. No-op for other request types.
-          await this.linkPriceVariationToParent(requestId, request, approverId);
+            // Price Variation: if this was a variation raised against an approved
+            // CAPEX, stamp + notify the parent. No-op for other request types.
+            await this.linkPriceVariationToParent(requestId, request, approverId);
+          }, 'approval:finalize-parallel');
         }
 
         return { success: true, message: 'Request fully approved (parallel)' };
       }
-      
+
       return { success: true, message: `Approved (${approvedSteps.length}/${totalSteps} approvals)` };
     }
     
@@ -873,7 +885,7 @@ export class ApprovalEngine {
       }
       
       if (request && nextApproverId) {
-        // Get total steps for the notification message
+        // Total steps for the notification message (quick count).
         const { count: totalSteps } = await supabaseAdmin
           .from('request_steps')
           .select('id', { count: 'exact', head: true })
@@ -884,6 +896,8 @@ export class ApprovalEngine {
 
         // SEQUENTIAL NOTIFICATION: Announce to the next approver only when their
         // turn comes — routed through screening if that approver has a gatekeeper.
+        // This parks the step for screening SYNCHRONOUSLY when needed (durable
+        // state) and defers its own notification emails internally.
         await this.announceStepForApproval(
           requestId,
           nextStep.id,
@@ -893,32 +907,34 @@ export class ApprovalEngine {
           `Request "${request.title}" is ready for your approval${stepsInfo}`
         );
 
-        // Resolve the next approver's name so the requester can see who they're waiting on.
-        const { data: nextApprover } = await supabaseAdmin
-          .from('app_users')
-          .select('display_name, job_title')
-          .eq('id', nextApproverId)
-          .single();
-        const nextApproverName = nextApprover?.display_name || 'the next approver';
-        const nextApproverLabel = nextApprover?.job_title
-          ? `${nextApproverName} (${nextApprover.job_title})`
-          : nextApproverName;
-
-        // Notify the requestor about this step approval — include who approved,
-        // their role, the step in the chain, any comment, and who is up next.
-        const requestType = request.metadata?.type || request.metadata?.requestType;
+        // Requester progress update — pure best-effort notification (email +
+        // name lookup). Defer it past the response so approving returns fast.
         const currentNum = currentStep.step_index;
         const stepFrame = totalSteps ? `step ${currentNum} of ${totalSteps}` : `step ${currentNum}`;
-        await this.notifyRequester(
-          requestId,
-          request.creator_id,
-          request.organization_id,
-          `${approverLabel} approved ${requestRef} at ${stepFrame}${stepLabel ? ` (${stepLabel})` : ''}. Now awaiting ${nextApproverLabel}.${commentSuffix}`,
-          requestType,
-          { title: `Step ${currentNum} approved — awaiting ${nextApproverName}`, senderId: approverId }
-        );
+        const requestType = request.metadata?.type || request.metadata?.requestType;
+        runInBackground(async () => {
+          // Resolve the next approver's name so the requester can see who they're waiting on.
+          const { data: nextApprover } = await supabaseAdmin
+            .from('app_users')
+            .select('display_name, job_title')
+            .eq('id', nextApproverId)
+            .single();
+          const nextApproverName = nextApprover?.display_name || 'the next approver';
+          const nextApproverLabel = nextApprover?.job_title
+            ? `${nextApproverName} (${nextApprover.job_title})`
+            : nextApproverName;
+
+          await this.notifyRequester(
+            requestId,
+            request.creator_id,
+            request.organization_id,
+            `${approverLabel} approved ${requestRef} at ${stepFrame}${stepLabel ? ` (${stepLabel})` : ''}. Now awaiting ${nextApproverLabel}.${commentSuffix}`,
+            requestType,
+            { title: `Step ${currentNum} approved — awaiting ${nextApproverName}`, senderId: approverId }
+          );
+        }, 'approval:notify-requester-progress');
       }
-      
+
       return { success: true, message: 'Approved - next approver notified' };
     }
     
@@ -936,42 +952,48 @@ export class ApprovalEngine {
         .update({ status: 'approved' })
         .eq('id', requestId);
 
-      // Notify the requester (request already fetched above)
+      // Everything below is best-effort follow-up (final notification, PDF
+      // archive generation, Microsoft push, CAPEX/price-variation hooks). The
+      // request is already marked approved above; the archive/MS push take
+      // several seconds, so run it after the response — the final approver
+      // shouldn't wait on document generation to see their approval land.
       if (request) {
         const requestType = request.metadata?.type || request.metadata?.requestType;
-        await this.notifyRequester(
-          requestId,
-          request.creator_id,
-          request.organization_id,
-          `Your request ${requestRef} has been fully approved. Final sign-off by ${approverLabel}. The approved document is available to preview and download.${commentSuffix}`,
-          requestType,
-          { title: 'Request fully approved', senderId: approverId, sendEmail: false }
-        );
+        runInBackground(async () => {
+          await this.notifyRequester(
+            requestId,
+            request.creator_id,
+            request.organization_id,
+            `Your request ${requestRef} has been fully approved. Final sign-off by ${approverLabel}. The approved document is available to preview and download.${commentSuffix}`,
+            requestType,
+            { title: 'Request fully approved', senderId: approverId, sendEmail: false }
+          );
 
-        // On-behalf: notify the principal exactly once — only now, on full
-        // approval. Throughout the flow the assistant (creator) got the
-        // progress updates; this is the principal's single notification.
-        await this.notifyOnBehalfPrincipalOnApproval(requestId, request, requestRef, requestType, approverId);
+          // On-behalf: notify the principal exactly once — only now, on full
+          // approval. Throughout the flow the assistant (creator) got the
+          // progress updates; this is the principal's single notification.
+          await this.notifyOnBehalfPrincipalOnApproval(requestId, request, requestRef, requestType, approverId);
 
-        // Travel-auth: prompt requester to optionally process a petty cash voucher.
-        await this.maybeNotifyPettyCashCta(requestId, request, requestType);
+          // Travel-auth: prompt requester to optionally process a petty cash voucher.
+          await this.maybeNotifyPettyCashCta(requestId, request, requestType);
 
-        // Auto-generate and store PDF archive, then push it to Microsoft 365
-        // (Teams channel + SharePoint). Both are best-effort.
-        try {
-          const archiveResult = await generateAndStoreArchive(requestId, request.organization_id, approverId);
-          console.log(`Archive generated for request ${requestId}`);
-          await this.pushApprovedPdfToMicrosoft(requestId, request, archiveResult);
-        } catch (archiveError) {
-          console.error('Failed to generate archive:', archiveError);
-        }
+          // Auto-generate and store PDF archive, then push it to Microsoft 365
+          // (Teams channel + SharePoint). Both are best-effort.
+          try {
+            const archiveResult = await generateAndStoreArchive(requestId, request.organization_id, approverId);
+            console.log(`Archive generated for request ${requestId}`);
+            await this.pushApprovedPdfToMicrosoft(requestId, request, archiveResult);
+          } catch (archiveError) {
+            console.error('Failed to generate archive:', archiveError);
+          }
 
-        // CAPEX Tracker: flip status to awaiting funding. Safe for all types — hook guards internally.
-        await onCapexApproved(requestId, approverId);
+          // CAPEX Tracker: flip status to awaiting funding. Safe for all types — hook guards internally.
+          await onCapexApproved(requestId, approverId);
 
-        // Price Variation: if this was a variation raised against an approved
-        // CAPEX, stamp + notify the parent. No-op for other request types.
-        await this.linkPriceVariationToParent(requestId, request, approverId);
+          // Price Variation: if this was a variation raised against an approved
+          // CAPEX, stamp + notify the parent. No-op for other request types.
+          await this.linkPriceVariationToParent(requestId, request, approverId);
+        }, 'approval:finalize-sequential');
       }
 
       return { success: true, message: 'Request fully approved' };
@@ -1580,68 +1602,78 @@ export class ApprovalEngine {
     message: string
   ): Promise<void> {
     if (!approverId) return;
+    const bossId = approverId; // narrowed to string for use inside closures
 
-    const gatekeepers = await getGatekeepersFor(approverId, organizationId);
+    const gatekeepers = await getGatekeepersFor(bossId, organizationId);
     if (gatekeepers.length === 0) {
-      // No screening — the normal path.
-      await this.notifyApprover(requestId, approverId, organizationId, senderId, message);
+      // No screening — the normal path. The notification (in-app + email) is
+      // best-effort and slow, so defer it past the response.
+      runInBackground(
+        () => this.notifyApprover(requestId, bossId, organizationId, senderId, message),
+        'approval:notify-approver'
+      );
       return;
     }
 
     // Park the step for screening so it never surfaces on the boss's desk yet.
+    // This is durable workflow state — it MUST run synchronously (before we
+    // return) so the boss can never momentarily see an unscreened request.
     await supabaseAdmin
       .from('request_steps')
       .update({ screening_status: 'pending_screen' })
       .eq('id', stepId);
 
-    // Resolve the boss's name for the gatekeeper's notification.
-    const { data: boss } = await supabaseAdmin
-      .from('app_users')
-      .select('display_name, email')
-      .eq('id', approverId)
-      .maybeSingle();
-    const bossName = boss?.display_name || boss?.email || 'the person you assist';
+    // Notifying the gatekeeper(s) is best-effort — defer it past the response.
+    runInBackground(async () => {
+      // Resolve the boss's name for the gatekeeper's notification.
+      const { data: boss } = await supabaseAdmin
+        .from('app_users')
+        .select('display_name, email')
+        .eq('id', bossId)
+        .maybeSingle();
+      const bossName = boss?.display_name || boss?.email || 'the person you assist';
 
-    const title = `Screen a request for ${bossName}`;
-    const screenMessage =
-      `${message}\n\nThis request is waiting on ${bossName}. Review it, then either forward it to ${bossName} ` +
-      `or return it to the requestor with a comment.`;
+      const title = `Screen a request for ${bossName}`;
+      const screenMessage =
+        `${message}\n\nThis request is waiting on ${bossName}. Review it, then either forward it to ${bossName} ` +
+        `or return it to the requestor with a comment.`;
 
-    for (const gatekeeperId of gatekeepers) {
-      try {
-        await supabaseAdmin.from('notifications').insert({
-          organization_id: organizationId,
-          recipient_id: gatekeeperId,
-          sender_id: senderId,
-          type: 'task',
-          title,
-          message: screenMessage,
-          metadata: {
-            request_id: requestId,
-            step_id: stepId,
-            screening: true,
-            principal_id: approverId,
-            action_label: 'Screen Request',
-            action_url: `/approvals?tab=screening`,
-          },
-          is_read: false,
+      for (const gatekeeperId of gatekeepers) {
+        try {
+          await supabaseAdmin.from('notifications').insert({
+            organization_id: organizationId,
+            recipient_id: gatekeeperId,
+            sender_id: senderId,
+            type: 'task',
+            title,
+            message: screenMessage,
+            metadata: {
+              request_id: requestId,
+              step_id: stepId,
+              screening: true,
+              principal_id: bossId,
+              action_label: 'Screen Request',
+              action_url: `/approvals?tab=screening`,
+            },
+            is_read: false,
+          });
+        } catch (error) {
+          console.error('Failed to notify gatekeeper:', error);
+        }
+
+        // Mirror by email (gated by the gatekeeper's approval-tasks preference).
+        await sendUserNotificationEmail({
+          userId: gatekeeperId,
+          actorUserId: senderId,
+          kind: 'approval_tasks',
+          subject: `Screen a request for ${bossName} — The Circle`,
+          heading: `A request is waiting to be screened for ${escapeHtml(bossName)}`,
+          bodyHtml: `<p>${escapeHtml(screenMessage).replace(/\n/g, '<br>')}</p>`,
+          actionUrl: `${appBaseUrl()}/approvals?tab=screening`,
+          actionLabel: 'Screen the request',
         });
-      } catch (error) {
-        console.error('Failed to notify gatekeeper:', error);
       }
-
-      // Mirror by email (gated by the gatekeeper's approval-tasks preference).
-      await sendUserNotificationEmail({
-        userId: gatekeeperId,
-        actorUserId: senderId,
-        kind: 'approval_tasks',
-        subject: `Screen a request for ${bossName} — The Circle`,
-        heading: `A request is waiting to be screened for ${escapeHtml(bossName)}`,
-        bodyHtml: `<p>${escapeHtml(screenMessage).replace(/\n/g, '<br>')}</p>`,
-        actionUrl: `${appBaseUrl()}/approvals?tab=screening`,
-        actionLabel: 'Screen the request',
-      });
-    }
+    }, 'approval:notify-gatekeepers');
   }
 
   /**
@@ -1899,6 +1931,9 @@ export class ApprovalEngine {
       bodyHtml: `<p>${escapeHtml(message).replace(/\n/g, '<br>')}</p>`,
       actionUrl: approvalLinkUrl(appBaseUrl(), approverId, requestId),
       actionLabel: 'Review & Sign',
+      // The CTA is a magic-link (not /requests/<id>), so pass the id explicitly
+      // for the delivery log rather than letting it fall back to null.
+      requestId,
     });
   }
   

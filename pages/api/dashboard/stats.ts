@@ -2,6 +2,7 @@ import { NextApiRequest, NextApiResponse } from 'next';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '../auth/[...nextauth]';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { computeViewerStatus } from '@/lib/recentActivityStatus';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') {
@@ -106,9 +107,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         (step: any) => step.approver_user_id === userId
       );
       if (userStep && userStep.status !== 'waiting') return true;
-      
+
       return false;
-    }).slice(0, 10);
+    }).slice(0, 10).map((req: any) => {
+      // Attach the per-viewer status (see lib/recentActivityStatus) and drop the
+      // raw steps so the client only receives what it renders.
+      const viewer = computeViewerStatus(req, userId);
+      const { request_steps, ...rest } = req;
+      return {
+        ...rest,
+        creator: Array.isArray(req.creator) ? req.creator[0] : req.creator,
+        viewerStatus: viewer.status,
+        viewerStatusLabel: viewer.label,
+      };
+    });
 
     // Fetch team members in the same organization
     const { data: members, error: membersError } = await supabaseAdmin
