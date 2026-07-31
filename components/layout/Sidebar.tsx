@@ -6,7 +6,6 @@ import {
   LayoutGrid,
   FilePlus2,
   ListChecks,
-  FilePen,
   CircleCheck,
   FileSignature,
   TrendingUp,
@@ -75,11 +74,6 @@ const navSections: NavSection[] = [
         href: '/requests/my-requests',
         label: 'My Requests',
         icon: <ListChecks {...iconProps} />,
-      },
-      {
-        href: '/requests/drafts',
-        label: 'My Drafts',
-        icon: <FilePen {...iconProps} />,
       },
       {
         href: '/approvals',

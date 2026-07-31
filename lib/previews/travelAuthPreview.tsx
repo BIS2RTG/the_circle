@@ -133,6 +133,13 @@ export interface TravelAuthPreviewInput {
     /** Traveller (requestor) name + saved-signature URL for the conditions block. */
     travellerName?: string;
     travellerSignatureUrl?: string | null;
+    /**
+     * True when the request was filed on behalf of someone. The principal never
+     * personally signed, so the conditions block shows the acceptance tick ONLY —
+     * the entire "Signature of Traveller" sub-block (label, signature line, name)
+     * is omitted.
+     */
+    onBehalf?: boolean;
 
     /** Itinerary rows; structure matches form state. */
     itinerary?: Array<{
@@ -215,6 +222,7 @@ export function buildTravelAuthPreviewSections(input: TravelAuthPreviewInput): P
         acceptConditions,
         travellerName,
         travellerSignatureUrl,
+        onBehalf,
         itinerary = [],
         budget = {},
         grandTotal,
@@ -313,20 +321,25 @@ export function buildTravelAuthPreviewSections(input: TravelAuthPreviewInput): P
                             </span>
                             <span>I have read these conditions and accept them.</span>
                         </div>
-                        <div style={{ minWidth: 180 }}>
-                            <div style={{ fontSize: 9, fontWeight: 700, color: '#555', textTransform: 'uppercase' }}>Signature of Traveller</div>
-                            <div style={{ borderBottom: '1px solid #666', minHeight: 30, display: 'flex', alignItems: 'center' }}>
-                                {travellerSignatureUrl ? (
-                                    <img
-                                        src={travellerSignatureUrl}
-                                        alt="Traveller signature"
-                                        style={{ maxHeight: 30, maxWidth: 160, display: 'block' }}
-                                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                                    />
-                                ) : null}
+                        {/* Filed on behalf of someone → the principal never personally
+                            signed, so show the acceptance tick ONLY, with no signature
+                            block. Self-filed → render the "Signature of Traveller" block. */}
+                        {!onBehalf && (
+                            <div style={{ minWidth: 180 }}>
+                                <div style={{ fontSize: 9, fontWeight: 700, color: '#555', textTransform: 'uppercase' }}>Signature of Traveller</div>
+                                <div style={{ borderBottom: '1px solid #666', minHeight: 48, display: 'flex', alignItems: 'center' }}>
+                                    {travellerSignatureUrl ? (
+                                        <img
+                                            src={travellerSignatureUrl}
+                                            alt="Traveller signature"
+                                            style={{ maxHeight: 48, maxWidth: 200, objectFit: 'contain', display: 'block' }}
+                                            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                                        />
+                                    ) : null}
+                                </div>
+                                {travellerName ? <div style={{ fontSize: 10, marginTop: 2 }}>{travellerName}</div> : null}
                             </div>
-                            {travellerName ? <div style={{ fontSize: 10, marginTop: 2 }}>{travellerName}</div> : null}
-                        </div>
+                        )}
                     </div>
                 </div>
             ),
@@ -486,12 +499,12 @@ export function buildTravelAuthPreviewSections(input: TravelAuthPreviewInput): P
                                         <div style={{ fontSize: 9, fontWeight: 700, color: '#555', textTransform: 'uppercase' }}>Name</div>
                                         <div style={{ fontSize: 11, marginBottom: 8 }}>{a?.name || '—'}</div>
                                         <div style={{ fontSize: 9, fontWeight: 700, color: '#555', textTransform: 'uppercase' }}>Signature</div>
-                                        <div style={{ borderBottom: '1px solid #666', minHeight: 32, marginTop: 4, marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                        <div style={{ borderBottom: '1px solid #666', minHeight: 56, marginTop: 4, marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                                             {a?.signatureUrl ? (
                                                 <img
                                                     src={a.signatureUrl}
                                                     alt={`${a.name || r.label} signature`}
-                                                    style={{ maxHeight: 32, maxWidth: '100%', display: 'block' }}
+                                                    style={{ maxHeight: 56, maxWidth: '100%', objectFit: 'contain', display: 'block' }}
                                                 />
                                             ) : null}
                                         </div>
@@ -533,9 +546,20 @@ export function buildTravelAuthPreviewSections(input: TravelAuthPreviewInput): P
 // the [id]-page preview matches the form preview without each call site
 // having to do the conversion.
 // ──────────────────────────────────────────────────────────────────────
-export function travelAuthInputFromRequest(request: any): TravelAuthPreviewInput {
-    const metadata = request?.metadata || {};
-    const creator = request?.creator || {};
+export function travelAuthInputFromRequest(request: any, travelMeta?: any): TravelAuthPreviewInput {
+    const requestMeta = request?.metadata || {};
+    // When a travel document is BUNDLED inside another request (e.g. a
+    // complimentary booking that also processes travel), the travel-specific
+    // fields live under `travelMeta` (= metadata.travelDocument). The
+    // employee, approvers and submission timestamp still come from the parent
+    // request. When `travelMeta` is omitted this behaves exactly as before,
+    // so standalone travel authorisations are unaffected.
+    const metadata = travelMeta || requestMeta;
+    // When filed on behalf of someone, THAT person is the traveller/requestor —
+    // their name, department, business unit and signature go on the document,
+    // not the assistant's. `onBehalfProfile` is resolved server-side.
+    const onBehalf = !!request?.onBehalfProfile;
+    const creator = request?.onBehalfProfile || request?.creator || {};
     const steps: any[] = Array.isArray(request?.request_steps) ? request.request_steps : [];
 
     // Private bucket: render saved signatures through the authenticated proxy.
@@ -549,7 +573,7 @@ export function travelAuthInputFromRequest(request: any): TravelAuthPreviewInput
     // reliability: the step's own approver_role, then the approverRoles map,
     // then positional fallback. This mirrors how the CAPEX preview resolves
     // signatures and is what makes them show up on the document.
-    const roleMap: Record<string, any> = metadata.approverRoles || {};
+    const roleMap: Record<string, any> = requestMeta.approverRoles || {};
     const userIdToRole: Record<string, string> = {};
     for (const [roleKey, userId] of Object.entries(roleMap)) {
         if (userId && typeof userId === 'string') userIdToRole[userId] = roleKey.toLowerCase();
@@ -594,8 +618,12 @@ export function travelAuthInputFromRequest(request: any): TravelAuthPreviewInput
     return {
         employee: {
             name: creator.display_name,
-            department: metadata.department || creator.department?.name,
-            businessUnit: metadata.businessUnit || metadata.business_unit_name || creator.business_unit?.name,
+            // On-behalf: the stored metadata.department/businessUnit belong to the
+            // ASSISTANT who filed, so prefer the principal's resolved unit names.
+            department: onBehalf ? creator.department?.name : (requestMeta.department || creator.department?.name),
+            businessUnit: onBehalf
+                ? creator.business_unit?.name
+                : (requestMeta.businessUnit || requestMeta.business_unit_name || creator.business_unit?.name),
         },
         requestTimestamp: request?.created_at
             ? new Date(request.created_at).toLocaleString('en-GB', {
@@ -612,11 +640,16 @@ export function travelAuthInputFromRequest(request: any): TravelAuthPreviewInput
         emergencyReason: metadata.emergencyReason,
         acceptConditions: !!metadata.acceptConditions,
         travellerName: creator.display_name || undefined,
-        travellerSignatureUrl: creator.id ? sigUrlFor(creator.id) : null,
+        // On-behalf: the principal never personally signed — the assistant filed
+        // for them — so the conditions block shows the acceptance tick only, with
+        // no signature block at all. Signatures render only when the traveller
+        // filed for themselves.
+        travellerSignatureUrl: onBehalf ? null : (creator.id ? sigUrlFor(creator.id) : null),
+        onBehalf,
         itinerary: metadata.itinerary,
         budget: metadata.budget,
         grandTotal: metadata.grandTotal,
-        costAllocation: metadata.costAllocation || {},
+        costAllocation: metadata.costAllocation || requestMeta.travelCostAllocation || {},
         approvers,
         comments: comments || undefined,
     };

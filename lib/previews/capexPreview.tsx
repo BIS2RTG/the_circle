@@ -26,6 +26,8 @@ export interface CapexPreviewInput {
   unit: string;
   department: string;
   projectName: string;
+  /** Free-text detailed description of the project (the form's "Detailed Description"). */
+  description?: string;
   budgetTypeDisplay: string;
   currency: string;
   budgetAmount: string;
@@ -124,6 +126,9 @@ export function buildCapexPreviewSections(input: CapexPreviewInput): PreviewSect
           <span style={{ ...cap, marginLeft: 40 }}>Department: </span><span style={bold}>{input.department || '—'}</span>
         </div>
         <div style={line}><span style={cap}>Description of Project: </span><span style={bold}>{input.projectName || '—'}</span></div>
+        {input.description ? (
+          <div style={line}><span style={cap}>Detailed Description: </span><span style={bold}>{input.description}</span></div>
+        ) : null}
         <div style={line}><span style={cap}>Budget/Non-Budget/ Emergency: </span><span style={bold}>{input.budgetTypeDisplay || '—'}</span></div>
         <div style={line}><span style={cap}>Budget Amount: </span>{money(input.budgetAmount)}</div>
         <div style={line}><span style={cap}>Amount Spent to Date: </span>{money(input.amountSpent)}</div>

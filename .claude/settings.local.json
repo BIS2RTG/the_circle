@@ -216,7 +216,18 @@
       "PowerShell(Start-Sleep -Seconds 6; $c = Test-NetConnection -ComputerName localhost -Port 3000 -WarningAction SilentlyContinue; \"Port 3000 listening: $\\($c.TcpTestSucceeded\\)\"; Get-Process node -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count | ForEach-Object { \"node processes: $_\" })",
       "PowerShell(foreach \\($u in @\\('/api/audit/deliveries?requestId=58e5246f-402a-4fca-a5d4-efd44c04046c','/admin/requests'\\)\\) { try { $r = Invoke-WebRequest -Uri \"http://localhost:3000$u\" -UseBasicParsing -MaximumRedirection 0 -TimeoutSec 60 -ErrorAction Stop; \"$u -> HTTP $\\($r.StatusCode\\)\" } catch { $code = $_.Exception.Response.StatusCode.value__; if \\($code\\) { \"$u -> HTTP $code\" } else { \"$u -> ERROR $\\($_.Exception.Message\\)\" } } })",
       "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:3000/api/audit/deliveries?requestId=58e5246f-402a-4fca-a5d4-efd44c04046c\" -UseBasicParsing -TimeoutSec 240 -ErrorAction Stop; \"deliveries -> HTTP $\\($r.StatusCode\\): $\\($r.Content.Substring\\(0,[Math]::Min\\(200,$r.Content.Length\\)\\)\\)\" } catch { $code = $_.Exception.Response.StatusCode.value__; \"deliveries -> HTTP $code \\(expected 401 unauth = compiles OK\\)\" })",
-      "Bash(curl -s -o /dev/null -w \"deliveries API -> HTTP %{http_code}\\\\n\" --max-time 200 \"http://localhost:3000/api/audit/deliveries?requestId=58e5246f-402a-4fca-a5d4-efd44c04046c\")"
+      "Bash(curl -s -o /dev/null -w \"deliveries API -> HTTP %{http_code}\\\\n\" --max-time 200 \"http://localhost:3000/api/audit/deliveries?requestId=58e5246f-402a-4fca-a5d4-efd44c04046c\")",
+      "Bash(node -e \"const p=require\\('C:/Users/Geraldine.Ndoro/the_circle/package.json'\\); console.log\\('dev script:', p.scripts && p.scripts.dev\\)\")",
+      "Read(//c/Users/Geraldine.Ndoro/Downloads/**)",
+      "Bash(pandoc -t markdown \"COMP TEMPLATE.docx\")",
+      "Bash(pandoc -t markdown \"New Travel Form.docx\")",
+      "Read(//c/Program Files/LibreOffice/program/**)",
+      "Read(//c/Program Files/Pandoc/**)",
+      "Bash(grep -rn \"requests/comp/\\\\|/comp/\\\\${\" pages/ components/ lib/)",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(JSON.stringify\\(p.scripts,null,2\\)\\)\")",
+      "mcp__861faebf-71a3-42b9-aade-8f0f23fed2e0__list_tables",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\('sharp:', \\(p.dependencies||{}\\).sharp || \\(p.devDependencies||{}\\).sharp || 'NOT INSTALLED'\\); console.log\\('canvas:', \\(p.dependencies||{}\\).canvas||'no'\\);\")",
+      "Bash(node -e \"console.log\\('sharp version', require\\('sharp/package.json'\\).version\\)\")"
     ]
   }
 }

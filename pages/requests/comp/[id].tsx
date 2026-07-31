@@ -5,6 +5,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '../../api/auth/[...nextauth]';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { fetchHrimsEmployeeByEmail } from '@/lib/hrimsClient';
+import { resolveOnBehalfProfile } from '@/lib/onBehalf';
 import { formatDateTime } from '@/lib/formatDate';
 import { useEffect, useRef, useState } from 'react';
 import { AppLayout } from '../../../components/layout';
@@ -558,9 +559,13 @@ export const getServerSideProps: GetServerSideProps<CompHotelBookingDetailsPageP
       }
     }
 
+    // When filed on behalf of someone, resolve THAT person as the requestor.
+    const onBehalfProfile = await resolveOnBehalfProfile(request as any);
+
     const enrichedRequest = {
       ...request,
       creator,
+      onBehalfProfile,
       status: actualStatus as RequestDetail['status'],
       current_step: currentStepIndex >= 0 ? currentStepIndex + 1 : request.request_steps?.length || 0,
       total_steps: request.request_steps?.length || 0,
@@ -684,9 +689,12 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
     const canRevive = isCreator && statusNow === 'cancelled'
         && ((request?.metadata as any)?.cancellation?.previousStatus !== 'approved');
 
-    // Map a comp/hotel request type to its editable form route.
+    // Map a comp/hotel request type to its editable form route. Read BOTH
+    // metadata.type and metadata.requestType — hotel bookings submitted via the
+    // main path store the type only under requestType, so keying on `type` alone
+    // wrongly defaulted them to the voucher form on unsubmit/edit.
     const compEditRoute = (): string => {
-        const t = request?.metadata?.type || (request as any)?.type;
+        const t = request?.metadata?.type || request?.metadata?.requestType || (request as any)?.type;
         if (t === 'hotel_booking') return 'hotel-booking';
         if (t === 'external_hotel_booking') return 'external-hotel-booking';
         return 'voucher';
@@ -1313,7 +1321,7 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
                                 variant="outline" 
                                 className="gap-2 bg-white text-primary-600 border-primary-200 hover:bg-primary-50" 
                                 onClick={() => {
-                                    const reqType = request?.metadata?.type || (request as any)?.type;
+                                    const reqType = request?.metadata?.type || request?.metadata?.requestType || (request as any)?.type;
                                     if (reqType === 'hotel_booking') {
                                         router.push(`/requests/new/hotel-booking?edit=${id}`);
                                     } else if (reqType === 'external_hotel_booking') {

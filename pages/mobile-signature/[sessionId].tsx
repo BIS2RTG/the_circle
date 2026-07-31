@@ -4,6 +4,7 @@ import SignatureCanvas from 'react-signature-canvas';
 import Head from 'next/head';
 import { GetServerSideProps } from 'next';
 import { useSignatureCanvasAutosize } from '../../hooks/useSignatureCanvasAutosize';
+import SignaturePadGate from '../../components/SignaturePadGate';
 
 export default function MobileSignaturePage() {
     const router = useRouter();
@@ -165,13 +166,15 @@ export default function MobileSignaturePage() {
                     )}
 
                     <div className="w-full max-w-md bg-white rounded-2xl shadow-lg border border-gray-200 overflow-hidden mb-6">
-                        <SignatureCanvas
-                            ref={sigCanvas}
-                            canvasProps={{
-                                className: 'w-full h-64 cursor-crosshair bg-white touch-none',
-                            }}
-                            backgroundColor="white"
-                        />
+                        <SignaturePadGate>
+                            <SignatureCanvas
+                                ref={sigCanvas}
+                                canvasProps={{
+                                    className: 'w-full h-64 cursor-crosshair bg-white touch-none',
+                                }}
+                                backgroundColor="white"
+                            />
+                        </SignaturePadGate>
                         <div className="border-t border-gray-100 p-2 text-center text-xs text-uppercase tracking-wider text-gray-400 font-medium">
                             Draw your signature above
                         </div>

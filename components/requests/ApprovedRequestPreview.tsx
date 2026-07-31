@@ -1,5 +1,5 @@
 import { useMemo, useRef, type ReactNode } from 'react';
-import { RequestPreviewModal, RequestPreviewDocument, printPreviewDocument } from '../ui';
+import { RequestPreviewModal, RequestPreviewDocument, printPreviewDocument, buildDocumentHeaderSection } from '../ui';
 import type { PreviewSection, DocumentHeader } from '../ui';
 import {
     buildTravelAuthPreviewSections,
@@ -86,6 +86,18 @@ function money(value: any, currency = 'USD'): string {
     return `${currency} ${n.toFixed(2)}`;
 }
 
+// When a request was filed on behalf of someone, that principal (resolved
+// server-side as `onBehalfProfile`) is the requestor shown on the document —
+// not the assistant who filed it.
+function effectiveRequestor(request: any): any {
+    return request?.onBehalfProfile || request?.creator || {};
+}
+function filedByName(request: any): string | null {
+    if (!request?.onBehalfProfile) return null;
+    const filer = request?.creator;
+    return filer?.display_name || filer?.email || null;
+}
+
 function humaniseKey(key: string): string {
     return key
         .replace(/([A-Z])/g, ' $1')
@@ -134,7 +146,7 @@ function buildApprovalSignaturesSection(request: any): PreviewSection {
                         <th style={{ ...headCellStyle, width: '8%' }}>Step</th>
                         <th style={headCellStyle}>Role</th>
                         <th style={headCellStyle}>Approver</th>
-                        <th style={{ ...headCellStyle, width: '18%' }}>Signature</th>
+                        <th style={{ ...headCellStyle, width: '30%' }}>Signature</th>
                         <th style={headCellStyle}>Decision</th>
                         <th style={headCellStyle}>Signed At</th>
                         <th style={headCellStyle}>Verification</th>
@@ -170,7 +182,7 @@ function buildApprovalSignaturesSection(request: any): PreviewSection {
                                             <img
                                                 src={sigUrl}
                                                 alt={`${approverName} signature`}
-                                                style={{ maxHeight: 48, maxWidth: '100%', display: 'block' }}
+                                                style={{ height: 80, maxHeight: 80, width: 'auto', maxWidth: '100%', objectFit: 'contain', display: 'block' }}
                                                 onError={(e) => {
                                                     // If the file isn't uploaded for this user, hide the broken-image icon.
                                                     (e.target as HTMLImageElement).style.display = 'none';
@@ -345,7 +357,8 @@ function buildTravelAuthSections(request: any, metadata: any): PreviewSection[] 
 function buildPettyCashSections(request: any, metadata: any): PreviewSection[] {
     const lineItems: any[] = Array.isArray(metadata.lineItems) ? metadata.lineItems : [];
     const total = lineItems.reduce((sum, r) => sum + (parseFloat(r?.amount) || 0), 0);
-    const creator = request?.creator || {};
+    const creator = effectiveRequestor(request);
+    const filedBy = filedByName(request);
     const supportingDocs: any[] = Array.isArray(metadata.supportingDocuments) ? metadata.supportingDocuments : [];
 
     // Recipient signature stored as { type: 'manual', data: <data URL> } —
@@ -405,10 +418,11 @@ function buildPettyCashSections(request: any, metadata: any): PreviewSection[] {
         {
             title: 'Requestor',
             fields: [
-                { label: 'Submitted by', value: creator.display_name || '—' },
+                { label: 'Requestor', value: creator.display_name || '—' },
                 { label: 'Email', value: creator.email || '—' },
-                { label: 'Department', value: metadata.department || creator.department?.name || '—' },
-                { label: 'Business Unit', value: metadata.businessUnit || metadata.business_unit_name || creator.business_unit?.name || '—' },
+                { label: 'Department', value: (filedBy ? creator.department?.name : (metadata.department || creator.department?.name)) || '—' },
+                { label: 'Business Unit', value: (filedBy ? creator.business_unit?.name : (metadata.businessUnit || metadata.business_unit_name || creator.business_unit?.name)) || '—' },
+                ...(filedBy ? [{ label: 'Filed by', value: `${filedBy} (assistant)` }] : []),
                 { label: 'Submitted', value: formatDateTime(request?.created_at) },
             ],
         },
@@ -529,9 +543,8 @@ const COMP_ACCOMMODATION_LABELS: Record<string, string> = {
 };
 
 function buildCompSections(request: any, metadata: any): PreviewSection[] {
-    const creator = request?.creator || {};
-    const travel = metadata.travelDocument;
-    const hasTravel = metadata.processTravelDocument && travel;
+    const creator = effectiveRequestor(request);
+    const filedBy = filedByName(request);
 
     // Normalise units: the multi-unit picker stores selectedBusinessUnits[];
     // external hotel bookings store a single flat hotelUnit + room fields. The
@@ -599,9 +612,12 @@ function buildCompSections(request: any, metadata: any): PreviewSection[] {
             ? [{
                 title: 'Requestor',
                 fields: [
-                    { label: 'Submitted by', value: creator.display_name || '—' },
+                    { label: 'Requestor', value: creator.display_name || '—' },
                     { label: 'Email', value: creator.email || '—' },
                     ...(creator.job_title ? [{ label: 'Job Title', value: creator.job_title }] : []),
+                    ...(creator.department?.name ? [{ label: 'Department', value: creator.department.name }] : []),
+                    ...(creator.business_unit?.name ? [{ label: 'Business Unit', value: creator.business_unit.name }] : []),
+                    ...(filedBy ? [{ label: 'Filed by', value: `${filedBy} (assistant)` }] : []),
                     { label: 'Submitted', value: formatDateTime(request?.created_at) },
                 ],
             }]
@@ -684,53 +700,10 @@ function buildCompSections(request: any, metadata: any): PreviewSection[] {
         });
     }
 
-    if (hasTravel) {
-        const itinerary: any[] = Array.isArray(travel.itinerary) ? travel.itinerary : [];
-        // The travel authorisation is a distinct document — start it on a fresh
-        // page so the combined comp + travel preview / PDF reads as two pages.
-        sections.push({
-            title: 'Local Travel Authorization',
-            pageBreakBefore: true,
-            fields: [
-                { label: 'Date of Intended Travel', value: formatDate(travel.dateOfIntendedTravel) },
-                { label: 'Travel Mode', value: travel.travelMode || '—' },
-                { label: 'Purpose of Travel', value: travel.purposeOfTravel || '—', fullWidth: true },
-                ...(travel.accompanyingAssociates
-                    ? [{ label: 'Accompanying Associates', value: travel.accompanyingAssociates, fullWidth: true }]
-                    : []),
-            ],
-        });
-
-        if (itinerary.length > 0) {
-            sections.push({
-                title: 'Travel Itinerary',
-                content: (
-                    <table style={docGridStyle}>
-                        <thead>
-                            <tr>
-                                <th style={headCellStyle}>Date</th>
-                                <th style={headCellStyle}>From</th>
-                                <th style={headCellStyle}>To</th>
-                                <th style={{ ...headCellStyle, textAlign: 'right' }}>KM</th>
-                                <th style={headCellStyle}>Justification</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {itinerary.map((row: any, i: number) => (
-                                <tr key={i}>
-                                    <td style={cellStyle}>{formatDate(row.date)}</td>
-                                    <td style={cellStyle}>{row.from || '—'}</td>
-                                    <td style={cellStyle}>{row.to || '—'}</td>
-                                    <td style={{ ...cellStyle, textAlign: 'right' }}>{row.km || '—'}</td>
-                                    <td style={cellStyle}>{row.justification || '—'}</td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                ),
-            });
-        }
-    }
+    // NOTE: a bundled travel authorisation (metadata.processTravelDocument) is
+    // NOT rendered here. It is emitted as a SECOND, self-contained page by
+    // buildPreviewForRequest, using the shared travel-auth builder so the
+    // travel page is byte-identical to a standalone travel authorisation.
 
     const supporting: any[] = Array.isArray(metadata.supportingDocuments) ? metadata.supportingDocuments : [];
     if (supporting.length > 0) {
@@ -825,6 +798,7 @@ function buildCapexSections(request: any, metadata: any): PreviewSection[] {
         unit: data.unit || request?.creator?.business_unit?.name || '',
         department: data.department || request?.creator?.department?.name || '',
         projectName: data.projectName || request?.title || '',
+        description: data.description || request?.description || '',
         budgetTypeDisplay: budgetTypeMap[data.budgetType] || (data.budgetType ? String(data.budgetType).toUpperCase() : ''),
         currency: data.currency || 'USD',
         budgetAmount: data.budgetAmount || '',
@@ -841,7 +815,7 @@ function buildCapexSections(request: any, metadata: any): PreviewSection[] {
         preferredSupplier: preferred?.supplierName || '',
         reason: preferred?.selectionReason || data.quotationJustification || '',
         fundingSource: data.fundingSource || '',
-        requestedBy: data.requester || request?.creator?.display_name || data.department || '',
+        requestedBy: request?.onBehalfProfile?.display_name || data.requester || request?.creator?.display_name || data.department || '',
         approverNameByRole,
         approverSignatureByRole,
     });
@@ -931,6 +905,11 @@ export function buildPreviewForRequest(request: any) {
     // appendix in that case (it would duplicate the same information).
     const isTravelAuth = type === 'travel_authorization' || type === 'international_travel_authorization';
     const isCapex = type === 'capex';
+    const isComp = type === 'hotel_booking' || type === 'external_hotel_booking' || type === 'voucher_request';
+    // A complimentary booking that also processes a travel document is a
+    // combined request: one workflow, one submission, but TWO self-contained
+    // documents (comp = FIN 101, travel = HR APX-27) rendered as two pages.
+    const hasBundledTravel = isComp && !!metadata.processTravelDocument && !!metadata.travelDocument;
 
     const documentHeader = isTravelAuth
         ? buildTravelAuthDocumentHeader(type === 'international_travel_authorization')
@@ -961,9 +940,28 @@ export function buildPreviewForRequest(request: any) {
 
     // Travel auth and CAPEX embed their own signature block, so don't append the
     // generic "Approval Signatures" table (it would duplicate the sign-offs).
-    const sections: PreviewSection[] = isTravelAuth || isCapex
+    let sections: PreviewSection[] = isTravelAuth || isCapex
         ? typeSections
         : [...typeSections, buildApprovalSignaturesSection(request)];
+
+    // Combined comp + travel: append the travel authorisation as a SECOND page,
+    // built from the shared travel-auth builder so it is identical to a
+    // standalone travel authorisation — its own HR APX-27 header, its own cost
+    // allocation, and its own approval block (populated with the same signatures
+    // from this single workflow). The comp page above keeps its own approval
+    // block, so each page carries one approval block as on the paper forms.
+    if (hasBundledTravel) {
+        const travelInput = travelAuthInputFromRequest(request, metadata.travelDocument);
+        sections = [
+            ...sections,
+            buildDocumentHeaderSection(
+                buildTravelAuthDocumentHeader(false),
+                'Local Travel Authorisation',
+                { pageBreakBefore: true }
+            ),
+            ...buildTravelAuthPreviewSections(travelInput),
+        ];
+    }
 
     // Subtitle adapts to status — for in-progress requests we don't claim
     // "Fully Approved", we just stamp the submission date. The CAPEX form is a
@@ -976,7 +974,11 @@ export function buildPreviewForRequest(request: any) {
             : `${ref} — Submitted ${formatDateTime(request?.created_at)}`;
 
     return {
-        title: isCapex ? capexPreviewTitle : (titleByType[type] || request?.title || 'Request'),
+        title: isCapex
+            ? capexPreviewTitle
+            : hasBundledTravel
+                ? 'Complimentary Booking & Travel Authorisation'
+                : (titleByType[type] || request?.title || 'Request'),
         subtitle,
         sections,
         documentHeader,

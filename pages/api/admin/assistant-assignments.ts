@@ -35,7 +35,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       .from('assistant_assignments')
       .select(`
         id, created_at, assistant_id, principal_id,
-        can_file, can_upload, can_edit, can_withdraw, can_manage_notifications,
+        can_file, can_upload, can_edit, can_withdraw, can_manage_notifications, can_gatekeep,
         assistant:app_users!assistant_assignments_assistant_id_fkey ( id, display_name, email, job_title ),
         principal:app_users!assistant_assignments_principal_id_fkey ( id, display_name, email, job_title )
       `)
@@ -82,6 +82,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       can_edit: req.body?.can_edit === true,
       can_withdraw: req.body?.can_withdraw === true,
       can_manage_notifications: req.body?.can_manage_notifications === true,
+      can_gatekeep: req.body?.can_gatekeep === true,
     };
     const anyCapability = Object.values(caps).some(Boolean);
 

@@ -9,6 +9,7 @@ import type { PreviewSection, DocumentHeader } from '../../../components/ui';
 import { useUnsavedChangesPrompt, useFormAutosave } from '../../../hooks';
 import { useToast } from '../../../components/ui/ToastProvider';
 import { OnBehalfOfField, type OnBehalfOf } from '../../../components/requests/OnBehalfOfField';
+import { isApproverRowLocked } from '../../../lib/approverLocking';
 import ApproverSectionLoader from '../../../components/requests/ApproverSectionLoader';
 import { CAPEX_APPROVAL_ROLES, CAPEX_APPROVAL_SECTIONS } from '../../../lib/capexApproval';
 import { buildCapexPreviewSections } from '../../../lib/previews/capexPreview';
@@ -478,6 +479,20 @@ export default function NewCapexRequestPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, session, isEditMode, businessUnitName, departmentName]);
 
+  // Filing on behalf of a principal: the request must read as if THEY raised it,
+  // so the (read-only) Requester field shows the principal's name — autofilled
+  // the moment they're selected. Restore the signed-in user's own name when
+  // cleared. Skipped in edit mode (the stored requester is authoritative there).
+  useEffect(() => {
+    if (isEditMode) return;
+    if (onBehalfOf?.userId) {
+      setFormData(prev => ({ ...prev, requester: onBehalfOf.name || '' }));
+    } else {
+      setFormData(prev => ({ ...prev, requester: user?.display_name || session?.user?.name || prev.requester }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onBehalfOf?.userId]);
+
   useEffect(() => {
     if (status === 'unauthenticated') {
       router.push('/');
@@ -604,7 +619,10 @@ export default function NewCapexRequestPage() {
   };
 
   const buildPreviewSections = (): PreviewSection[] => {
-    const requestorName = formData.requester || user?.display_name || session?.user?.name || '';
+    // On-behalf: the principal is the requestor of record on the document.
+    const requestorName = onBehalfOf?.userId
+      ? (onBehalfOf.name || formData.requester || '')
+      : (formData.requester || user?.display_name || session?.user?.name || '');
     const departmentLabel = departments.find(d => d.id === formData.department)?.name || formData.department || departmentName || '';
     const unitLabel = businessUnits.find(u => u.id === formData.unit)?.name || formData.unit || businessUnitName || '';
     const paybackLabel = formData.paybackPeriod
@@ -636,6 +654,7 @@ export default function NewCapexRequestPage() {
       unit: unitLabel,
       department: departmentLabel,
       projectName: formData.projectName,
+      description: formData.description,
       budgetTypeDisplay,
       currency: curr,
       budgetAmount: formData.budgetAmount,
@@ -865,6 +884,7 @@ export default function NewCapexRequestPage() {
               unit: formData.unit,
               department: formData.department,
               projectName: formData.projectName,
+              description: formData.description,
               budgetType: formData.budgetType,
               isBudgeted: formData.isBudgeted !== false,
               budgetAmount: isBudgetedCapex ? formData.budgetAmount : '',
@@ -1046,6 +1066,7 @@ export default function NewCapexRequestPage() {
             unit: formData.unit,
             department: formData.department,
             projectName: formData.projectName,
+            description: formData.description,
             budgetType: formData.budgetType,
             isBudgeted: formData.isBudgeted !== false,
             budgetAmount: isBudgetedCapex ? formData.budgetAmount : '',
@@ -1266,6 +1287,7 @@ export default function NewCapexRequestPage() {
             unit: formData.unit,
             department: formData.department,
             projectName: formData.projectName,
+            description: formData.description,
             budgetType: formData.budgetType,
             isBudgeted: formData.isBudgeted !== false,
             budgetAmount: isBudgetedCapex ? formData.budgetAmount : '',
@@ -2384,6 +2406,8 @@ export default function NewCapexRequestPage() {
               const selectedUserId = selectedApprovers[role.key];
               const selectedUser = users.find(u => u.id === selectedUserId);
               const filteredUsersForRole = getFilteredUsersForRole(role.key);
+              const isAutoResolved = autoResolvedRoles[role.key];
+              const isLocked = isApproverRowLocked(role.key, isAutoResolved);
 
               return (
                 <div key={role.key} className="relative">
@@ -2400,26 +2424,31 @@ export default function NewCapexRequestPage() {
                       </label>
 
                       {selectedUser ? (
-                        <div className="flex items-center gap-3 p-3 bg-primary-50 border border-primary-200 rounded-xl">
-                          <div className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center flex-shrink-0">
-                            <span className="text-sm font-medium text-primary-600">
+                        <div className={`flex items-center gap-3 p-3 rounded-xl ${isAutoResolved ? 'bg-green-50 border border-green-200' : 'bg-primary-50 border border-primary-200'}`}>
+                          <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${isAutoResolved ? 'bg-green-100' : 'bg-primary-100'}`}>
+                            <span className={`text-sm font-medium ${isAutoResolved ? 'text-green-600' : 'text-primary-600'}`}>
                               {selectedUser.display_name?.charAt(0)?.toUpperCase() || '?'}
                             </span>
                           </div>
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-medium text-gray-900 truncate">{selectedUser.display_name}</p>
                             <p className="text-xs text-gray-500 truncate">{selectedUser.email}</p>
+                            {isAutoResolved && <p className="text-xs text-green-600 mt-0.5">Auto-assigned from HRIMS organogram{isLocked ? ' · locked' : ''}</p>}
                           </div>
+                          {/* Senior fixed approvers (CEO, directors) are locked once
+                              auto-resolved; departmental/managerial rows stay changeable. */}
+                          {!isLocked && (
                           <button
                             type="button"
                             onClick={() => handleRemoveApprover(role.key)}
                             className="p-1.5 rounded-lg hover:bg-danger-50 text-gray-400 hover:text-danger-500 transition-colors"
-                            title="Remove"
+                            title="Remove approver"
                           >
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" />
                             </svg>
                           </button>
+                          )}
                         </div>
                       ) : (
                         <div className="relative">

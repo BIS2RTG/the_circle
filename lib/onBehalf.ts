@@ -1,5 +1,6 @@
 import { supabaseAdmin } from './supabaseAdmin';
 import { canFileOnBehalfOf } from './assistantAssignments';
+import { fetchHrimsDepartmentById, fetchHrimsBusinessUnitById } from './hrimsClient';
 
 /**
  * "File on behalf of" server-side guard.
@@ -25,6 +26,66 @@ export interface OnBehalfResult {
   error?: string;
   /** Server-verified, normalised value to persist (undefined when none). */
   normalized?: OnBehalfOf;
+}
+
+/** Creator-shaped profile of the person a request was filed on behalf of. */
+export interface OnBehalfProfile {
+  id: string;
+  display_name: string | null;
+  email: string | null;
+  job_title: string | null;
+  department?: { id: string; name: string } | null;
+  business_unit?: { id: string; name: string } | null;
+}
+
+/**
+ * Resolve the "on behalf of" principal into a creator-shaped profile (name,
+ * email, job title, department + business-unit names) so previews and the PDF
+ * can present THEM as the requestor — not the assistant who filed. Returns null
+ * when the request wasn't filed on behalf of anyone. Best-effort on HRIMS names.
+ */
+export async function resolveOnBehalfProfile(
+  request: { metadata?: any } | null | undefined
+): Promise<OnBehalfProfile | null> {
+  const ob = request?.metadata?.onBehalfOf;
+  if (!ob || !ob.userId) return null;
+
+  const { data: principal } = await supabaseAdmin
+    .from('app_users')
+    .select('id, display_name, email, job_title, department_id, business_unit_id')
+    .eq('id', ob.userId)
+    .maybeSingle();
+
+  if (!principal) {
+    // The row is gone — fall back to whatever was stored on the request.
+    return {
+      id: ob.userId,
+      display_name: ob.name || null,
+      email: ob.email || null,
+      job_title: ob.positionTitle || null,
+    };
+  }
+
+  const profile: OnBehalfProfile = {
+    id: principal.id,
+    display_name: principal.display_name || ob.name || null,
+    email: principal.email || ob.email || null,
+    job_title: principal.job_title || ob.positionTitle || null,
+  };
+
+  // Department / business-unit names live in HRIMS (separate project).
+  try {
+    const [dept, bu] = await Promise.all([
+      principal.department_id ? fetchHrimsDepartmentById(principal.department_id) : Promise.resolve(null),
+      principal.business_unit_id ? fetchHrimsBusinessUnitById(principal.business_unit_id) : Promise.resolve(null),
+    ]);
+    if (dept) profile.department = { id: dept.id, name: dept.name };
+    if (bu) profile.business_unit = { id: bu.id, name: bu.name };
+  } catch {
+    /* HRIMS unavailable — names stay undefined */
+  }
+
+  return profile;
 }
 
 /**

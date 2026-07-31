@@ -6,6 +6,8 @@ import { GetServerSideProps } from 'next';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '../api/auth/[...nextauth]';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { resolveOnBehalfProfile } from '@/lib/onBehalf';
+import { getUserRBACProfile, hasPermission } from '@/lib/rbac';
 import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { AppLayout } from '../../components/layout';
@@ -1164,6 +1166,7 @@ export const getServerSideProps: GetServerSideProps<RequestDetailsPageProps> = a
           status,
           due_at,
           created_at,
+          activated_at,
           first_viewed_at,
           last_viewed_at,
           is_redirected,
@@ -1239,12 +1242,27 @@ export const getServerSideProps: GetServerSideProps<RequestDetailsPageProps> = a
     );
     const canApproverView = userStep && userStep.status !== 'waiting';
 
+    // Privileged view: super users may open any request; finance admins may open
+    // any CAPEX (they manage funding from /finance/capex-tracker and need the
+    // full request detail). Only resolved when the cheaper checks above fail.
+    let canPrivilegedView = false;
     if (!isCreator && !isWatcher && !canApproverView) {
+      try {
+        const rbac = await getUserRBACProfile(userId);
+        canPrivilegedView =
+          rbac.is_super_admin ||
+          (requestType === 'capex' && hasPermission(rbac, 'finance.view_tracker'));
+      } catch {
+        canPrivilegedView = false;
+      }
+    }
+
+    if (!isCreator && !isWatcher && !canApproverView && !canPrivilegedView) {
       return {
         props: {
           initialRequest: null,
-          initialError: userStep?.status === 'waiting' 
-            ? 'This request is not yet ready for your review.' 
+          initialError: userStep?.status === 'waiting'
+            ? 'This request is not yet ready for your review.'
             : 'You do not have permission to view this request',
         },
       };
@@ -1278,9 +1296,15 @@ export const getServerSideProps: GetServerSideProps<RequestDetailsPageProps> = a
       original_approver: Array.isArray(step.original_approver) ? step.original_approver[0] : step.original_approver,
     }));
 
+    // When filed on behalf of a principal, resolve THEIR creator-shaped profile
+    // (name, department, business unit) so the Preview tab presents them as the
+    // requestor rather than the assistant who filed. Null for normal requests.
+    const onBehalfProfile = await resolveOnBehalfProfile(request);
+
     const enrichedRequest = {
       ...request,
       creator: Array.isArray(request.creator) ? request.creator[0] : request.creator,
+      onBehalfProfile: onBehalfProfile || null,
       status: actualStatus as RequestDetail['status'],
       current_step: currentStepIndex >= 0 ? currentStepIndex + 1 : request.request_steps?.length || 0,
       total_steps: request.request_steps?.length || 0,
