@@ -159,8 +159,8 @@ export default function HotelBookingPage() {
     // `functional_head` slot and is a fixed, locked approver (see COMP_BOOKING_COO).
     const approvalRoles = [
         { key: 'line_manager', label: 'Line Manager', description: 'Recommendation' },
-        { key: 'functional_head', label: COMP_BOOKING_COO.LABEL, description: 'Operations Approval' },
-        { key: 'hrd', label: 'Chief Human Capital Officer', description: 'Human Capital Approval' },
+        { key: 'functional_head', label: COMP_BOOKING_COO.LABEL, description: 'Endorsement' },
+        { key: 'hrd', label: 'Chief Human Capital Officer', description: 'Approval' },
         { key: 'ceo', label: 'CEO', description: 'Authorisation' },
     ];
     const [users, setUsers] = useState<Array<{ id: string; display_name: string; email: string; job_title?: string }>>([]);

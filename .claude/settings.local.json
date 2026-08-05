@@ -231,7 +231,8 @@
       "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\('next', p.dependencies.next\\); console.log\\('vercel/functions', p.dependencies['@vercel/functions']||'NONE'\\); console.log\\('runtime hints:'\\); \")",
       "Bash(node -e \"console.log\\(require\\('@vercel/functions/package.json'\\).version\\)\")",
       "Bash(node -e \"console.log\\(typeof require\\('@vercel/functions'\\).waitUntil\\)\")",
-      "Bash(node -e \"console.log\\('waitUntil:', typeof require\\('@vercel/functions'\\).waitUntil\\)\")"
+      "Bash(node -e \"console.log\\('waitUntil:', typeof require\\('@vercel/functions'\\).waitUntil\\)\")",
+      "Bash(echo \"EXIT_CODE=$?\")"
     ]
   }
 }

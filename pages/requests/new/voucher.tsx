@@ -112,7 +112,7 @@ export default function VoucherRequestPage() {
 
     // Approver selection state - 2 fixed roles
     const approvalRoles = [
-        { key: 'commercial_director', label: 'Chief Commercial Officer', description: 'Commercial Approval' },
+        { key: 'commercial_director', label: 'Approver', description: 'Approval' },
         { key: 'ceo', label: 'CEO', description: 'Final Authorization' },
     ];
     const [users, setUsers] = useState<Array<{ id: string; display_name: string; email: string; job_title?: string }>>([]);
@@ -568,7 +568,7 @@ export default function VoucherRequestPage() {
         // Track approval workflow changes
         if (originalApprovers) {
             const roleLabels: Record<string, string> = {
-                commercial_director: 'Commercial Director Approver',
+                commercial_director: 'Approver',
                 ceo: 'CEO Approver',
             };
             for (const role of Object.keys(roleLabels)) {
@@ -843,7 +843,7 @@ export default function VoucherRequestPage() {
         // Required: Business unit fields
         for (const unit of selectedBusinessUnits) {
             const isMealOnly = [
-                'meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only'
+                'meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only', 'packed_breakfast', 'packed_lunch'
             ].includes(unit.accommodationType);
 
             if (!isMealOnly) {
@@ -1320,7 +1320,7 @@ export default function VoucherRequestPage() {
                                         </div>
 
                                         {isSelected && selectedUnit && (() => {
-                                            const isMealOnly = ['meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only'].includes(selectedUnit.accommodationType);
+                                            const isMealOnly = ['meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only', 'packed_breakfast', 'packed_lunch'].includes(selectedUnit.accommodationType);
                                             return (
                                                 <div className="border-t border-primary-200 bg-white p-4 rounded-b-xl space-y-4">
                                                     <div>
@@ -1347,6 +1347,17 @@ export default function VoucherRequestPage() {
                                                                     className="w-4 h-4 text-primary-600 focus:ring-primary-500 border-gray-300"
                                                                 />
                                                                 <span className="text-sm text-gray-700">Bed & Breakfast Only</span>
+                                                            </label>
+                                                            <label className="flex items-center gap-2 cursor-pointer p-2 rounded-lg hover:bg-gray-50 border border-transparent hover:border-gray-200">
+                                                                <input
+                                                                    type="radio"
+                                                                    name={`accommodationType_${unit.id}`}
+                                                                    value="dinner_bed_breakfast"
+                                                                    checked={selectedUnit.accommodationType === 'dinner_bed_breakfast'}
+                                                                    onChange={(e) => handleBusinessUnitFieldChange(unit.id, 'accommodationType', e.target.value)}
+                                                                    className="w-4 h-4 text-primary-600 focus:ring-primary-500 border-gray-300"
+                                                                />
+                                                                <span className="text-sm text-gray-700">DBB (Dinner, Bed and Breakfast)</span>
                                                             </label>
                                                             <label className="flex items-center gap-2 cursor-pointer p-2 rounded-lg hover:bg-gray-50 border border-transparent hover:border-gray-200">
                                                                 <input
@@ -1425,6 +1436,28 @@ export default function VoucherRequestPage() {
                                                                 />
                                                                 <span className="text-sm text-gray-700">Dinner meal(s) only</span>
                                                             </label>
+                                                            <label className="flex items-center gap-2 cursor-pointer p-2 rounded-lg hover:bg-gray-50 border border-transparent hover:border-gray-200">
+                                                                <input
+                                                                    type="radio"
+                                                                    name={`accommodationType_${unit.id}`}
+                                                                    value="packed_breakfast"
+                                                                    checked={selectedUnit.accommodationType === 'packed_breakfast'}
+                                                                    onChange={(e) => handleBusinessUnitFieldChange(unit.id, 'accommodationType', e.target.value)}
+                                                                    className="w-4 h-4 text-primary-600 focus:ring-primary-500 border-gray-300"
+                                                                />
+                                                                <span className="text-sm text-gray-700">Packed breakfast</span>
+                                                            </label>
+                                                            <label className="flex items-center gap-2 cursor-pointer p-2 rounded-lg hover:bg-gray-50 border border-transparent hover:border-gray-200">
+                                                                <input
+                                                                    type="radio"
+                                                                    name={`accommodationType_${unit.id}`}
+                                                                    value="packed_lunch"
+                                                                    checked={selectedUnit.accommodationType === 'packed_lunch'}
+                                                                    onChange={(e) => handleBusinessUnitFieldChange(unit.id, 'accommodationType', e.target.value)}
+                                                                    className="w-4 h-4 text-primary-600 focus:ring-primary-500 border-gray-300"
+                                                                />
+                                                                <span className="text-sm text-gray-700">Packed lunch</span>
+                                                            </label>
                                                         </div>
                                                     </div>
 
@@ -1440,6 +1473,7 @@ export default function VoucherRequestPage() {
                                                                         required
                                                                     >
                                                                         <option value="" disabled>Select Room Type</option>
+                                                                        <option value="Single room">Single room</option>
                                                                         <option value="Double room">Double room</option>
                                                                         <option value="Twin room">Twin room</option>
                                                                         <option value="Executive suite">Executive suite</option>
@@ -1495,7 +1529,7 @@ export default function VoucherRequestPage() {
                                                     )}
 
                                                     {/* Meal Options - shown for voucher types that include meals */}
-                                                    {['meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only', 'accommodation_and_meals', 'accommodation_meals_drink'].includes(selectedUnit.accommodationType) && (
+                                                    {['meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only', 'packed_breakfast', 'packed_lunch', 'accommodation_and_meals', 'accommodation_meals_drink'].includes(selectedUnit.accommodationType) && (
                                                         <div className="mt-4 p-4 bg-gray-50 border border-gray-200 rounded-xl">
                                                             <h4 className="text-sm font-semibold text-gray-700 mb-3 uppercase">Meal Details</h4>
                                                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1569,11 +1603,24 @@ export default function VoucherRequestPage() {
                                 onChange={(e) => setFormData({ ...formData, allocationType: e.target.value })}
                                 required
                             >
-                                <option value="" disabled className='text-gray-500'>Select Department to charge to...</option>
-                                <option value="Corporate Affairs and Quality">Corporate Affairs and Quality</option>
-                                <option value="Commercial">Commercial</option>
-                                <option value="Sales and Marketing">Sales and Marketing</option>
-                                <option value="Front Office">Front Office</option>
+                                <option value="" disabled className='text-gray-500'>Select where to charge to...</option>
+                                <optgroup label="Corporate Office Departments">
+                                    <option value="Office of the CEO">Office of the CEO</option>
+                                    <option value="Finance">Finance</option>
+                                    <option value="Human Capital">Human Capital</option>
+                                    <option value="Commercial">Commercial</option>
+                                    <option value="Sales and Marketing">Sales and Marketing</option>
+                                    <option value="Corporate Affairs and Quality">Corporate Affairs and Quality</option>
+                                    <option value="Information Technology">Information Technology</option>
+                                    <option value="Internal Audit">Internal Audit</option>
+                                    <option value="Legal and Company Secretary">Legal and Company Secretary</option>
+                                    <option value="Procurement">Procurement</option>
+                                    <option value="Operations">Operations</option>
+                                </optgroup>
+                                <optgroup label="Business Units">
+                                    <option value="Gateway Stream">Gateway Stream</option>
+                                    <option value="Heritage Expeditions">Heritage Expeditions</option>
+                                </optgroup>
                             </select>
                             <div className="absolute inset-y-0 right-0 flex items-center px-4 pointer-events-none text-gray-500">
                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
@@ -1747,6 +1794,9 @@ export default function VoucherRequestPage() {
                                                         </div>
                                                         <div className="flex-1 min-w-0">
                                                             <p className="text-sm font-medium text-gray-900 truncate">{selectedUser.display_name}</p>
+                                                            {selectedUser.job_title && (
+                                                                <p className="text-xs font-medium text-gray-600 truncate">{selectedUser.job_title}</p>
+                                                            )}
                                                             <p className="text-xs text-gray-500 truncate">{selectedUser.email}</p>
                                                             {isAutoResolved && <p className="text-xs text-green-600 mt-0.5">Auto-assigned from HRIMS organogram{isLocked ? ' · locked' : ''}</p>}
                                                         </div>
