@@ -18,13 +18,29 @@ import { approvalLinkUrl } from './approvalLinkToken';
 /**
  * Normalise `metadata.approvers` (array OR legacy role→id object) into an
  * ordered list of approver user ids.
+ *
+ * The list is always DE-DUPLICATED (first occurrence wins, order preserved): the
+ * same person must never occupy two steps in one approval workflow, or they'd be
+ * asked to sign twice and their signature would appear twice on the document.
+ * This can happen when an auto-resolved role (e.g. Line Manager) resolves to the
+ * same person as a fixed role (e.g. the COO pinned as Functional Head). The
+ * pickers hide already-chosen users, but auto-resolution and pinned approvers
+ * bypass that, so this is the authoritative backstop for every form + entry point.
  */
 export function normalizeApprovers(metadata: any): string[] {
   const approversData = metadata?.approvers;
   if (!approversData) return [];
 
   if (Array.isArray(approversData)) {
-    return approversData.filter((id: any) => typeof id === 'string' && id.length > 0);
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const id of approversData) {
+      if (typeof id === 'string' && id.length > 0 && !seen.has(id)) {
+        seen.add(id);
+        result.push(id);
+      }
+    }
+    return result;
   }
 
   if (typeof approversData === 'object') {

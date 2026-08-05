@@ -62,6 +62,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             id,
             display_name,
             email,
+            job_title,
             signature_url
           ),
           approvals (
@@ -167,7 +168,7 @@ function generateVoucherHtml(request: any): string {
   const selectedBusinessUnits = metadata.selectedBusinessUnits || [];
   
   // Check if this is a meal-only voucher
-  const mealOnlyTypes = ['meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only'];
+  const mealOnlyTypes = ['meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only', 'packed_breakfast', 'packed_lunch'];
   const firstUnit = selectedBusinessUnits[0] || {};
   const isMealOnly = mealOnlyTypes.includes(firstUnit.accommodationType);
   
@@ -252,6 +253,9 @@ Kind regards`;
       'breakfast only': 'Breakfast',
       'lunch only': 'Lunch',
       'dinner only': 'Dinner',
+      'packed breakfast': 'Packed Breakfast',
+      'packed lunch': 'Packed Lunch',
+      'dinner bed breakfast': 'Dinner, Bed & Breakfast',
     };
     return typeMap[type.toLowerCase()] || type;
   };
@@ -290,6 +294,9 @@ Kind regards`;
   }
   
   const commercialDirectorName = getApproverField(commercialDirectorStep, 'display_name') || "Commercial Director";
+  // The first approver is a generic "Approver" — its title on the voucher is the
+  // selected user's own job title (falls back to "Approver" when unknown).
+  const commercialDirectorTitle = getApproverField(commercialDirectorStep, 'job_title') || "Approver";
   const ceoName = getApproverField(ceoStep, 'display_name') || "CEO";
   
   // Get signatures - first try resolved_signature_url (from storage), then fallback to signature_url (from user record)
@@ -322,6 +329,8 @@ Kind regards`;
         'breakfast_only': 'Breakfast',
         'lunch_only': 'Lunch',
         'dinner_only': 'Dinner',
+        'packed_breakfast': 'Packed Breakfast',
+        'packed_lunch': 'Packed Lunch',
       };
       const mealLabel = mealTypeLabels[accType] || 'meals';
       return `This voucher entitles the bearer to <strong>${mealCountText}</strong> (<strong>${mealLabel}</strong>) for <strong>${mealGuestText}</strong> at <strong>${hotelDisplay}</strong>.`;
@@ -338,6 +347,11 @@ Kind regards`;
         break;
       case 'accommodation_and_breakfast':
         entitlementParts.push(`<strong>${nightText}</strong> of <strong>Bed & Breakfast</strong>`);
+        entitlementParts.push(`in a <strong>${room}</strong>`);
+        entitlementParts.push(`for <strong>${guestText}</strong>`);
+        break;
+      case 'dinner_bed_breakfast':
+        entitlementParts.push(`<strong>${nightText}</strong> of <strong>Dinner, Bed & Breakfast</strong>`);
         entitlementParts.push(`in a <strong>${room}</strong>`);
         entitlementParts.push(`for <strong>${guestText}</strong>`);
         break;
@@ -734,7 +748,7 @@ Kind regards`;
         </div>
         <div class="signature-line"></div>
         <div class="signature-name">${commercialDirectorName}</div>
-        <div class="signature-title">Commercial Director</div>
+        <div class="signature-title">${commercialDirectorTitle}</div>
       </div>
       <div class="signature-block">
         <div class="signature-image-container">

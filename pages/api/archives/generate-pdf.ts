@@ -785,7 +785,7 @@ function renderTravelAuth(
   // Allocation Cost to Unit
   yPos = oHeading(doc, 'Allocation Cost to Unit', yPos, pw);
   const alloc = formData.costAllocation && typeof formData.costAllocation === 'object' ? formData.costAllocation : {};
-  const UNITS = ['Corp', 'MRC', 'NAH', 'RTH', 'KHCC', 'BRH', 'VFRH', 'AZRL', 'HEXA', 'GWS'];
+  const UNITS = ['Corp', 'MRC', 'NAH', 'RTH', 'KHCC', 'BRH', 'VFRH', 'AZRL', 'HICC', 'HEXA', 'GWS'];
   yPos = oTickBoxes(doc, UNITS.map((u) => {
     const v = alloc[u] ?? alloc[u.toLowerCase()];
     return { label: u, checked: v != null && v !== '' && v !== 0, cost: v ? `USD ${v}` : undefined };

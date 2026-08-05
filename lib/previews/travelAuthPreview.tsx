@@ -93,6 +93,7 @@ export const ALLOCATION_UNITS: Array<{ code: string; label: string }> = [
     { code: 'BRH', label: 'Bulawayo Rainbow Hotel' },
     { code: 'VFRH', label: 'Victoria Falls Rainbow Hotel' },
     { code: 'AZRL', label: "A'Zambezi River Lodge" },
+    { code: 'HICC', label: 'Harare International Conference Centre' },
     { code: 'HEXA', label: 'Heritage Expeditions' },
     { code: 'GWS', label: 'Gateway Stream' },
 ];
