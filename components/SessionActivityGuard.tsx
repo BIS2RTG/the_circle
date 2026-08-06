@@ -10,11 +10,6 @@ const REFRESH_THROTTLE_MS = 60 * 1000;
 // How long before a deadline we warn the user, giving them a chance to stay
 // signed in (idle) or save their work (absolute) instead of losing it.
 const WARNING_LEAD_MS = 60 * 1000;
-// Sign out this long BEFORE the server token actually lapses. The idle deadline
-// tracks the JWT's real `exp` (session.expires); leaving a small margin means a
-// queued action never lands after the token has expired (which returned 401 —
-// the "stays logged in then Unauthorized" bug).
-const SIGNOUT_BUFFER_MS = 5 * 1000;
 
 const ACTIVITY_EVENTS = ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click'];
 
@@ -54,13 +49,6 @@ export default function SessionActivityGuard() {
   const [warning, setWarning] = useState<{ type: WarningType; remaining: number } | null>(null);
 
   const loginAt = (session as any)?.loginAt as number | undefined;
-  // The server-authoritative token expiry. next-auth rolls this forward when we
-  // refresh via getSession() on activity; using it (rather than lastActivity +
-  // IDLE) guarantees the client signs out at/just-before the token actually
-  // lapses, closing the window where the UI looked logged-in but APIs 401'd.
-  const sessionExpires = (session as any)?.expires
-    ? new Date((session as any).expires).getTime()
-    : null;
 
   useEffect(() => {
     if (status !== 'authenticated') {
@@ -105,12 +93,10 @@ export default function SessionActivityGuard() {
 
     const interval = setInterval(() => {
       const now = Date.now();
-      // Prefer the real server token expiry (minus a small buffer); fall back to
-      // the activity-based estimate only if next-auth didn't give us `expires`.
-      const idleDeadline =
-        (sessionExpires != null
-          ? sessionExpires - SIGNOUT_BUFFER_MS
-          : lastActivityRef.current + IDLE_TIMEOUT_MS);
+      // Idle deadline is measured from the user's LAST ACTIVITY — the warning
+      // only appears after a genuine stretch of inactivity, and any activity
+      // (or "Stay signed in") pushes it forward.
+      const idleDeadline = lastActivityRef.current + IDLE_TIMEOUT_MS;
       const absoluteDeadline =
         typeof loginAt === 'number' ? loginAt + ABSOLUTE_TIMEOUT_MS : Infinity;
 
@@ -143,13 +129,21 @@ export default function SessionActivityGuard() {
       document.removeEventListener('visibilitychange', onVisibility);
       clearInterval(interval);
     };
-  }, [status, loginAt, sessionExpires]);
+  }, [status, loginAt]);
 
-  const staySignedIn = () => {
+  const staySignedIn = async () => {
+    // Roll the server cookie forward and confirm the session is still valid. If
+    // the token already lapsed we can't revive it here — sign out cleanly rather
+    // than dismiss the warning and let the next action hit "Unauthorized".
+    // Reset the activity clock FIRST so the 1s watchdog doesn't re-open the
+    // warning while getSession() is in flight.
     lastActivityRef.current = Date.now();
     lastRefreshRef.current = Date.now();
-    void getSession();
     setWarning(null);
+    const s = await getSession();
+    if (!s) {
+      signOut({ callbackUrl: '/' });
+    }
   };
 
   if (!warning) return null;
