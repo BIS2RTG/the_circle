@@ -94,6 +94,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (ur.role) rolesByUser[ur.user_id].push(ur.role);
       });
 
+      // Data-access scope per user, so the Access & Rights table can show each
+      // user's visibility level at a glance. Absence of a row = the default
+      // (home business unit).
+      const scopeByUser: Record<string, { level: string; bu_count: number }> = {};
+      if (userIds.length > 0) {
+        const { data: scopeRows } = await supabaseAdmin
+          .from('user_access_scopes')
+          .select('id, user_id, scope_level')
+          .in('user_id', userIds);
+        const scopeIdByUser: Record<string, string> = {};
+        for (const s of scopeRows || []) {
+          scopeByUser[s.user_id] = { level: s.scope_level, bu_count: 0 };
+          scopeIdByUser[s.user_id] = s.id;
+        }
+        const scopeIds = (scopeRows || []).map((s: any) => s.id);
+        if (scopeIds.length > 0) {
+          const { data: buRows } = await supabaseAdmin
+            .from('user_scope_business_units')
+            .select('scope_id')
+            .in('scope_id', scopeIds);
+          const countByScope: Record<string, number> = {};
+          for (const b of buRows || []) countByScope[b.scope_id] = (countByScope[b.scope_id] || 0) + 1;
+          for (const uid of Object.keys(scopeIdByUser)) {
+            if (scopeByUser[uid]) scopeByUser[uid].bu_count = countByScope[scopeIdByUser[uid]] || 0;
+          }
+        }
+      }
+
       // If filtering by role_id, keep only users who have that role
       let enrichedUsers = (users || []).map((user: any) => ({
         ...user,
@@ -102,6 +130,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         business_unit: null,
         roles: rolesByUser[user.id] || [],
         primary_role: (rolesByUser[user.id] || []).sort((a: any, b: any) => b.priority - a.priority)[0] || null,
+        access_scope_level: scopeByUser[user.id]?.level || null,
+        access_scope_bu_count: scopeByUser[user.id]?.bu_count || 0,
       }));
 
       if (role_id) {

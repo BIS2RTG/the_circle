@@ -10,7 +10,7 @@
  */
 
 import { supabaseAdmin } from './supabaseAdmin';
-import { sendAppGraphMail, isGraphAppMailConfigured, AppMailAttachment } from './graphAppMail';
+import { sendAppGraphMail, isGraphAppMailConfigured, graphMailSender, AppMailAttachment } from './graphAppMail';
 import { sendEmail as sendResendEmail } from './email';
 import { sendGraphMail } from './graphMail';
 import { getValidMsAccessToken, getAnyValidDelegatedSenderId } from './msTokenStore';
@@ -203,19 +203,41 @@ export async function sendUserNotificationEmail(params: {
     type Attempt = { label: string; run: () => Promise<boolean> };
     const attempts: Attempt[] = [];
 
-    const delegatedAttempt = (senderId: string, label: string): Attempt => ({
-      label,
-      run: async () => {
-        const token = await getValidMsAccessToken(senderId);
-        if (!token) return false;
+    // The one address every notification should appear to come from.
+    const serviceSender = { email: graphMailSender(), name: 'The Circle' };
+
+    // Send via a delegated (individual) token, but stamp the From as the shared
+    // service mailbox so recipients always see "The Circle". If the token owner
+    // lacks Send-As rights on that mailbox Graph rejects it — retry without the
+    // override so the notification still delivers (from the individual) rather
+    // than being dropped.
+    const sendDelegatedAsService = async (token: string): Promise<void> => {
+      try {
         await sendGraphMail({
           accessToken: token,
           to: { email: to },
           subject: params.subject,
           html,
-          // System notifications shouldn't clutter the sender's Sent Items.
+          saveToSentItems: false,
+          from: serviceSender,
+        });
+      } catch {
+        await sendGraphMail({
+          accessToken: token,
+          to: { email: to },
+          subject: params.subject,
+          html,
           saveToSentItems: false,
         });
+      }
+    };
+
+    const delegatedAttempt = (senderId: string, label: string): Attempt => ({
+      label,
+      run: async () => {
+        const token = await getValidMsAccessToken(senderId);
+        if (!token) return false;
+        await sendDelegatedAsService(token);
         return true;
       },
     });
@@ -260,13 +282,7 @@ export async function sendUserNotificationEmail(params: {
         if (!senderId) return false;
         const token = await getValidMsAccessToken(senderId);
         if (!token) return false;
-        await sendGraphMail({
-          accessToken: token,
-          to: { email: to },
-          subject: params.subject,
-          html,
-          saveToSentItems: false,
-        });
+        await sendDelegatedAsService(token);
         return true;
       },
     });

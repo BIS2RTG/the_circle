@@ -1766,11 +1766,10 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
             }
         }
 
-        // Identity re-verification (biometric / Microsoft MFA step-up) is not
-        // used, but the approver still confirms the decision in a lightweight
-        // dialog before it is recorded. Reject already routes through its own
-        // confirmation (showRejectConfirm) before reaching here, so only the
-        // approve path needs to open the confirm dialog.
+        // The approver confirms the decision in a lightweight dialog before it
+        // is recorded — there is no identity re-verification step. Reject
+        // already routes through its own confirmation (showRejectConfirm)
+        // before reaching here, so only the approve path opens the confirm dialog.
         if (action === 'approve') {
             setReviewError(null);
             setShowApproveConfirm(true);
@@ -1839,17 +1838,18 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                 throw new Error(actionError);
             }
 
-            // Refresh the request data
-            const refreshResponse = await fetch(`/api/requests/${id}`);
-            if (refreshResponse.ok) {
-                const refreshData = await refreshResponse.json();
-                setRequest(refreshData.request);
-            }
-
+            // The decision is recorded — close the modal and clear state right
+            // away. Refresh the request in the BACKGROUND so the page reflects
+            // the new state without keeping the approver waiting on a heavy fetch.
             setShowReviewModal(false);
             setReviewComment('');
             setPendingApprovalAction(null);
             setSignatureSelection({ type: 'saved' });
+
+            fetch(`/api/requests/${id}`)
+                .then((r) => (r.ok ? r.json() : null))
+                .then((d) => { if (d?.request) setRequest(d.request); })
+                .catch(() => { /* non-fatal: next navigation will refresh */ });
         } catch (err: any) {
             setReviewError(getErrorMessage(err, `Failed to ${action} request`));
         } finally {
