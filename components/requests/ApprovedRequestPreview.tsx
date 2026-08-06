@@ -1,4 +1,5 @@
 import { useMemo, useRef, type ReactNode } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { RequestPreviewModal, RequestPreviewDocument, printPreviewDocument, buildDocumentHeaderSection } from '../ui';
 import type { PreviewSection, DocumentHeader } from '../ui';
 import {
@@ -983,6 +984,31 @@ export function buildPreviewForRequest(request: any) {
         sections,
         documentHeader,
     };
+}
+
+/**
+ * Print / Save-as-PDF the current preview for a request without needing the
+ * inline preview to be mounted. Renders the exact same document that
+ * ApprovedRequestPreviewInline shows (same buildPreviewForRequest output, same
+ * RequestPreviewDocument, same printPreviewDocument stylesheet) so the output
+ * is identical to the "Print / Save as PDF" button — this is what the green
+ * "Download" button on /requests/[id] uses instead of the stale server archive.
+ */
+export function printApprovedRequest(request: any) {
+    const { title, subtitle, sections, documentHeader } = buildPreviewForRequest(request);
+    const markup = renderToStaticMarkup(
+        <RequestPreviewDocument
+            title={title}
+            subtitle={subtitle}
+            sections={sections}
+            documentHeader={documentHeader}
+        />
+    );
+    // printPreviewDocument reads the node's innerHTML, so hand it the rendered
+    // RequestPreviewDocument root (its children match the inline ref's children).
+    const container = document.createElement('div');
+    container.innerHTML = markup;
+    printPreviewDocument(container.firstElementChild as HTMLElement, title);
 }
 
 /**

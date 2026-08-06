@@ -17,7 +17,7 @@ import CashReceiptConfirmation from '../../components/requests/CashReceiptConfir
 import { useToast } from '../../components/ui/ToastProvider';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import SignatureSelector, { type SignatureSelection } from '../../components/approvals/SignatureSelector';
-import ApprovedRequestPreview, { ApprovedRequestPreviewInline } from '../../components/requests/ApprovedRequestPreview';
+import ApprovedRequestPreview, { ApprovedRequestPreviewInline, printApprovedRequest } from '../../components/requests/ApprovedRequestPreview';
 import { getErrorMessage } from '@/lib/getErrorMessage';
 import { isNetworkError } from '@/lib/networkError';
 import Link from 'next/link';
@@ -1357,7 +1357,6 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
     const [loadingDocuments, setLoadingDocuments] = useState(false);
     const [showReviewModal, setShowReviewModal] = useState(false);
     const [showApprovedPreview, setShowApprovedPreview] = useState(false);
-    const [downloadingArchive, setDownloadingArchive] = useState(false);
     // Where the approved PDF landed in Microsoft 365 (OneDrive/SharePoint webUrls).
     const [archiveLinks, setArchiveLinks] = useState<{ onedrive?: string; sharepoint?: string; teams?: string } | null>(null);
     const [reviewComment, setReviewComment] = useState('');
@@ -2530,35 +2529,6 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [id, request?.status]);
 
-    /**
-     * Download the archived (auto-generated) PDF of a fully-approved request.
-     * The endpoint will mint the archive on demand if it doesn't exist yet
-     * (e.g. for requests approved before auto-archiving was wired up).
-     */
-    const handleDownloadApprovedArchive = async () => {
-        if (!id) return;
-        setDownloadingArchive(true);
-        try {
-            const res = await fetch(`/api/requests/${id}/archive`);
-            const data = await res.json();
-            if (!res.ok || !data?.archive?.download_url) {
-                throw new Error(data?.error || 'Could not generate download link');
-            }
-            // Force a download (vs. inline view) where the browser supports it.
-            const link = document.createElement('a');
-            link.href = data.archive.download_url;
-            link.download = data.archive.filename || `request-${id}.pdf`;
-            link.target = '_blank';
-            link.rel = 'noopener noreferrer';
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-        } catch (err: any) {
-            addToast({ type: 'error', title: 'Download failed', message: err?.message || 'Could not download the approved PDF.' });
-        } finally {
-            setDownloadingArchive(false);
-        }
-    };
 
     const handleDocumentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -3070,14 +3040,12 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                                 variant="primary"
                                 style={{ backgroundColor: '#059669', borderColor: '#059669', color: '#ffffff' }}
                                 className="gap-2 hover:!bg-emerald-700 disabled:opacity-60"
-                                onClick={handleDownloadApprovedArchive}
-                                disabled={downloadingArchive}
-                                isLoading={downloadingArchive}
+                                onClick={() => printApprovedRequest(request)}
                             >
                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
                                 </svg>
-                                <span style={{ color: '#ffffff' }}>{downloadingArchive ? 'Preparing…' : 'Download'}</span>
+                                <span style={{ color: '#ffffff' }}>Download</span>
                             </Button>
                         )}
                         {/* Microsoft 365 copies — appear once the approved PDF has been
