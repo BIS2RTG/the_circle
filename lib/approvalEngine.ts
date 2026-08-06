@@ -592,47 +592,26 @@ export class ApprovalEngine {
     }
     
     // 1. Verify the step belongs to this user and is actionable
-    console.log('Looking up step:', { stepId, requestId, userId });
-    
-    // First, try to find the step by ID only to debug
-    const { data: stepById, error: stepByIdError } = await supabaseAdmin
-      .from('request_steps')
-      .select('id, request_id, approver_user_id, status')
-      .eq('id', stepId)
-      .single();
-    
-    if (stepByIdError) {
-      console.error('Step lookup by ID only failed:', JSON.stringify(stepByIdError, null, 2));
-    } else {
-      console.log('Step found by ID:', stepById);
-      if (stepById.request_id !== requestId) {
-        console.error('Request ID mismatch! Step belongs to:', stepById.request_id, 'but got:', requestId);
-      }
-    }
-    
     const { data: step, error: stepError } = await supabaseAdmin
       .from('request_steps')
       .select('*')
       .eq('id', stepId)
       .eq('request_id', requestId)
       .single();
-    
+
     if (stepError) {
-      console.error('Step lookup error:', JSON.stringify(stepError, null, 2));
       // PGRST116 means no rows found
       if (stepError.code === 'PGRST116') {
         return { success: false, error: 'Approval step not found - step may not exist or does not belong to this request' };
       }
+      console.error('Step lookup error:', JSON.stringify(stepError, null, 2));
       return { success: false, error: `Database error: ${stepError.message}` };
     }
-    
+
     if (!step) {
-      console.error('Step not found - no data returned');
       return { success: false, error: 'Approval step not found' };
     }
-    
-    console.log('Found step:', { id: step.id, status: step.status, approver: step.approver_user_id });
-    
+
     if (step.approver_user_id !== userId) {
       return { success: false, error: 'You are not authorized to act on this approval' };
     }
@@ -865,25 +844,20 @@ export class ApprovalEngine {
         .update(activation)
         .eq('id', nextStep.id);
       
-      // Update current_step in request metadata
-      const { data: currentRequest } = await supabaseAdmin
-        .from('requests')
-        .select('metadata')
-        .eq('id', requestId)
-        .single();
-      
-      if (currentRequest) {
+      // Update current_step in request metadata. Reuse the metadata already
+      // fetched above rather than re-reading the row.
+      if (request) {
         await supabaseAdmin
           .from('requests')
           .update({
             metadata: {
-              ...currentRequest.metadata,
+              ...(request.metadata as any),
               current_step: currentStep.step_index + 1,
             }
           })
           .eq('id', requestId);
       }
-      
+
       if (request && nextApproverId) {
         // Total steps for the notification message (quick count).
         const { count: totalSteps } = await supabaseAdmin

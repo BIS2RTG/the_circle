@@ -57,6 +57,15 @@ export default function AssignRoleModal({ isOpen, onClose, roles, permissions = 
   const [savingOverrides, setSavingOverrides] = useState(false);
   const [rolePermCodes, setRolePermCodes] = useState<Set<string>>(new Set());
 
+  // Data-access scope: how much of the org's data this user can see.
+  const [scopeLevel, setScopeLevel] = useState<string>('business_unit');
+  const [scopeBUNames, setScopeBUNames] = useState<Set<string>>(new Set());
+  const [businessUnits, setBusinessUnits] = useState<Array<{ id: string; name: string }>>([]);
+  const [buSearch, setBuSearch] = useState('');
+  const [showScope, setShowScope] = useState(false);
+  const [loadingScope, setLoadingScope] = useState(false);
+  const [savingScope, setSavingScope] = useState(false);
+
   // Load users + business units when the modal opens
   useEffect(() => {
     if (!isOpen) return;
@@ -65,12 +74,24 @@ export default function AssignRoleModal({ isOpen, onClose, roles, permissions = 
     setSearch('');
     setOverrides(new Map());
     setShowOverrides(false);
+    setShowScope(false);
+    setBuSearch('');
     setLoadingUsers(true);
     fetch('/api/users')
       .then((r) => r.json())
       .then((d) => setUsers(d.users || []))
       .catch(() => addToast({ type: 'error', message: 'Failed to load users' }))
       .finally(() => setLoadingUsers(false));
+    // Full business-unit list (no exclusions) for the custom-scope picker.
+    fetch('/api/hrims/business-units')
+      .then((r) => r.json())
+      .then((d) => setBusinessUnits(
+        (d.businessUnits || [])
+          .map((b: any) => ({ id: b.id, name: b.name }))
+          .filter((b: any) => b.name)
+          .sort((a: any, b: any) => a.name.localeCompare(b.name))
+      ))
+      .catch(() => {/* non-fatal: custom scope just won't have suggestions */});
   }, [isOpen, initialUserId, addToast]);
 
   const loadUserRoles = useCallback((userId: string) => {
@@ -105,10 +126,24 @@ export default function AssignRoleModal({ isOpen, onClose, roles, permissions = 
       .finally(() => setLoadingOverrides(false));
   }, [addToast]);
 
+  const loadUserScope = useCallback((userId: string) => {
+    if (!userId) { setScopeLevel('business_unit'); setScopeBUNames(new Set()); return; }
+    setLoadingScope(true);
+    fetch(`/api/rbac/scope?user_id=${userId}`)
+      .then((r) => r.json())
+      .then((d) => {
+        setScopeLevel(d?.setting?.scope_level || 'business_unit');
+        setScopeBUNames(new Set<string>(d?.setting?.business_unit_names || []));
+      })
+      .catch(() => addToast({ type: 'error', message: 'Failed to load data-access scope' }))
+      .finally(() => setLoadingScope(false));
+  }, [addToast]);
+
   useEffect(() => {
     loadUserRoles(selectedUserId);
     loadUserOverrides(selectedUserId);
-  }, [selectedUserId, loadUserRoles, loadUserOverrides]);
+    loadUserScope(selectedUserId);
+  }, [selectedUserId, loadUserRoles, loadUserOverrides, loadUserScope]);
 
   const filteredUsers = useMemo(() => {
     const q = search.toLowerCase();
@@ -194,6 +229,41 @@ export default function AssignRoleModal({ isOpen, onClose, roles, permissions = 
       else next.set(code, value === 'grant');
       return next;
     });
+  };
+
+  const toggleScopeBU = (name: string) => {
+    setScopeBUNames((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+  };
+
+  const handleSaveScope = async () => {
+    if (!selectedUserId) return;
+    if (scopeLevel === 'custom' && scopeBUNames.size === 0) {
+      addToast({ type: 'error', message: 'Select at least one business unit for a custom scope.' });
+      return;
+    }
+    setSavingScope(true);
+    try {
+      const res = await fetch('/api/rbac/scope', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: selectedUserId,
+          scope_level: scopeLevel,
+          business_unit_names: scopeLevel === 'custom' ? Array.from(scopeBUNames) : [],
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || 'Failed to save data-access scope');
+      addToast({ type: 'success', message: 'Data-access scope saved' });
+    } catch (err: any) {
+      addToast({ type: 'error', message: err.message || 'Failed to save data-access scope' });
+    } finally {
+      setSavingScope(false);
+    }
   };
 
   return (
@@ -298,6 +368,110 @@ export default function AssignRoleModal({ isOpen, onClose, roles, permissions = 
               </div>
             </div>
 
+
+            {/* ---- Data-access scope ---- */}
+            <div className="border-t border-gray-100 pt-4">
+              <button
+                type="button"
+                onClick={() => setShowScope(!showScope)}
+                className="flex w-full items-center justify-between"
+              >
+                <span className="text-sm font-semibold text-gray-800">
+                  Data access scope
+                  <span className="ml-2 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700">
+                    {scopeLevel === 'custom'
+                      ? `${scopeBUNames.size} unit${scopeBUNames.size === 1 ? '' : 's'}`
+                      : titleCase(scopeLevel)}
+                  </span>
+                </span>
+                <svg
+                  className={`w-4 h-4 text-gray-400 transition-transform ${showScope ? 'rotate-180' : ''}`}
+                  fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+              <p className="text-xs text-gray-500 mt-1">
+                Controls how much data (CAPEX tracker, reports, etc.) this user can see — independent of what they can do.
+                Choose <strong>Specific business units</strong> to restrict them to a chosen set.
+              </p>
+
+              {showScope && (
+                loadingScope ? (
+                  <p className="text-sm text-gray-400 mt-3">Loading…</p>
+                ) : (
+                  <div className="mt-3 space-y-3">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Scope level</label>
+                      <select
+                        value={scopeLevel}
+                        onChange={(e) => setScopeLevel(e.target.value)}
+                        className="w-full px-4 py-2 rounded-xl border border-gray-300 bg-white focus:outline-none focus:ring-2 focus:ring-brand-500"
+                      >
+                        <option value="own">Own records only</option>
+                        <option value="department">Their department</option>
+                        <option value="business_unit">Their home business unit (default)</option>
+                        <option value="custom">Specific business units…</option>
+                        <option value="organization">Entire organization</option>
+                      </select>
+                    </div>
+
+                    {scopeLevel === 'custom' && (
+                      <div className="border border-gray-200 rounded-xl p-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <h5 className="text-sm font-medium text-gray-800">Business units this user can see</h5>
+                          <span className="text-xs text-gray-400">{scopeBUNames.size} selected</span>
+                        </div>
+                        <input
+                          type="text"
+                          placeholder="Filter business units…"
+                          value={buSearch}
+                          onChange={(e) => setBuSearch(e.target.value)}
+                          className="w-full px-3 py-1.5 mb-2 text-sm rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                        />
+                        <div className="max-h-48 overflow-y-auto space-y-1">
+                          {businessUnits.length === 0 ? (
+                            <p className="text-sm text-gray-400 py-2">No business units available.</p>
+                          ) : (
+                            businessUnits
+                              .filter((b) => !buSearch || b.name.toLowerCase().includes(buSearch.toLowerCase()))
+                              .map((b) => (
+                                <label key={b.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-gray-50 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    className="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500"
+                                    checked={scopeBUNames.has(b.name)}
+                                    onChange={() => toggleScopeBU(b.name)}
+                                  />
+                                  <span className="text-sm text-gray-700">{b.name}</span>
+                                </label>
+                              ))
+                          )}
+                        </div>
+                        {/* Any names already saved that aren't in the current BU list (kept so they aren't lost). */}
+                        {Array.from(scopeBUNames).filter((n) => !businessUnits.some((b) => b.name === n)).map((n) => (
+                          <label key={n} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-gray-50 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              className="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500"
+                              checked
+                              onChange={() => toggleScopeBU(n)}
+                            />
+                            <span className="text-sm text-gray-700">{n} <span className="text-xs text-gray-400">(saved)</span></span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="flex justify-end">
+                      <Button variant="primary" onClick={handleSaveScope} disabled={savingScope}>
+                        {savingScope ? 'Saving…' : 'Save data scope'}
+                      </Button>
+                    </div>
+                  </div>
+                )
+              )}
+            </div>
 
             {/* ---- Per-user permission overrides ---- */}
             <div className="border-t border-gray-100 pt-4">

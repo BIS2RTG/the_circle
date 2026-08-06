@@ -3,10 +3,8 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '../auth/[...nextauth]';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { ApprovalEngine } from '@/lib/approvalEngine';
-import { getApprovalRisk, authForRisk, satisfiesAuth, type AuthenticationMethod } from '@/lib/approvalRisk';
-import { verifyStepUpForApproval } from '@/lib/stepUpToken';
-import { verifyElevationCookie, clearElevationCookie } from '@/lib/elevatedSession';
 import { audit } from '@/lib/auditLog';
+import { runInBackground } from '@/lib/backgroundTask';
 import {
   SIGNATURE_BUCKET,
   signatureExists,
@@ -23,7 +21,6 @@ const ActionSchema = z.object({
   comment: z.string().max(5000).optional().nullable(),
   signatureType: z.enum(['saved', 'manual', 'typed']).optional(),
   signatureData: z.string().max(2_000_000).optional().nullable(),
-  stepUpToken: z.string().max(4096).optional().nullable(),
   authMethod: z.string().max(40).optional().nullable(),
   deviceInfo: z.record(z.any()).optional().nullable(),
   costAllocation: z.record(z.any()).optional().nullable(),
@@ -33,18 +30,12 @@ const ActionSchema = z.object({
 /**
  * POST /api/approvals/action
  *
- * Records an approval decision. Extends the legacy contract with a
- * risk-based authentication enforcement step:
- *
- *   1. Evaluate the approval's risk server-side (authoritative).
- *   2. Require an auth method that satisfies the risk bucket.
- *      - low     -> valid session cookie is sufficient
- *      - medium  -> caller must present a microsoft_mfa step-up token
- *      - high    -> caller must present a biometric step-up token
- *        (or microsoft_mfa as inclusivity fallback when the user has
- *         no registered biometric credential — see risk.md)
- *   3. Record the approval with full audit context (signature source,
- *      auth method, IP, device).
+ * Records an approval decision. Identity re-verification (Microsoft MFA
+ * step-up / WebAuthn biometric) is NOT part of this flow — an authenticated
+ * session is sufficient to record an approve/reject. The approver confirms
+ * the decision in a lightweight dialog client-side; the server just records
+ * it with audit context (signature source, IP, device) and hands off to the
+ * approval engine.
  */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
@@ -66,11 +57,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       stepId,
       action,
       comment,
-      // New fields (all optional for backward compatibility)
       signatureType,         // 'saved' | 'manual'  (typed is no longer accepted)
       signatureData,         // for 'manual': data URL of the freshly drawn signature
-      stepUpToken,           // short-lived proof of biometric / MS MFA step-up
-      authMethod,            // what the client believes it used — server verifies
       deviceInfo,            // { userAgent, platform, screen } — opaque JSONB
       costAllocation,        // HR Director travel_authorization cost allocation
       allocationType,        // HR Director comp-booking category (hotel bookings only)
@@ -86,104 +74,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    if (!requestId || !stepId || !action) {
-      return res.status(400).json({ error: 'requestId, stepId, and action are required' });
-    }
-
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (!uuidRegex.test(requestId)) {
-      return res.status(400).json({ error: `Invalid requestId format: ${requestId}` });
-    }
-    if (!uuidRegex.test(stepId)) {
-      return res.status(400).json({ error: `Invalid stepId format: ${stepId}` });
-    }
     if (action !== 'approve' && action !== 'reject') {
       return res.status(400).json({ error: 'action must be "approve" or "reject"' });
-    }
-
-    // -----------------------------------------------------------------
-    // Risk evaluation (server-authoritative) — drives auth enforcement.
-    // -----------------------------------------------------------------
-    const riskEval = await evaluateRiskForAction(requestId, stepId);
-    // Honour the requiredAuth the evaluator returned (rather than recomputing
-    // from the risk level). When approval verification is disabled org-wide the
-    // evaluator returns 'session', so the enforcement block below is skipped
-    // entirely — see APPROVAL_VERIFICATION_DISABLED in lib/approvalRisk.ts.
-    const requiredAuth = riskEval.requiredAuth ?? authForRisk(riskEval.risk);
-
-    // Step-up authentication is enforced strictly by risk level. Drawing a
-    // signature is NOT a substitute for MFA / biometric verification —
-    // the auth ceremony must succeed regardless of which signature type
-    // the user picks.
-    let effectiveAuth: AuthenticationMethod = 'session';
-    let authReference: string | null = null;
-
-    if (requiredAuth !== 'session') {
-      let payload = verifyStepUpForApproval(stepUpToken, {
-        userId,
-        requestId,
-        stepId,
-        requiredMethod: requiredAuth,
-      });
-
-      // Inclusivity fallback (per risk.md): for HIGH-risk approvals the UI
-      // exposes "Can't use biometrics? Verify with Microsoft instead" — accept
-      // a valid microsoft_mfa token as fallback proof. Biometric is still the
-      // preferred path, but MS MFA is an acceptable alternative for users who
-      // can't or won't use a platform authenticator.
-      if (!payload && requiredAuth === 'biometric') {
-        payload = verifyStepUpForApproval(stepUpToken, {
-          userId,
-          requestId,
-          stepId,
-          requiredMethod: 'microsoft_mfa',
-        });
-      }
-
-      // Elevated session fallback: if no fresh step-up token was provided
-      // (or the one provided didn't match), accept a valid elevation cookie
-      // that satisfies the required auth rank. This is what lets users
-      // approve repeatedly within the 15-minute window without re-prompting.
-      if (!payload) {
-        const elevation = verifyElevationCookie(req, userId);
-        if (elevation) {
-          const rank = (m: AuthenticationMethod) =>
-            m === 'biometric' ? 2 : m === 'microsoft_mfa' ? 1 : 0;
-          if (rank(elevation.method) >= rank(requiredAuth)) {
-            payload = elevation;
-          } else if (requiredAuth === 'biometric' && rank(elevation.method) >= rank('microsoft_mfa')) {
-            // Inclusivity fallback also applies to elevation cookies.
-            payload = elevation;
-          }
-        }
-        // If the cookie is present but invalid/expired, clear it so the
-        // browser stops sending stale state.
-        if (!payload && req.headers.cookie?.includes('elevation_session=')) {
-          clearElevationCookie(res);
-        }
-      }
-
-      if (!payload) {
-        return res.status(403).json({
-          error: 'Step-up authentication required',
-          code: 'STEP_UP_REQUIRED',
-          requiredAuth,
-          risk: riskEval.risk,
-          reasons: riskEval.reasons,
-        });
-      }
-
-      effectiveAuth = payload.method;
-      authReference = payload.credentialId || null;
-
-      // Defense-in-depth: also reject if the claimed authMethod disagrees
-      // with what the verified token proves.
-      if (authMethod && !satisfiesAuth(effectiveAuth, authMethod as AuthenticationMethod)) {
-        return res.status(403).json({
-          error: 'Claimed auth method does not match verified step-up',
-          code: 'AUTH_MISMATCH',
-        });
-      }
     }
 
     // -----------------------------------------------------------------
@@ -313,7 +205,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     // -----------------------------------------------------------------
-    // Apply the decision via the engine, with full audit context.
+    // Apply the decision via the engine, with audit context.
     // -----------------------------------------------------------------
     const result = await ApprovalEngine.processApprovalAction(
       requestId,
@@ -325,30 +217,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       {
         signatureType: resolvedSignatureType,
         signatureReference,
-        authenticationMethod: effectiveAuth,
-        riskLevel: riskEval.risk,
-        authReference,
+        authenticationMethod: 'session',
+        authReference: null,
         ipAddress: getClientIp(req),
         deviceInfo: sanitizeDeviceInfo(deviceInfo, req),
       }
     );
 
-    await audit(req, session.user, {
-      category: 'transaction',
-      action: action === 'approve' ? 'request.approved' : 'request.rejected',
-      severity: action === 'approve' ? 'info' : 'notice',
-      outcome: result.success ? 'success' : 'failure',
-      targetType: 'request',
-      targetId: requestId,
-      requestId,
-      details: {
-        stepId,
-        comment: comment || null,
-        risk: riskEval.risk,
-        authenticationMethod: effectiveAuth,
-        ...(result.success ? {} : { error: result.error }),
-      },
-    });
+    // Audit is a write-only log — record it after the response, not on the
+    // critical path, so the approver isn't kept waiting on it.
+    runInBackground(
+      () =>
+        audit(req, session.user, {
+          category: 'transaction',
+          action: action === 'approve' ? 'request.approved' : 'request.rejected',
+          severity: action === 'approve' ? 'info' : 'notice',
+          outcome: result.success ? 'success' : 'failure',
+          targetType: 'request',
+          targetId: requestId,
+          requestId,
+          details: {
+            stepId,
+            comment: comment || null,
+            authenticationMethod: 'session',
+            ...(result.success ? {} : { error: result.error }),
+          },
+        }),
+      'approval:audit'
+    );
 
     if (!result.success) {
       return res.status(400).json({ error: result.error });
@@ -358,8 +254,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       success: true,
       message: result.message || `Request ${action === 'approve' ? 'approved' : 'rejected'}`,
       decision: action === 'approve' ? 'approved' : 'rejected',
-      risk: riskEval.risk,
-      authenticationMethod: effectiveAuth,
+      authenticationMethod: 'session',
     });
   } catch (error: any) {
     console.error('Approval action error:', error);
@@ -370,57 +265,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Load just enough context about the request/step to evaluate risk.
- * Intentionally lean — we don't need the full payload, only the signals.
- */
-async function evaluateRiskForAction(requestId: string, stepId: string) {
-  const { data: request } = await supabaseAdmin
-    .from('requests')
-    .select(`
-      id, metadata, creator_id,
-      creator:app_users!requests_creator_id_fkey (department_id),
-      request_steps ( id, step_index )
-    `)
-    .eq('id', requestId)
-    .single();
-
-  if (!request) {
-    return getApprovalRisk({}); // No signals; defaults to 'low'.
-  }
-
-  // Resolve creator department name so the risk engine can pattern-match.
-  let creatorDepartment: string | null = null;
-  const creatorDeptId = (request.creator as any)?.department_id;
-  if (creatorDeptId) {
-    const { data: dept } = await supabaseAdmin
-      .from('departments')
-      .select('name')
-      .eq('id', creatorDeptId)
-      .maybeSingle();
-    creatorDepartment = dept?.name || null;
-  }
-
-  const steps = (request.request_steps as any[]) || [];
-  const totalSteps = steps.length;
-  const currentStep = steps.find((s: any) => s.id === stepId);
-  const currentStepIndex = currentStep?.step_index ?? null;
-
-  const metadata = (request.metadata as any) || {};
-
-  return getApprovalRisk({
-    value: metadata.total_amount ?? metadata.amount ?? metadata.total ?? null,
-    creatorDepartment,
-    stepDepartment: null, // TODO: resolve if step carries its own dept
-    workflowCategory: metadata.workflow_category || metadata.category || null,
-    requestType: metadata.type || metadata.requestType || null,
-    currentStepIndex,
-    totalSteps,
-    formData: metadata.formData || metadata.form_data || null,
-    explicitRisk: metadata.explicit_risk || null,
-  });
-}
 
 /** Upload a manually drawn signature (data URL -> storage) and return the public URL. */
 async function uploadManualSignature(
