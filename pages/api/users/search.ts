@@ -2,7 +2,7 @@ import { NextApiRequest, NextApiResponse } from 'next';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '../auth/[...nextauth]';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
-import { isGraphDirectoryConfigured, searchDirectoryUsers } from '@/lib/graphDirectory';
+import { isAllowedDirectoryEmail, isGraphDirectoryConfigured, searchDirectoryUsers } from '@/lib/graphDirectory';
 import { getValidMsAccessToken } from '@/lib/msTokenStore';
 
 /**
@@ -48,7 +48,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const q = (typeof req.query.q === 'string' ? req.query.q : '').trim();
 
+    const useAzure = process.env.USER_DIRECTORY_SOURCE === 'azure' && isGraphDirectoryConfigured();
+
     // Local app_users search — used directly on staging and as the fallback.
+    // In Azure (production) mode the table can also hold stale *.onmicrosoft.com
+    // and guest duplicates that must never be selectable, so results are
+    // restricted to the allowed corporate domain(s) there. On staging the list
+    // is left unfiltered so demo accounts (non-rtg.co.zw domains) still show.
     async function searchAppUsers(): Promise<DirectoryResult[]> {
       let query = supabaseAdmin
         .from('app_users')
@@ -63,16 +69,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       const { data, error } = await query;
       if (error) throw error;
-      return (data || []).map((u) => ({
-        id: u.id,
-        display_name: u.display_name,
-        email: u.email,
-        job_title: (u as any).job_title ?? null,
-        source: 'app_users' as const,
-      }));
+      return (data || [])
+        .filter((u) => !useAzure || isAllowedDirectoryEmail(u.email))
+        .map((u) => ({
+          id: u.id,
+          display_name: u.display_name,
+          email: u.email,
+          job_title: (u as any).job_title ?? null,
+          source: 'app_users' as const,
+        }));
     }
-
-    const useAzure = process.env.USER_DIRECTORY_SOURCE === 'azure' && isGraphDirectoryConfigured();
 
     // Local source, or query too short for a meaningful directory search.
     if (!useAzure || q.length < 2) {

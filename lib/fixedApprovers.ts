@@ -23,6 +23,28 @@ export const COMP_BOOKING_COO = {
   EMAILS: ['brain.maponde@rtg.co.zw', 'coo@rtg.demo'],
 };
 
+/**
+ * Fixed CAPEX "Procurement and Projects Manager" approver.
+ *
+ * This role is a single named person (Bornwell Muchirahondo in production), NOT
+ * a per-unit / departmental slot, so it is pinned by email and left locked (the
+ * `procurement_manager` role is deliberately kept out of
+ * CHANGEABLE_AUTO_APPROVER_ROLES in lib/approverLocking.ts). Pinning by email
+ * makes resolution robust even when the HRIMS position title drifts (it is
+ * "Procurement & Projects Manager" — with an ampersand — in production, which
+ * an exact title match would otherwise miss).
+ *
+ * Like the COO above, the person differs per environment, so we match any of the
+ * known emails against the loaded users — whichever exists in the current
+ * database wins. Update this list if the role holder changes.
+ */
+export const CAPEX_PROCUREMENT_MANAGER = {
+  ROLE_KEY: 'procurement_manager' as const,
+  LABEL: 'Procurement and Projects Manager',
+  /** Known holder addresses across environments (compared case-insensitively). */
+  EMAILS: ['bornwell.muchirahondo@rtg.co.zw'],
+};
+
 /** Request types (metadata.type / category) that are complimentary bookings. */
 export const COMP_BOOKING_TYPES = new Set(['hotel_booking', 'external_hotel_booking']);
 
