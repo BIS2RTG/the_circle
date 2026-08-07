@@ -5,6 +5,7 @@ import { findEmployeeByPositionTitle, hrimsClient, HrimsEmployee } from '@/lib/h
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { getDirectoryUserByEmail, isGraphDirectoryConfigured } from '@/lib/graphDirectory';
 import { getValidMsAccessToken } from '@/lib/msTokenStore';
+import { CAPEX_PROCUREMENT_MANAGER } from '@/lib/fixedApprovers';
 
 interface ResolvedApprover {
   userId: string;
@@ -349,103 +350,77 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
 
     } else if (formType === 'capex') {
-      // Head of Department — resolve the head of the requestor's own department.
-      // Resolution order:
-      //   1. departments.department_head_id (authoritative HRIMS source)
-      //   2. Organogram positions tagged with department_id whose title looks like a head
-      //   3. Walk up the requestor's position chain for a head-like title (skipping direct line manager)
-      const resolveDepartmentHead = async (): Promise<ResolvedApprover | null> => {
+      // General Manager (Unit) — the GM of the requestor's OWN business unit.
+      // This is an exact "General Manager" organogram position (RTG has one per
+      // hotel/unit), NOT a department-head heuristic: matching loosely on any
+      // "*manager" title wrongly picked up the requestor's line manager. Resolve
+      // by the precise title, scoped to the requestor's own business unit. Never
+      // returns the requestor themselves.
+      const resolveGeneralManager = async (): Promise<ResolvedApprover | null> => {
         const { data: requestorEmp } = await hrimsClient
           .from('employees')
-          .select('id, first_name, last_name, email, current_position_id, department_id')
+          .select('id, business_unit_id')
           .ilike('email', email)
           .eq('employment_status', 'active')
           .single();
 
-        let resolved: ResolvedApprover | null = null;
-
-        // 1. Authoritative source: the department row itself names the head
-        if (requestorEmp?.department_id) {
-          const { data: dept } = await hrimsClient
-            .from('departments')
-            .select('id, name, code, department_head_id')
-            .eq('id', requestorEmp.department_id)
-            .single();
-
-          if (dept?.department_head_id && dept.department_head_id !== requestorEmp.id) {
-            const { data: headEmp } = await hrimsClient
-              .from('employees')
-              .select('id, first_name, last_name, email, phone, job_title, employee_number, employment_status, manager_id, department_id, business_unit_id, current_position_id')
-              .eq('id', dept.department_head_id)
-              .eq('employment_status', 'active')
-              .single();
-
-            if (headEmp) {
-              const title = headEmp.job_title || `Head of ${dept.name}`;
-              resolved = await buildApprover(headEmp as HrimsEmployee, title, 'organogram_chain');
+        const buId = requestorEmp?.business_unit_id;
+        // Scope strictly to the requestor's OWN business unit — this is the
+        // "General Manager (Unit)" slot, so a GM from a different hotel/unit must
+        // never be pre-filled. If the unit has no GM position the role is left
+        // blank for manual selection rather than guessing.
+        if (!buId) return null;
+        // Exact titles only (findEmployeeByPositionTitle requires equality) so a
+        // "Sales Manager" / "Line Manager" can never be mistaken for the GM.
+        const titles = ['General Manager', 'Unit General Manager', 'Hotel General Manager'];
+        for (const title of titles) {
+          const result = await findEmployeeByPositionTitle(title, buId);
+          if (
+            result?.employee?.email &&
+            result.employee.id !== requestorEmp?.id
+          ) {
+            const appUser = await findAppUserByEmail(result.employee.email);
+            if (appUser) {
+              return {
+                userId: appUser.id,
+                displayName: appUser.display_name,
+                email: appUser.email,
+                positionTitle: result.position.position_title,
+                source: 'position_title',
+              };
             }
           }
         }
+        return null;
+      };
 
-        // 2. Department-tagged organogram position with a head-like title
-        if (!resolved && requestorEmp?.department_id) {
-          const { data: deptPositions } = await hrimsClient
-            .from('organogram_positions')
-            .select('id, position_title, employee_id, department_id, is_active, level')
-            .eq('department_id', requestorEmp.department_id)
-            .eq('is_active', true)
-            .order('level', { ascending: true });
-
-          if (deptPositions && deptPositions.length > 0) {
-            const headCandidate = deptPositions.find(p =>
-              p.id !== requestorEmp.current_position_id &&
-              /head\s+of|hod|director|general\s+manager/i.test(p.position_title || '')
-            ) || deptPositions.find(p =>
-              p.id !== requestorEmp.current_position_id &&
-              /manager|chief/i.test(p.position_title || '')
-            );
-
-            if (headCandidate) {
-              const headEmp = await findEmployeeForPosition(headCandidate.id, headCandidate.employee_id);
-              if (headEmp && headEmp.id !== requestorEmp.id) {
-                resolved = await buildApprover(headEmp, headCandidate.position_title, 'organogram_chain');
-              }
-            }
+      // Procurement and Projects Manager — a single named role holder, pinned by
+      // email (see lib/fixedApprovers.ts) so it resolves reliably regardless of
+      // HRIMS position-title drift, and falls back to the title variants if the
+      // pinned person isn't present in this environment.
+      const resolveProcurementManager = async (): Promise<ResolvedApprover | null> => {
+        for (const pinnedEmail of CAPEX_PROCUREMENT_MANAGER.EMAILS) {
+          const appUser = await findAppUserByEmail(pinnedEmail);
+          if (appUser) {
+            return {
+              userId: appUser.id,
+              displayName: appUser.display_name,
+              email: appUser.email,
+              positionTitle: CAPEX_PROCUREMENT_MANAGER.LABEL,
+              source: 'position_title',
+            };
           }
         }
-
-        // 3. Walk up the organogram chain as a last resort
-        if (!resolved && requestorEmp?.current_position_id) {
-          let currentPosId: string | null = requestorEmp.current_position_id;
-          let safety = 0;
-
-          while (currentPosId && safety < 10 && !resolved) {
-            safety++;
-            const { data: pos } = await hrimsClient
-              .from('organogram_positions')
-              .select('id, position_title, parent_position_id, employee_id, is_active')
-              .eq('id', currentPosId)
-              .single();
-
-            if (!pos) break;
-
-            if (pos.id !== requestorEmp.current_position_id && pos.is_active) {
-              const title = (pos.position_title || '').toLowerCase();
-              const looksLikeHead = /head\s+of|hod|director|general\s+manager|chief/i.test(title);
-              if (looksLikeHead) {
-                const headEmp = await findEmployeeForPosition(pos.id, pos.employee_id);
-                if (headEmp && headEmp.id !== requestorEmp.id) {
-                  resolved = await buildApprover(headEmp, pos.position_title, 'organogram_chain');
-                  break;
-                }
-              }
-            }
-
-            currentPosId = pos.parent_position_id;
-          }
-        }
-
-        return resolved;
+        // Fallback: resolve from HRIMS by title. Includes the ampersand variant
+        // ("Procurement & Projects Manager") used in the production organogram.
+        return resolveFirstPositionTitle([
+          'Procurement & Projects Manager',
+          'Procurement and Projects Manager',
+          'Procurement Manager',
+          'Head of Procurement',
+          'Projects Manager',
+          'Project Manager',
+        ]);
       };
 
       // Every capex approver is independent, so resolve them all concurrently
@@ -460,9 +435,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         capexCeo,
       ] = await Promise.all([
         resolveFirstPositionTitle(['Finance Manager', 'Accountant']),
-        resolveDepartmentHead(),
-        // Procurement and Projects Manager is one person; match either title variant.
-        resolveFirstPositionTitle(['Procurement and Projects Manager', 'Procurement Manager', 'Head of Procurement', 'Projects Manager', 'Project Manager']),
+        resolveGeneralManager(),
+        resolveProcurementManager(),
         resolveFirstPositionTitle(['Corporate Head of Department', 'Head of Department']),
         resolveFirstPositionTitle(['Chief Operating Officer', 'COO', 'Managing Director', 'MD']),
         resolveFirstPositionTitle(['Chief Finance Officer', 'CFO', 'Finance Director', 'Director of Finance']),
