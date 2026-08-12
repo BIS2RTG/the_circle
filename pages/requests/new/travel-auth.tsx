@@ -96,14 +96,15 @@ interface AACalculatorData {
 
 // AA Rate table based on engine capacity and fuel type (USD per km).
 // Defaults mirror the AA Zimbabwe "Estimated Vehicle Operating Costs" schedule
-// (wet rate). Administrators can override these in Admin → Financial Rates; the
-// live values are loaded from /api/settings/rates at runtime.
+// (wet rate, "JULY 2026 V2" / version V319.1). Administrators can override these
+// in Admin → Financial Rates; the live values are loaded from
+// /api/settings/rates at runtime.
 type AARateTable = Record<string, { petrol: number; diesel: number }>;
 const AA_RATES_DEFAULTS: AARateTable = {
-    '1.1L-1.5L': { petrol: 0.32, diesel: 0.30 },
-    '1.6L-2.0L': { petrol: 0.40, diesel: 0.36 },
-    '2.1L-3.0L': { petrol: 0.54, diesel: 0.50 },
-    'Above 3.0L': { petrol: 0.66, diesel: 0.62 },
+    '1.1L-1.5L': { petrol: 0.30, diesel: 0.28 },
+    '1.6L-2.0L': { petrol: 0.38, diesel: 0.34 },
+    '2.1L-3.0L': { petrol: 0.52, diesel: 0.48 },
+    'Above 3.0L': { petrol: 0.64, diesel: 0.59 },
 };
 
 interface TravelData {
@@ -131,7 +132,8 @@ export default function TravelAuthPage() {
     const { user } = useCurrentUser();
     const { departmentName, businessUnitName, loading: hrimsLoading } = useUserHrimsProfile();
     // International travel shares this page but swaps the itinerary to manual free-text entry
-    // with no business-unit dropdown and no auto-km calculation or unit-based cost allocation.
+    // with no business-unit dropdown and no auto-km calculation. Cost allocation to a business
+    // unit still applies (the cost has to be borne by a unit regardless of destination).
     const isInternational = typeof router.pathname === 'string' && router.pathname.includes('international');
     const formKindLabel = isInternational
         ? 'International Travel Authorization'
@@ -239,7 +241,7 @@ export default function TravelAuthPage() {
         itinerary: [{ date: '', from: '', to: '', km: '', justification: '' }],
         budget: {
             fuel: { quantity: '', unitCost: '', totalCost: '' },
-            aaRates: { quantity: '', unitCost: '0.32', totalCost: '' },
+            aaRates: { quantity: '', unitCost: '0.30', totalCost: '' },
             airBusTickets: { quantity: '', unitCost: '', totalCost: '' },
             conferencingCost: { quantity: '', unitCost: '', totalCost: '' },
             tollgates: [{ road: '', quantity: '1', unitCost: '', totalCost: '' }],
@@ -596,7 +598,7 @@ export default function TravelAuthPage() {
                 // Default budget structure
                 const defaultBudget = {
                     fuel: { quantity: '', unitCost: '', totalCost: '' },
-                    aaRates: { quantity: '', unitCost: '0.32', totalCost: '' },
+                    aaRates: { quantity: '', unitCost: '0.30', totalCost: '' },
                     airBusTickets: { quantity: '', unitCost: '', totalCost: '' },
                     conferencingCost: { quantity: '', unitCost: '', totalCost: '' },
                     tollgates: [{ road: '', quantity: '1', unitCost: '', totalCost: '' }] as TollgateEntry[],
@@ -797,7 +799,7 @@ export default function TravelAuthPage() {
         if (!hasValidItinerary) errors.push('At least one travel itinerary row is required');
 
         // Cost-allocation split must account for every cent of the grand total.
-        if (!isInternational && isSplitAllocation && !allocationFullyAllocated) {
+        if (isSplitAllocation && !allocationFullyAllocated) {
             errors.push(
                 `Cost allocation must total USD ${allocationGrandTotal.toFixed(2)} — every cent must be allocated ` +
                 `(currently USD ${allocationEnteredTotal.toFixed(2)}).`
@@ -1364,9 +1366,7 @@ export default function TravelAuthPage() {
                                         <th className="px-3 py-2 text-left font-semibold text-gray-700">Date/Time</th>
                                         <th className="px-3 py-2 text-left font-semibold text-gray-700">From</th>
                                         <th className="px-3 py-2 text-left font-semibold text-gray-700">To</th>
-                                        {!isInternational && (
-                                            <th className="px-3 py-2 text-left font-semibold text-gray-700 w-20">KM</th>
-                                        )}
+                                        <th className="px-3 py-2 text-left font-semibold text-gray-700 w-20">KM</th>
                                         <th className="px-3 py-2 text-left font-semibold text-gray-700">Justification</th>
                                         <th className="px-3 py-2 w-10"></th>
                                     </tr>
@@ -1420,11 +1420,9 @@ export default function TravelAuthPage() {
                                                         )}
                                                     </div>
                                                 </td>
-                                                {!isInternational && (
-                                                    <td className="px-2 py-2">
-                                                        <input type="number" value={row.km} readOnly={!isManualEntry} onChange={(e) => isManualEntry && updateItineraryRow(index, 'km', e.target.value)} className={`w-full px-2 py-1 rounded border outline-none text-sm text-center font-medium ${isManualEntry ? 'border-orange-300 bg-orange-50 focus:ring-1 focus:ring-orange-500' : 'border-gray-200 bg-gray-50'}`} placeholder="0" />
-                                                    </td>
-                                                )}
+                                                <td className="px-2 py-2">
+                                                    <input type="number" value={row.km} readOnly={!isManualEntry} onChange={(e) => isManualEntry && updateItineraryRow(index, 'km', e.target.value)} className={`w-full px-2 py-1 rounded border outline-none text-sm text-center font-medium ${isManualEntry ? 'border-orange-300 bg-orange-50 focus:ring-1 focus:ring-orange-500' : 'border-gray-200 bg-gray-50'}`} placeholder="0" />
+                                                </td>
                                                 <td className="px-2 py-2">
                                                     <input type="text" value={row.justification} onChange={(e) => updateItineraryRow(index, 'justification', e.target.value)} className="w-full px-2 py-1 rounded border border-gray-300 focus:ring-1 focus:ring-primary-500 outline-none text-sm" placeholder="Reason" />
                                                 </td>
@@ -1438,13 +1436,11 @@ export default function TravelAuthPage() {
                                             </tr>
                                         );
                                     })}
-                                    {!isInternational && (
-                                        <tr className="bg-primary-50 font-semibold">
-                                            <td colSpan={3} className="px-3 py-2 text-right text-primary-700">Total Distance:</td>
-                                            <td className="px-2 py-2 text-center text-primary-900">{travelData.itinerary.reduce((sum, row) => sum + (parseFloat(row.km) || 0), 0)} km</td>
-                                            <td colSpan={2}></td>
-                                        </tr>
-                                    )}
+                                    <tr className="bg-primary-50 font-semibold">
+                                        <td colSpan={3} className="px-3 py-2 text-right text-primary-700">Total Distance:</td>
+                                        <td className="px-2 py-2 text-center text-primary-900">{travelData.itinerary.reduce((sum, row) => sum + (parseFloat(row.km) || 0), 0)} km</td>
+                                        <td colSpan={2}></td>
+                                    </tr>
                                 </tbody>
                             </table>
                         </div>
@@ -1562,7 +1558,7 @@ export default function TravelAuthPage() {
                                                 <input type="number" value={travelData.budget.aaRates.quantity} readOnly className="w-full px-2 py-1 rounded border border-[#C9B896] bg-[#F3EADC]/40 text-[#5E4426] font-medium outline-none text-sm" placeholder="0" />
                                             </td>
                                             <td className="px-2 py-2">
-                                                <input type="number" value={travelData.budget.aaRates.unitCost} readOnly className="w-full px-2 py-1 rounded border border-[#C9B896] bg-[#F3EADC]/40 text-[#5E4426] font-medium outline-none text-sm" placeholder="0.32" />
+                                                <input type="number" value={travelData.budget.aaRates.unitCost} readOnly className="w-full px-2 py-1 rounded border border-[#C9B896] bg-[#F3EADC]/40 text-[#5E4426] font-medium outline-none text-sm" placeholder="0.30" />
                                             </td>
                                             <td className="px-2 py-2">
                                                 <input type="number" value={travelData.budget.aaRates.totalCost} readOnly className="w-full px-2 py-1 rounded border border-[#C9B896] bg-[#F3EADC]/40 text-[#5E4426] font-medium outline-none text-sm" placeholder="0.00" />
@@ -1602,38 +1598,46 @@ export default function TravelAuthPage() {
                                                     <div className="flex items-center justify-between flex-wrap gap-2">
                                                         <div className="flex items-center gap-3 flex-wrap">
                                                             <span className="font-semibold">Tollgates</span>
-                                                            <div className="flex items-center gap-2 text-xs">
-                                                                <label className="flex items-center gap-1 cursor-pointer">
-                                                                    <input
-                                                                        type="radio"
-                                                                        name="tollgateRouteType"
-                                                                        value="premium"
-                                                                        checked={tollgateRouteType === 'premium'}
-                                                                        onChange={(e) => setTollgateRouteType(e.target.value as TollgateRouteType)}
-                                                                        className="text-orange-600 focus:ring-orange-500"
-                                                                    />
-                                                                    <span>Premium ($4)</span>
-                                                                </label>
-                                                                <label className="flex items-center gap-1 cursor-pointer">
-                                                                    <input
-                                                                        type="radio"
-                                                                        name="tollgateRouteType"
-                                                                        value="standard"
-                                                                        checked={tollgateRouteType === 'standard'}
-                                                                        onChange={(e) => setTollgateRouteType(e.target.value as TollgateRouteType)}
-                                                                        className="text-orange-600 focus:ring-orange-500"
-                                                                    />
-                                                                    <span>Standard ($3)</span>
-                                                                </label>
-                                                            </div>
-                                                            <button
-                                                                type="button"
-                                                                onClick={autoCalculateTollgates}
-                                                                className="text-xs bg-orange-600 text-white hover:bg-orange-700 px-3 py-1.5 rounded-lg font-medium flex items-center gap-1 transition-colors"
-                                                            >
-                                                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
-                                                                Auto-Calculate from Itinerary
-                                                            </button>
+                                                            {/* Auto-calculation keys off known business-unit route codes,
+                                                                which international travel doesn't use (free-text
+                                                                origins/destinations) — so the route-type selector and the
+                                                                "Auto-Calculate from Itinerary" button are local-only. */}
+                                                            {!isInternational && (
+                                                                <>
+                                                                    <div className="flex items-center gap-2 text-xs">
+                                                                        <label className="flex items-center gap-1 cursor-pointer">
+                                                                            <input
+                                                                                type="radio"
+                                                                                name="tollgateRouteType"
+                                                                                value="premium"
+                                                                                checked={tollgateRouteType === 'premium'}
+                                                                                onChange={(e) => setTollgateRouteType(e.target.value as TollgateRouteType)}
+                                                                                className="text-orange-600 focus:ring-orange-500"
+                                                                            />
+                                                                            <span>Premium ($4)</span>
+                                                                        </label>
+                                                                        <label className="flex items-center gap-1 cursor-pointer">
+                                                                            <input
+                                                                                type="radio"
+                                                                                name="tollgateRouteType"
+                                                                                value="standard"
+                                                                                checked={tollgateRouteType === 'standard'}
+                                                                                onChange={(e) => setTollgateRouteType(e.target.value as TollgateRouteType)}
+                                                                                className="text-orange-600 focus:ring-orange-500"
+                                                                            />
+                                                                            <span>Standard ($3)</span>
+                                                                        </label>
+                                                                    </div>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={autoCalculateTollgates}
+                                                                        className="text-xs bg-orange-600 text-white hover:bg-orange-700 px-3 py-1.5 rounded-lg font-medium flex items-center gap-1 transition-colors"
+                                                                    >
+                                                                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
+                                                                        Auto-Calculate from Itinerary
+                                                                    </button>
+                                                                </>
+                                                            )}
                                                         </div>
                                                         <button type="button" onClick={addTollgateRow} className="text-xs text-orange-600 hover:text-orange-700 font-medium flex items-center gap-1">
                                                             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" /></svg>
@@ -1679,7 +1683,6 @@ export default function TravelAuthPage() {
                         {/* Cost Allocation — the requestor ticks the unit(s) that
                             carry the cost. One unit → whole cost. Tick 2+ to split,
                             which reveals figure inputs + a "fully allocated" control. */}
-                        {!isInternational && (
                         <div className="mt-6 pt-6 border-t border-gray-200">
                             <h4 className="font-semibold text-gray-700 uppercase text-sm mb-1">Allocation Cost to Unit</h4>
                             <p className="text-xs text-gray-500 mb-3">
@@ -1751,7 +1754,6 @@ export default function TravelAuthPage() {
                                 </div>
                             )}
                         </div>
-                        )}
                     </Card>
 
                     {/* Supporting documents (file + label + description) */}
