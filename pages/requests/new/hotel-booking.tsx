@@ -52,10 +52,10 @@ interface TollgateEntry {
 // live values are loaded from /api/settings/rates at runtime.
 type AARateTable = Record<string, { petrol: number; diesel: number }>;
 const AA_RATES_DEFAULTS: AARateTable = {
-    '1.1L-1.5L': { petrol: 0.32, diesel: 0.30 },
-    '1.6L-2.0L': { petrol: 0.40, diesel: 0.36 },
-    '2.1L-3.0L': { petrol: 0.54, diesel: 0.50 },
-    'Above 3.0L': { petrol: 0.66, diesel: 0.62 },
+    '1.1L-1.5L': { petrol: 0.30, diesel: 0.28 },
+    '1.6L-2.0L': { petrol: 0.38, diesel: 0.34 },
+    '2.1L-3.0L': { petrol: 0.52, diesel: 0.48 },
+    'Above 3.0L': { petrol: 0.64, diesel: 0.59 },
 };
 
 interface CostAllocation {

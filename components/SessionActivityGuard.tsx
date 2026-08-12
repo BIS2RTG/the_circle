@@ -83,7 +83,20 @@ export default function SessionActivityGuard() {
     };
 
     const onVisibility = () => {
-      if (document.visibilityState === 'visible') markActivity();
+      if (document.visibilityState !== 'visible') return;
+      // A backgrounded tab has its timers heavily throttled (or paused), so the
+      // 1s idle watchdog above can miss the deadline while the tab is hidden.
+      // On refocus we must therefore RE-VALIDATE against the server rather than
+      // blindly calling markActivity() — which would reset the idle clock on a
+      // session that already lapsed, letting the user start editing inside a
+      // dead session and only discover it when a save/submit returns 401.
+      void getSession().then((s) => {
+        if (!s) {
+          endSession('session expired while tab was in background');
+        } else {
+          markActivity();
+        }
+      });
     };
 
     ACTIVITY_EVENTS.forEach((evt) =>
