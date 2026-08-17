@@ -8,19 +8,16 @@ import { authOptions } from '../api/auth/[...nextauth]';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { resolveOnBehalfProfile } from '@/lib/onBehalf';
 import { getUserRBACProfile, hasPermission } from '@/lib/rbac';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { AppLayout } from '../../components/layout';
 import { Card, Button, Input } from '../../components/ui';
 import DynamicFormDetails from '../../components/DynamicFormDetails';
 import CashReceiptConfirmation from '../../components/requests/CashReceiptConfirmation';
-import ApprovalConfirmModal, { type ApprovalConfirmResult } from '../../components/approvals/ApprovalConfirmModal';
-import ElevationIndicator from '../../components/approvals/ElevationIndicator';
 import { useToast } from '../../components/ui/ToastProvider';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import SignatureSelector, { type SignatureSelection } from '../../components/approvals/SignatureSelector';
-import ApprovedRequestPreview, { ApprovedRequestPreviewInline } from '../../components/requests/ApprovedRequestPreview';
-import { getApprovalRisk, type ApprovalRisk, type AuthenticationMethod } from '@/lib/approvalRisk';
+import ApprovedRequestPreview, { ApprovedRequestPreviewInline, printApprovedRequest } from '../../components/requests/ApprovedRequestPreview';
 import { getErrorMessage } from '@/lib/getErrorMessage';
 import { isNetworkError } from '@/lib/networkError';
 import Link from 'next/link';
@@ -1169,6 +1166,7 @@ export const getServerSideProps: GetServerSideProps<RequestDetailsPageProps> = a
           status,
           due_at,
           created_at,
+          activated_at,
           first_viewed_at,
           last_viewed_at,
           is_redirected,
@@ -1359,24 +1357,26 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
     const [loadingDocuments, setLoadingDocuments] = useState(false);
     const [showReviewModal, setShowReviewModal] = useState(false);
     const [showApprovedPreview, setShowApprovedPreview] = useState(false);
-    const [downloadingArchive, setDownloadingArchive] = useState(false);
     // Where the approved PDF landed in Microsoft 365 (OneDrive/SharePoint webUrls).
     const [archiveLinks, setArchiveLinks] = useState<{ onedrive?: string; sharepoint?: string; teams?: string } | null>(null);
     const [reviewComment, setReviewComment] = useState('');
     const [reviewProcessing, setReviewProcessing] = useState(false);
     const [reviewError, setReviewError] = useState<string | null>(null);
     const [userSignatureUrl, setUserSignatureUrl] = useState<string | null>(null);
-    const [showApprovalConfirm, setShowApprovalConfirm] = useState(false);
     const [pendingApprovalAction, setPendingApprovalAction] = useState<'approve' | 'reject' | null>(null);
-    const [approvalRisk, setApprovalRisk] = useState<ApprovalRisk>('low');
-    const [approvalRiskReasons, setApprovalRiskReasons] = useState<string[]>([]);
-    const [hasBiometric, setHasBiometric] = useState(false);
     const [signatureSelection, setSignatureSelection] = useState<SignatureSelection>({ type: 'saved' });
-    /** Tracks whether the user has cleared the auth gate for this approval. Null means
-     *  not yet evaluated; 'session' means low-risk (no extra auth needed); otherwise
-     *  the rank of the elevation that satisfies the current request's risk. */
-    const [authClearedFor, setAuthClearedFor] = useState<'none' | 'session' | 'microsoft_mfa' | 'biometric'>('none');
     const [showRejectConfirm, setShowRejectConfirm] = useState(false);
+    const [showApproveConfirm, setShowApproveConfirm] = useState(false);
+
+    // Screening (gatekeeping assistant): when this request has a step parked
+    // for the current user to screen before their boss sees it, they can
+    // Forward it on or Return it to the requestor — same actions as the
+    // Approvals › Screening tab, surfaced here on the request itself.
+    const [screening, setScreening] = useState<{ stepId: string; bossName: string | null } | null>(null);
+    const [screenBusy, setScreenBusy] = useState(false);
+    const [screenError, setScreenError] = useState<string | null>(null);
+    const [showScreenReturn, setShowScreenReturn] = useState(false);
+    const [screenReturnComment, setScreenReturnComment] = useState('');
     const [hrdCostAllocation, setHrdCostAllocation] = useState<Record<string, string>>({
         corp: '', mrc: '', nah: '', rth: '', khcc: '', brh: '', vfrh: '', azam: '',
     });
@@ -1472,6 +1472,91 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
         fetch(`/api/requests/${id}/view`, { method: 'POST' }).catch(() => { /* silent */ });
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [id, currentUserId]);
+
+    // Is this request currently waiting for the signed-in user to SCREEN it
+    // (as a gatekeeping assistant) before it reaches the boss? The screening
+    // queue endpoint already encodes the gatekeeper authorisation, so we just
+    // check whether this request is in it and grab the step id + boss name.
+    const loadScreening = useCallback(async () => {
+        if (!id || typeof id !== 'string') { setScreening(null); return; }
+        try {
+            const res = await fetch('/api/approvals/screening');
+            if (!res.ok) { setScreening(null); return; }
+            const list = await res.json();
+            const entry = Array.isArray(list) ? list.find((r: any) => r.id === id) : null;
+            setScreening(
+                entry
+                    ? { stepId: entry.screening_step_id, bossName: entry.screening_boss?.name || null }
+                    : null
+            );
+        } catch {
+            setScreening(null);
+        }
+    }, [id]);
+
+    useEffect(() => {
+        loadScreening();
+        // Re-check when the request status changes (e.g. after forwarding it on).
+    }, [loadScreening, request?.status]);
+
+    const handleScreenForward = async () => {
+        if (!screening) return;
+        setScreenBusy(true);
+        setScreenError(null);
+        try {
+            const res = await fetch('/api/approvals/screen', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ requestId: id, stepId: screening.stepId, action: 'forward' }),
+            });
+            if (!res.ok) throw new Error((await res.json()).error || 'Failed to forward');
+            addToast({
+                type: 'success',
+                title: 'Forwarded for approval',
+                message: `Sent to ${screening.bossName || 'the approver'}.`,
+            });
+            const r = await fetch(`/api/requests/${id}`);
+            if (r.ok) setRequest((await r.json()).request);
+            await loadScreening();
+        } catch (e: any) {
+            setScreenError(e?.message || 'Failed to forward');
+        } finally {
+            setScreenBusy(false);
+        }
+    };
+
+    const submitScreenReturn = async () => {
+        if (!screening || !screenReturnComment.trim()) return;
+        setScreenBusy(true);
+        setScreenError(null);
+        try {
+            const res = await fetch('/api/approvals/screen', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    requestId: id,
+                    stepId: screening.stepId,
+                    action: 'return',
+                    comment: screenReturnComment.trim(),
+                }),
+            });
+            if (!res.ok) throw new Error((await res.json()).error || 'Failed to return');
+            addToast({
+                type: 'success',
+                title: 'Returned to requestor',
+                message: 'The requester has been notified to amend and resubmit.',
+            });
+            setShowScreenReturn(false);
+            setScreenReturnComment('');
+            const r = await fetch(`/api/requests/${id}`);
+            if (r.ok) setRequest((await r.json()).request);
+            await loadScreening();
+        } catch (e: any) {
+            setScreenError(e?.message || 'Failed to return');
+        } finally {
+            setScreenBusy(false);
+        }
+    };
 
     // Travel authorisations and hotel bookings both require HRD cost allocation.
     // Travel auths always carry a grand total to allocate against; hotel
@@ -1645,86 +1730,11 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
         }
     }, [showReviewModal, currentUserId]);
 
-    // Evaluate risk + check elevation status when the review modal opens.
-    // Drives whether the signature picker is gated behind a verification step.
-    useEffect(() => {
-        if (!showReviewModal || !request) {
-            setAuthClearedFor('none');
-            return;
-        }
-        const steps = request.request_steps || [];
-        const stepIdx = effectivePendingStep?.step_index ?? 0;
-        const evalResult = getApprovalRisk({
-            value: request.metadata?.amount ?? request.metadata?.total_amount ?? null,
-            workflowCategory: request.metadata?.workflow_category || request.metadata?.category || null,
-            requestType: request.metadata?.type || request.metadata?.requestType || null,
-            currentStepIndex: stepIdx,
-            totalSteps: steps.length,
-            formData: request.metadata?.formData || request.metadata?.form_data || null,
-        });
-        setApprovalRisk(evalResult.risk);
-        setApprovalRiskReasons(evalResult.reasons);
-
-        if (evalResult.risk === 'low') {
-            setAuthClearedFor('session');
-            return;
-        }
-        // Probe the elevation cookie. If it satisfies the required auth rank
-        // we let the user proceed straight to signature selection; otherwise
-        // the modal will gate signing behind a verification ceremony.
-        let cancelled = false;
-        const requiredRank = evalResult.risk === 'high' ? 2 : 1;
-        const rankMethod = (m: string | null | undefined) =>
-            m === 'biometric' ? 2 : m === 'microsoft_mfa' ? 1 : 0;
-        const refresh = () => {
-            fetch('/api/auth/elevation')
-                .then(r => r.ok ? r.json() : null)
-                .then((data) => {
-                    if (cancelled) return;
-                    // Mirror the server's inclusivity rule: for HIGH-risk approvals
-                    // a microsoft_mfa elevation is an acceptable fallback when the
-                    // user can't / won't use biometrics (see action.ts).
-                    const provides = rankMethod(data?.method);
-                    const satisfies = data?.elevated && (
-                        provides >= requiredRank ||
-                        (requiredRank === 2 && provides >= 1)
-                    );
-                    if (satisfies) {
-                        setAuthClearedFor(data.method);
-                    } else {
-                        setAuthClearedFor('none');
-                    }
-                })
-                .catch(() => { if (!cancelled) setAuthClearedFor('none'); });
-        };
-        refresh();
-        const onUpdate = () => refresh();
-        window.addEventListener('elevation-updated', onUpdate);
-        return () => {
-            cancelled = true;
-            window.removeEventListener('elevation-updated', onUpdate);
-        };
-    }, [showReviewModal, request, effectivePendingStep]);
-
-    /** True when the current user must complete a step-up ceremony before
-     *  they can pick a signature and submit an approval. */
-    const needsAuthFirst = showReviewModal && approvalRisk !== 'low' && authClearedFor === 'none';
-
     const handleApprovalAction = async (action: 'approve' | 'reject') => {
         if (!id || !effectivePendingStep) return;
 
         if (action === 'reject' && !reviewComment.trim()) {
             setReviewError('Please provide a reason for rejection');
-            return;
-        }
-
-        // Block both approve AND reject until the user passes the required
-        // authentication ceremony. Rejection commits a decision attributable
-        // to the user and must be tied to a verified identity.
-        if (needsAuthFirst) {
-            setPendingApprovalAction(action);
-            setShowApprovalConfirm(true);
-            setReviewError(null);
             return;
         }
 
@@ -1756,62 +1766,22 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
             }
         }
 
-        // Evaluate risk client-side (server re-evaluates authoritatively)
-        const steps = request?.request_steps || [];
-        const currentStepIndex = effectivePendingStep.step_index ?? 0;
-        const riskEval = getApprovalRisk({
-            value: request?.metadata?.amount ?? request?.metadata?.total_amount ?? null,
-            workflowCategory: request?.metadata?.workflow_category || request?.metadata?.category || null,
-            requestType: request?.metadata?.type || request?.metadata?.requestType || null,
-            currentStepIndex,
-            totalSteps: steps.length,
-            formData: request?.metadata?.formData || request?.metadata?.form_data || null,
-        });
-
-        setApprovalRisk(riskEval.risk);
-        setApprovalRiskReasons(riskEval.reasons);
-
-        // Check if user has biometric credentials (for high-risk UI)
-        if (riskEval.risk === 'high') {
-            try {
-                const credRes = await fetch('/api/webauthn/credentials');
-                if (credRes.ok) {
-                    const credData = await credRes.json();
-                    setHasBiometric((credData.credentials || []).some((c: any) => c.is_active));
-                }
-            } catch { /* proceed without biometric info */ }
-        }
-
-        setPendingApprovalAction(action);
-        setShowApprovalConfirm(true);
-    };
-
-    const handleApprovalConfirmed = async (result: ApprovalConfirmResult) => {
-        if (!id || !effectivePendingStep || !pendingApprovalAction) return;
-
-        // Surface a toast as soon as the ceremony succeeds (before submission)
-        // so the user gets immediate feedback that their elevation is active.
-        if (result.elevation && !result.elevation.reused) {
-            const minutes = Math.max(1, Math.round((result.elevation.expiresAt - Date.now()) / 60000));
-            addToast({
-                type: 'success',
-                title: `You are verified for ${minutes} minute${minutes === 1 ? '' : 's'}`,
-                message: `You can approve without re-authentication.`,
-                duration: 8000,
-            });
-            // Notify the floating indicator to refresh immediately.
-            try { window.dispatchEvent(new Event('elevation-updated')); } catch { /* SSR */ }
-        }
-
-        // If the ceremony was triggered to clear the auth gate (signature not
-        // yet chosen/validated, or reject not yet confirmed), close the auth
-        // modal and let the user finish in the review modal — DO NOT submit yet.
-        if (needsAuthFirst) {
-            setShowApprovalConfirm(false);
-            setAuthClearedFor(result.authMethod);
+        // The approver confirms the decision in a lightweight dialog before it
+        // is recorded — there is no identity re-verification step. Reject
+        // already routes through its own confirmation (showRejectConfirm)
+        // before reaching here, so only the approve path opens the confirm dialog.
+        if (action === 'approve') {
+            setReviewError(null);
+            setShowApproveConfirm(true);
             return;
         }
+        await submitDecision(action);
+    };
 
+    const submitDecision = async (action: 'approve' | 'reject') => {
+        if (!id || !effectivePendingStep) return;
+
+        setPendingApprovalAction(action);
         setReviewProcessing(true);
         setReviewError(null);
 
@@ -1819,10 +1789,9 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
             const body: Record<string, any> = {
                 requestId: id,
                 stepId: effectivePendingStep.id,
-                action: pendingApprovalAction,
+                action,
                 comment: reviewComment || undefined,
-                stepUpToken: result.stepUpToken,
-                authMethod: result.authMethod,
+                authMethod: 'session',
                 signatureType: signatureSelection.type,
                 deviceInfo: {
                     userAgent: navigator.userAgent,
@@ -1838,7 +1807,7 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
             }
 
             // HRD cost allocation for travel_authorization approvals
-            if (isHrdApprovingTravelAuth && pendingApprovalAction === 'approve') {
+            if (isHrdApprovingTravelAuth && action === 'approve') {
                 body.costAllocation = hrdCostAllocation;
                 // For hotel bookings the HRD also picks the category that
                 // used to be on the form. Pass it through so the action
@@ -1855,7 +1824,7 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
             });
 
             if (!response.ok) {
-                let actionError = `Failed to ${pendingApprovalAction} request`;
+                let actionError = `Failed to ${action} request`;
                 try {
                     const errorData = await response.json();
                     actionError = errorData.error || actionError;
@@ -1869,29 +1838,23 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                 throw new Error(actionError);
             }
 
-            // Refresh the request data
-            const refreshResponse = await fetch(`/api/requests/${id}`);
-            if (refreshResponse.ok) {
-                const refreshData = await refreshResponse.json();
-                setRequest(refreshData.request);
-            }
-
+            // The decision is recorded — close the modal and clear state right
+            // away. Refresh the request in the BACKGROUND so the page reflects
+            // the new state without keeping the approver waiting on a heavy fetch.
             setShowReviewModal(false);
-            setShowApprovalConfirm(false);
             setReviewComment('');
             setPendingApprovalAction(null);
             setSignatureSelection({ type: 'saved' });
+
+            fetch(`/api/requests/${id}`)
+                .then((r) => (r.ok ? r.json() : null))
+                .then((d) => { if (d?.request) setRequest(d.request); })
+                .catch(() => { /* non-fatal: next navigation will refresh */ });
         } catch (err: any) {
-            setReviewError(getErrorMessage(err, `Failed to ${pendingApprovalAction} request`));
-            setShowApprovalConfirm(false);
+            setReviewError(getErrorMessage(err, `Failed to ${action} request`));
         } finally {
             setReviewProcessing(false);
         }
-    };
-
-    const handleApprovalConfirmCancel = () => {
-        setShowApprovalConfirm(false);
-        setPendingApprovalAction(null);
     };
 
     const handlePublish = async () => {
@@ -2566,35 +2529,6 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [id, request?.status]);
 
-    /**
-     * Download the archived (auto-generated) PDF of a fully-approved request.
-     * The endpoint will mint the archive on demand if it doesn't exist yet
-     * (e.g. for requests approved before auto-archiving was wired up).
-     */
-    const handleDownloadApprovedArchive = async () => {
-        if (!id) return;
-        setDownloadingArchive(true);
-        try {
-            const res = await fetch(`/api/requests/${id}/archive`);
-            const data = await res.json();
-            if (!res.ok || !data?.archive?.download_url) {
-                throw new Error(data?.error || 'Could not generate download link');
-            }
-            // Force a download (vs. inline view) where the browser supports it.
-            const link = document.createElement('a');
-            link.href = data.archive.download_url;
-            link.download = data.archive.filename || `request-${id}.pdf`;
-            link.target = '_blank';
-            link.rel = 'noopener noreferrer';
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-        } catch (err: any) {
-            addToast({ type: 'error', title: 'Download failed', message: err?.message || 'Could not download the approved PDF.' });
-        } finally {
-            setDownloadingArchive(false);
-        }
-    };
 
     const handleDocumentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -2730,21 +2664,7 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
     return (
         <AppLayout title={`Request #${request.id.substring(0, 8)}`}>
             <style dangerouslySetInnerHTML={{ __html: pulseKeyframes }} />
-            
-            {/* Risk-Based Approval Verification Modal */}
-            <ApprovalConfirmModal
-                isOpen={showApprovalConfirm}
-                risk={approvalRisk}
-                action={pendingApprovalAction || 'approve'}
-                requestId={id as string}
-                stepId={effectivePendingStep?.id || ''}
-                hasBiometric={hasBiometric}
-                riskReasons={approvalRiskReasons}
-                onConfirmed={handleApprovalConfirmed}
-                onCancel={handleApprovalConfirmCancel}
-                busy={reviewProcessing}
-            />
-            <ElevationIndicator />
+
             {/* Form-style preview — available at any status so the requester and
                 approvers can see the formatted document, with approval signatures
                 appended (the signature section just renders the approvals that
@@ -2798,6 +2718,49 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                             {isCritical ? 'CRITICAL' : 'HIGH PRIORITY'}
                         </div>
                     </div>
+                )}
+
+                {/* Screening (gatekeeping assistant) — Forward / Return actions */}
+                {screening && (
+                    <Card className="!p-5 border-[#C9B896] bg-[#F3EADC]/50">
+                        <div className="flex items-start gap-4">
+                            <div className="w-10 h-10 rounded-lg bg-[#9A7545]/15 text-[#5E4426] flex items-center justify-center flex-shrink-0">
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                </svg>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                                <h3 className="text-sm font-semibold text-[#5E4426]">
+                                    Screen this request{screening.bossName ? ` for ${screening.bossName}` : ''}
+                                </h3>
+                                <p className="text-sm text-[#5E4426]/80 mt-0.5">
+                                    Review it before it reaches {screening.bossName || 'the approver'}. Forward it on for
+                                    approval, or return it to the requestor with a comment for changes.
+                                </p>
+                                {screenError && (
+                                    <p className="text-sm text-red-600 font-medium mt-2">{screenError}</p>
+                                )}
+                                <div className="flex flex-wrap gap-3 mt-3">
+                                    <Button
+                                        variant="primary"
+                                        onClick={handleScreenForward}
+                                        disabled={screenBusy}
+                                    >
+                                        {screenBusy ? 'Working…' : `Forward${screening.bossName ? ` to ${screening.bossName.split(' ')[0]}` : ''}`}
+                                    </Button>
+                                    <Button
+                                        variant="outline"
+                                        onClick={() => { setScreenError(null); setShowScreenReturn(true); }}
+                                        disabled={screenBusy}
+                                        className="bg-white"
+                                    >
+                                        Return to requestor
+                                    </Button>
+                                </div>
+                            </div>
+                        </div>
+                    </Card>
                 )}
 
                 {/* Publish Error Alert */}
@@ -3077,14 +3040,12 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                                 variant="primary"
                                 style={{ backgroundColor: '#059669', borderColor: '#059669', color: '#ffffff' }}
                                 className="gap-2 hover:!bg-emerald-700 disabled:opacity-60"
-                                onClick={handleDownloadApprovedArchive}
-                                disabled={downloadingArchive}
-                                isLoading={downloadingArchive}
+                                onClick={() => printApprovedRequest(request)}
                             >
                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
                                 </svg>
-                                <span style={{ color: '#ffffff' }}>{downloadingArchive ? 'Preparing…' : 'Download'}</span>
+                                <span style={{ color: '#ffffff' }}>Download</span>
                             </Button>
                         )}
                         {/* Microsoft 365 copies — appear once the approved PDF has been
@@ -3167,7 +3128,10 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                                 Review Request
                             </Button>
                         )}
-                        {/* Edit & Resubmit — only for the creator of a rejected request */}
+                        {/* Edit & Resubmit — temporarily disabled. The button and its
+                            resubmission edit-mode controls are commented out for now.
+                            The underlying handlers (beginResubmit / handleResubmit /
+                            cancelResubmit) remain in place so this can be re-enabled later.
                         {canResubmit && !isResubmitting && (
                             <Button
                                 variant="primary"
@@ -3180,7 +3144,6 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                                 Edit &amp; Resubmit
                             </Button>
                         )}
-                        {/* Resubmission edit mode: cancel / submit */}
                         {isResubmitting && (
                             <>
                                 <Button
@@ -3205,6 +3168,7 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                                 </Button>
                             </>
                         )}
+                        */}
                         {/* Unsubmit & Edit — creator only, while pending and no approver has acted */}
                         {canUnsubmit && !isResubmitting && (
                             <Button
@@ -3275,9 +3239,7 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                                     <p className="text-sm text-rose-600 mt-1">No reason was provided.</p>
                                 )}
                                 <p className="text-sm text-rose-700 mt-2">
-                                    {isResubmitting
-                                        ? 'Edit the fields below to address the feedback, then choose “Submit Resubmission”. A new versioned reference will be generated and your approvers re-notified.'
-                                        : 'Use “Edit & Resubmit” to address the feedback and send it back through the approval chain.'}
+                                    Please raise a new request that addresses the feedback above.
                                 </p>
                             </div>
                         </div>
@@ -3522,15 +3484,20 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                                 // Get quotations and supporting documents from metadata
                                 const quotations = Array.isArray(request.metadata?.quotations) ? request.metadata.quotations : [];
                                 const supportingDocs = Array.isArray(request.metadata?.supportingDocuments) ? request.metadata.supportingDocuments : [];
-                                
-                                // Get additional documents uploaded directly (not in metadata)
+                                const comparativeAnalysis = Array.isArray(request.metadata?.comparativeAnalysis) ? request.metadata.comparativeAnalysis : [];
+
+                                // Get additional documents uploaded directly (not in metadata).
+                                // Comparative-analysis files are tracked in metadata too, so they
+                                // must be excluded here — otherwise they'd fall into "Additional
+                                // Documents" instead of their own section below.
                                 const metadataFilenames = [
                                     ...quotations.map((q: any) => q.name),
-                                    ...supportingDocs.map((d: any) => d.name)
+                                    ...supportingDocs.map((d: any) => d.name),
+                                    ...comparativeAnalysis.map((d: any) => d.name)
                                 ];
                                 const additionalDocuments = documents.filter(doc => !metadataFilenames.includes(doc.filename));
-                                
-                                const hasDocuments = quotations.length > 0 || supportingDocs.length > 0 || additionalDocuments.length > 0;
+
+                                const hasDocuments = quotations.length > 0 || supportingDocs.length > 0 || comparativeAnalysis.length > 0 || additionalDocuments.length > 0;
 
                                 // Helper to find matching uploaded document by filename
                                 const findUploadedDocument = (filename: string) => {
@@ -3889,6 +3856,113 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                                             </Card>
                                         )}
 
+                                        {/* Comparative Analysis Section */}
+                                        {comparativeAnalysis.length > 0 && (
+                                            <Card className="!p-0 overflow-hidden border-gray-200 shadow-sm">
+                                                <div className="bg-[#F3EADC]/50 px-6 py-4 border-b border-[#E6D3B3] flex items-center justify-between">
+                                                    <h3 className="font-semibold text-[#3F2D19] flex items-center gap-2">
+                                                        <svg className="w-5 h-5 text-[#9A7545]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                                        </svg>
+                                                        Comparative Analysis
+                                                    </h3>
+                                                    <span className="text-sm text-[#9A7545] font-medium">{comparativeAnalysis.length} uploaded</span>
+                                                </div>
+                                                <div className="p-4 space-y-3">
+                                                    {comparativeAnalysis.map((doc: any, index: number) => {
+                                                        const uploadedDoc = findUploadedDocument(doc.name);
+                                                        const downloadUrl = uploadedDoc?.download_url;
+
+                                                        return (
+                                                            <div key={index} className="p-4 bg-white rounded-xl border border-gray-200 hover:border-gray-300 transition-colors">
+                                                                <div className="flex items-start justify-between gap-4">
+                                                                    <div className="flex items-start gap-3 flex-1 min-w-0">
+                                                                        <div className="w-12 h-12 bg-[#F3EADC] rounded-lg flex items-center justify-center flex-shrink-0">
+                                                                            {getFileIcon(doc.type || '')}
+                                                                        </div>
+                                                                        <div className="flex-1 min-w-0">
+                                                                            <p className="font-semibold text-gray-900">{doc.name}</p>
+                                                                            <div className="grid grid-cols-2 gap-x-4 gap-y-1 mt-2 text-xs">
+                                                                                <div>
+                                                                                    <span className="text-gray-500">Size:</span>
+                                                                                    <span className="ml-1 text-gray-700 font-medium">{formatFileSize(doc.size)}</span>
+                                                                                </div>
+                                                                                <div>
+                                                                                    <span className="text-gray-500">Type:</span>
+                                                                                    <span className="ml-1 text-gray-700 font-medium">{doc.type || 'Unknown'}</span>
+                                                                                </div>
+                                                                                {doc.uploadedBy && (
+                                                                                    <div className="col-span-2 flex items-center gap-1 mt-1">
+                                                                                        <svg className="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                                                                                        </svg>
+                                                                                        <span className="text-gray-500">Uploaded by:</span>
+                                                                                        <span className="text-gray-700 font-medium">{doc.uploadedBy.name}</span>
+                                                                                        {doc.uploadedBy.isApprover && (
+                                                                                            <span className="px-1.5 py-0.5 rounded text-xs bg-primary-100 text-primary-700">Approver</span>
+                                                                                        )}
+                                                                                    </div>
+                                                                                )}
+                                                                                {doc.uploadedAt && (
+                                                                                    <div className="col-span-2">
+                                                                                        <span className="text-gray-500">Uploaded:</span>
+                                                                                        <span className="ml-1 text-gray-700 font-medium">
+                                                                                            {new Date(doc.uploadedAt).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })} at {new Date(doc.uploadedAt).toLocaleTimeString('en-US', {
+                                                                                                hour: '2-digit', minute: '2-digit'
+                                                                                            })}
+                                                                                        </span>
+                                                                                    </div>
+                                                                                )}
+                                                                            </div>
+                                                                            {doc.description && (
+                                                                                <p className="text-sm text-gray-600 mt-2 p-2 bg-gray-50 rounded-lg">{doc.description}</p>
+                                                                            )}
+                                                                        </div>
+                                                                    </div>
+                                                                    <div className="flex flex-col gap-2 flex-shrink-0">
+                                                                        {downloadUrl && (
+                                                                            <>
+                                                                                <Button
+                                                                                    variant="outline"
+                                                                                    size="sm"
+                                                                                    className="bg-white w-full"
+                                                                                    onClick={() => window.open(downloadUrl, '_blank', 'noopener,noreferrer')}
+                                                                                >
+                                                                                    <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                                                                    </svg>
+                                                                                    View
+                                                                                </Button>
+                                                                                <Button
+                                                                                    variant="outline"
+                                                                                    size="sm"
+                                                                                    className="bg-white w-full"
+                                                                                    onClick={() => {
+                                                                                        const link = document.createElement('a');
+                                                                                        link.href = downloadUrl;
+                                                                                        link.download = doc.name;
+                                                                                        document.body.appendChild(link);
+                                                                                        link.click();
+                                                                                        document.body.removeChild(link);
+                                                                                    }}
+                                                                                >
+                                                                                    <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                                                                    </svg>
+                                                                                    Download
+                                                                                </Button>
+                                                                            </>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </Card>
+                                        )}
+
                                         {/* Additional Uploaded Documents Section */}
                                         {additionalDocuments.length > 0 && (
                                             <Card className="!p-0 overflow-hidden border-gray-200 shadow-sm">
@@ -4121,6 +4195,68 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                         await handleApprovalAction('reject');
                     }}
                 />
+
+                {/* Approve Confirmation */}
+                <ConfirmDialog
+                    isOpen={showApproveConfirm}
+                    title="Approve this request?"
+                    message={
+                        <span>
+                            Approve &ldquo;<span className="font-medium text-gray-900">{request?.title}</span>&rdquo;?
+                            Your signature will be applied and the request will move to the next approver
+                            (or be finalised if you are the last approver).
+                        </span>
+                    }
+                    confirmLabel="Approve"
+                    cancelLabel="Go back"
+                    busy={reviewProcessing}
+                    onCancel={() => setShowApproveConfirm(false)}
+                    onConfirm={async () => {
+                        setShowApproveConfirm(false);
+                        await submitDecision('approve');
+                    }}
+                />
+
+                {/* Screening: Return-to-requestor comment modal */}
+                {showScreenReturn && (
+                    <div
+                        className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 p-4"
+                        onClick={() => { if (!screenBusy) setShowScreenReturn(false); }}
+                    >
+                        <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                            <h3 className="text-lg font-semibold text-gray-900 mb-1">Return to requestor</h3>
+                            <p className="text-sm text-gray-500 mb-4">
+                                &ldquo;<span className="font-medium text-gray-900">{request?.title}</span>&rdquo; will go back to the
+                                requestor&apos;s Drafts with your comment, and they&apos;ll be notified.
+                            </p>
+                            <textarea
+                                value={screenReturnComment}
+                                onChange={(e) => setScreenReturnComment(e.target.value)}
+                                placeholder="Explain what needs to change before this can go forward…"
+                                rows={4}
+                                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-none"
+                                autoFocus
+                            />
+                            {screenError && <p className="text-sm text-red-600 font-medium mt-2">{screenError}</p>}
+                            <div className="flex justify-end gap-3 mt-4">
+                                <Button
+                                    variant="outline"
+                                    onClick={() => { setShowScreenReturn(false); setScreenReturnComment(''); }}
+                                    disabled={screenBusy}
+                                >
+                                    Cancel
+                                </Button>
+                                <Button
+                                    variant="danger"
+                                    onClick={submitScreenReturn}
+                                    disabled={screenBusy || !screenReturnComment.trim()}
+                                >
+                                    {screenBusy ? 'Returning…' : 'Return with comment'}
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+                )}
 
                 {/* Delete Confirmation Modal */}
                 {showDeleteConfirm && (
@@ -4358,44 +4494,19 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                                     </div>
                                 )}
 
-                                {/* Auth gate: signature selection is hidden until the user
-                                    completes the required step-up ceremony (medium/high risk). */}
-                                {needsAuthFirst ? (
-                                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-                                        <div className="flex items-start gap-3">
-                                            <svg className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                                            </svg>
-                                            <div>
-                                                <h4 className="text-sm font-semibold text-amber-900">
-                                                    Identity verification required
-                                                </h4>
-                                                <p className="text-xs text-amber-800 mt-1">
-                                                    {approvalRisk === 'high'
-                                                        ? 'This is a high-risk approval. Verify with biometrics or Microsoft MFA before signing.'
-                                                        : 'Verify with Microsoft MFA before signing this approval.'}
-                                                </p>
-                                                <p className="text-xs text-amber-700 mt-2">
-                                                    Your signature options will appear after verification.
-                                                </p>
-                                            </div>
-                                        </div>
-                                    </div>
-                                ) : (
-                                    <div className="bg-primary-50 border border-primary-100 rounded-xl p-4">
-                                        <div className="text-xs text-primary-600 uppercase tracking-wide font-medium mb-2">Your Signature</div>
-                                        <SignatureSelector
-                                            savedSignatureUrl={userSignatureUrl}
-                                            userDisplayName={(session?.user as any)?.name || request?.creator?.display_name}
-                                            value={signatureSelection}
-                                            onChange={setSignatureSelection}
-                                            disabled={reviewProcessing}
-                                        />
-                                        <p className="text-xs text-primary-600 mt-2">
-                                            Your signature will be attached to this approval.
-                                        </p>
-                                    </div>
-                                )}
+                                <div className="bg-primary-50 border border-primary-100 rounded-xl p-4">
+                                    <div className="text-xs text-primary-600 uppercase tracking-wide font-medium mb-2">Your Signature</div>
+                                    <SignatureSelector
+                                        savedSignatureUrl={userSignatureUrl}
+                                        userDisplayName={(session?.user as any)?.name || request?.creator?.display_name}
+                                        value={signatureSelection}
+                                        onChange={setSignatureSelection}
+                                        disabled={reviewProcessing}
+                                    />
+                                    <p className="text-xs text-primary-600 mt-2">
+                                        Your signature will be attached to this approval.
+                                    </p>
+                                </div>
 
                                 {reviewError && (
                                     <div className="p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
@@ -4433,39 +4544,28 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                                 >
                                     Cancel
                                 </Button>
-                                {/* Reject is intentionally hidden until the approver has cleared
-                                    the identity-verification gate. A rejection is just as
-                                    accountability-sensitive as an approval — it must be tied to a
-                                    verified identity. Once verified, both Approve and Reject
-                                    become available. */}
-                                {!needsAuthFirst && (
-                                    <Button
-                                        variant="danger"
-                                        onClick={() => {
-                                            if (!reviewComment.trim()) {
-                                                setReviewError('Please provide a reason for rejection');
-                                                return;
-                                            }
-                                            setReviewError(null);
-                                            setShowRejectConfirm(true);
-                                        }}
-                                        disabled={reviewProcessing}
-                                        className="min-w-[5rem]"
-                                    >
-                                        {reviewProcessing ? '...' : 'Reject'}
-                                    </Button>
-                                )}
+                                <Button
+                                    variant="danger"
+                                    onClick={() => {
+                                        if (!reviewComment.trim()) {
+                                            setReviewError('Please provide a reason for rejection');
+                                            return;
+                                        }
+                                        setReviewError(null);
+                                        setShowRejectConfirm(true);
+                                    }}
+                                    disabled={reviewProcessing}
+                                    className="min-w-[5rem]"
+                                >
+                                    {reviewProcessing ? '...' : 'Reject'}
+                                </Button>
                                 <Button
                                     variant="primary"
                                     onClick={() => handleApprovalAction('approve')}
-                                    disabled={reviewProcessing || (!needsAuthFirst && isHrdApprovingTravelAuth && !hrdAllocationValid)}
+                                    disabled={reviewProcessing || (isHrdApprovingTravelAuth && !hrdAllocationValid)}
                                     className="min-w-[6rem]"
                                 >
-                                    {reviewProcessing
-                                        ? 'Processing...'
-                                        : needsAuthFirst
-                                            ? 'Verify Identity'
-                                            : 'Approve'}
+                                    {reviewProcessing ? 'Processing...' : 'Approve'}
                                 </Button>
                             </div>
                         </div>

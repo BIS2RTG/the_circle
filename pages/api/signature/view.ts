@@ -27,6 +27,7 @@ import {
   isAllowedSignaturePath,
 } from '@/lib/signatureStorage';
 import { validateQuery, z } from '@/lib/validate';
+import { trimSignatureBuffer } from '@/lib/signatureImage';
 
 const QuerySchema = z
   .object({
@@ -111,12 +112,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(404).json({ error: 'Signature not found' });
   }
 
+  // Normalise for display: crop the empty margin around the ink so a signature
+  // that was drawn small in a large pad fills its frame instead of rendering
+  // tiny. Non-destructive — the stored object is untouched; only the served
+  // bytes are trimmed. Falls back to the original bytes on any failure.
+  const body = await trimSignatureBuffer(file.buffer);
+
   // The proxy URL is CONSTANT per user, so any positive max-age makes a
   // replaced/deleted signature linger in the browser for that long (users saw
   // the old signature for up to 5 minutes after saving a new one). Serve with
   // an ETag and force revalidation: unchanged signatures still answer 304 (no
-  // body transferred), but a replaced one shows up immediately.
-  const etag = `"${createHash('md5').update(file.buffer).digest('hex')}"`;
+  // body transferred), but a replaced one shows up immediately. The ETag is
+  // computed over the SERVED (trimmed) bytes so a change in trim logic also
+  // busts the cache.
+  const etag = `"${createHash('md5').update(body).digest('hex')}"`;
   res.setHeader('ETag', etag);
   res.setHeader('Cache-Control', 'private, no-cache');
   if (req.headers['if-none-match'] === etag) {
@@ -124,6 +133,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   res.setHeader('Content-Type', file.contentType || 'image/png');
-  res.setHeader('Content-Length', String(file.buffer.length));
-  return res.status(200).send(file.buffer);
+  res.setHeader('Content-Length', String(body.length));
+  return res.status(200).send(body);
 }

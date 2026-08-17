@@ -38,7 +38,13 @@ export default function ApprovalGo() {
       }
       const res = await signIn('approval-link', { token, redirect: false });
       if (res?.ok) {
-        router.replace(next);
+        // Hard navigation (not router.replace) so the browser makes a fresh
+        // document request carrying the just-set session cookie. The target
+        // (/requests/[id]) re-checks the session in getServerSideProps; a
+        // client-side SPA transition can race that check on mobile in-app
+        // browsers (Outlook/Gmail webviews), where the new cookie isn't yet
+        // observed by the SSR data fetch — bouncing the approver back to login.
+        window.location.assign(next);
       } else {
         // Invalid/expired token — fall back to a normal login that returns here.
         router.replace(`/?callbackUrl=${encodeURIComponent(next)}`);

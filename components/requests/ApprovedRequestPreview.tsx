@@ -1,4 +1,5 @@
 import { useMemo, useRef, type ReactNode } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { RequestPreviewModal, RequestPreviewDocument, printPreviewDocument, buildDocumentHeaderSection } from '../ui';
 import type { PreviewSection, DocumentHeader } from '../ui';
 import {
@@ -146,7 +147,7 @@ function buildApprovalSignaturesSection(request: any): PreviewSection {
                         <th style={{ ...headCellStyle, width: '8%' }}>Step</th>
                         <th style={headCellStyle}>Role</th>
                         <th style={headCellStyle}>Approver</th>
-                        <th style={{ ...headCellStyle, width: '18%' }}>Signature</th>
+                        <th style={{ ...headCellStyle, width: '30%' }}>Signature</th>
                         <th style={headCellStyle}>Decision</th>
                         <th style={headCellStyle}>Signed At</th>
                         <th style={headCellStyle}>Verification</th>
@@ -182,7 +183,7 @@ function buildApprovalSignaturesSection(request: any): PreviewSection {
                                             <img
                                                 src={sigUrl}
                                                 alt={`${approverName} signature`}
-                                                style={{ maxHeight: 48, maxWidth: '100%', display: 'block' }}
+                                                style={{ height: 80, maxHeight: 80, width: 'auto', maxWidth: '100%', objectFit: 'contain', display: 'block' }}
                                                 onError={(e) => {
                                                     // If the file isn't uploaded for this user, hide the broken-image icon.
                                                     (e.target as HTMLImageElement).style.display = 'none';
@@ -584,12 +585,40 @@ function buildCompSections(request: any, metadata: any): PreviewSection[] {
     // carries so populated fields don't show as '—'.
     const hasStayDates = units.some((u: any) => u.arrivalDate || u.departureDate);
 
+    // Retrospective stays: past-dated complimentary bookings are allowed (often
+    // logged after the guest has stayed). Flag them so approvers viewing the
+    // request know the stay has already taken place.
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const hasPastStay = units.some((u: any) => {
+        const d = u.departureDate || u.arrivalDate;
+        if (!d) return false;
+        const parsed = new Date(d);
+        return !isNaN(parsed.getTime()) && parsed < startOfToday;
+    });
+
     // A comp requester is usually the guest themselves — only surface the
     // "Requestor" (Submitted by) block when the request was filed on behalf of
     // someone else, so it doesn't duplicate the guest information.
     const onBehalf = metadata.onBehalfOf && (metadata.onBehalfOf.userId || metadata.onBehalfOf.name);
 
     const sections: PreviewSection[] = [
+        ...(hasPastStay ? [{
+            content: (
+                <div style={{
+                    border: '1px solid #C8A24A',
+                    background: '#FBF3DD',
+                    color: '#6B4E12',
+                    padding: '8px 12px',
+                    fontSize: 12,
+                    fontWeight: 700,
+                    borderRadius: 4,
+                }}>
+                    ⚠️ Retrospective booking — this complimentary stay includes dates that have already passed.
+                    The guest has already stayed / the complimentary has already been provided.
+                </div>
+            ),
+        }] : []),
         {
             title: 'Guest Information',
             fields: [
@@ -983,6 +1012,31 @@ export function buildPreviewForRequest(request: any) {
         sections,
         documentHeader,
     };
+}
+
+/**
+ * Print / Save-as-PDF the current preview for a request without needing the
+ * inline preview to be mounted. Renders the exact same document that
+ * ApprovedRequestPreviewInline shows (same buildPreviewForRequest output, same
+ * RequestPreviewDocument, same printPreviewDocument stylesheet) so the output
+ * is identical to the "Print / Save as PDF" button — this is what the green
+ * "Download" button on /requests/[id] uses instead of the stale server archive.
+ */
+export function printApprovedRequest(request: any) {
+    const { title, subtitle, sections, documentHeader } = buildPreviewForRequest(request);
+    const markup = renderToStaticMarkup(
+        <RequestPreviewDocument
+            title={title}
+            subtitle={subtitle}
+            sections={sections}
+            documentHeader={documentHeader}
+        />
+    );
+    // printPreviewDocument reads the node's innerHTML, so hand it the rendered
+    // RequestPreviewDocument root (its children match the inline ref's children).
+    const container = document.createElement('div');
+    container.innerHTML = markup;
+    printPreviewDocument(container.firstElementChild as HTMLElement, title);
 }
 
 /**

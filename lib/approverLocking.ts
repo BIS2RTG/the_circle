@@ -18,6 +18,9 @@ export const CHANGEABLE_AUTO_APPROVER_ROLES = new Set<string>([
   'general_manager',
   'corporate_hod',
   'department_head',
+  // Voucher first approver — a generic "Approver" the requester picks/swaps
+  // freely (its title on the voucher comes from the selected user's job title).
+  'commercial_director',
   // Inter-unit equivalents (a from-unit finance manager / receiving-unit accountant).
   'from_finance_manager',
   'to_accountant',

@@ -10,10 +10,10 @@
  */
 
 import { supabaseAdmin } from './supabaseAdmin';
-import { sendAppGraphMail, isGraphAppMailConfigured, AppMailAttachment } from './graphAppMail';
+import { sendAppGraphMail, isGraphAppMailConfigured, graphMailSender, AppMailAttachment } from './graphAppMail';
 import { sendEmail as sendResendEmail } from './email';
 import { sendGraphMail } from './graphMail';
-import { getValidMsAccessToken } from './msTokenStore';
+import { getValidMsAccessToken, getAnyValidDelegatedSenderId } from './msTokenStore';
 import { appBaseUrl, emailLogoUrl, brandedEmailShell } from './emailShell';
 import { getUserPreferences, UserPreferences } from './userPreferences';
 
@@ -165,6 +165,18 @@ export async function sendUserNotificationEmail(params: {
       return { sent: false, reason: 'no_email' };
     }
 
+    // The recipient's organisation — used for the org-relay fallback below so
+    // we only ever borrow a mailbox belonging to the same organisation.
+    let organizationId: string | null = null;
+    {
+      const { data: recipientRow } = await supabaseAdmin
+        .from('app_users')
+        .select('organization_id')
+        .eq('id', params.userId)
+        .maybeSingle();
+      organizationId = recipientRow?.organization_id || null;
+    }
+
     const actionUrl = params.actionUrl
       ? params.actionUrl.startsWith('http')
         ? params.actionUrl
@@ -178,41 +190,59 @@ export async function sendUserNotificationEmail(params: {
       actionLabel: params.actionLabel,
     });
 
-    // Transport chain, most-reliable-first.
+    // Transport chain, most-preferred-first.
     //
-    // When a notification has an actor (the approver/requester/admin who
-    // triggered it) we send via THEIR delegated Graph mailbox FIRST — the exact
-    // transport the e-sign invites use, which works wherever sign-in works and
-    // needs no separate application-level Mail.Send admin consent. This is the
-    // key fix: application ("service mailbox") Graph mail requires a distinct
-    // admin consent that is easy to miss, so relying on it alone silently drops
-    // approval/update emails even when GRAPH_MAIL_SENDER is set. The service
-    // mailbox and Resend remain — and are the primary path for actor-less mail
-    // (cron reminders/digests) and for attachments. A final delegated attempt
-    // from the recipient's own mailbox is the last resort for cron.
+    // The SERVICE MAILBOX (application Graph mail from thecircle@rtg.co.zw) is
+    // the primary transport: every notification should appear to come from The
+    // Circle, not from the individual approver/requester who triggered it. It
+    // requires application Mail.Send admin consent — until that's granted the
+    // send returns success:false and we fall through to the delegated transports
+    // below (which send from an individual's mailbox) so email still delivers.
+    // Once consent is in place the service mailbox wins every time and the
+    // delegated/relay fallbacks are never reached.
     type Attempt = { label: string; run: () => Promise<boolean> };
     const attempts: Attempt[] = [];
+
+    // The one address every notification should appear to come from.
+    const serviceSender = { email: graphMailSender(), name: 'The Circle' };
+
+    // Send via a delegated (individual) token, but stamp the From as the shared
+    // service mailbox so recipients always see "The Circle". If the token owner
+    // lacks Send-As rights on that mailbox Graph rejects it — retry without the
+    // override so the notification still delivers (from the individual) rather
+    // than being dropped.
+    const sendDelegatedAsService = async (token: string): Promise<void> => {
+      try {
+        await sendGraphMail({
+          accessToken: token,
+          to: { email: to },
+          subject: params.subject,
+          html,
+          saveToSentItems: false,
+          from: serviceSender,
+        });
+      } catch {
+        await sendGraphMail({
+          accessToken: token,
+          to: { email: to },
+          subject: params.subject,
+          html,
+          saveToSentItems: false,
+        });
+      }
+    };
 
     const delegatedAttempt = (senderId: string, label: string): Attempt => ({
       label,
       run: async () => {
         const token = await getValidMsAccessToken(senderId);
         if (!token) return false;
-        await sendGraphMail({
-          accessToken: token,
-          to: { email: to },
-          subject: params.subject,
-          html,
-          // System notifications shouldn't clutter the sender's Sent Items.
-          saveToSentItems: false,
-        });
+        await sendDelegatedAsService(token);
         return true;
       },
     });
 
-    if (params.actorUserId) {
-      attempts.push(delegatedAttempt(params.actorUserId, 'graph_delegated_actor'));
-    }
+    // 1. Service mailbox — the canonical "from The Circle" sender.
     if (isGraphAppMailConfigured()) {
       attempts.push({
         label: 'graph_app_mail',
@@ -220,15 +250,42 @@ export async function sendUserNotificationEmail(params: {
           (await sendAppGraphMail({ to, subject: params.subject, html, attachments: params.attachments })).success,
       });
     }
+    // 2. Resend — also a non-individual, domain-level sender.
     if (process.env.RESEND_API_KEY) {
       attempts.push({
         label: 'resend',
         run: async () => !!(await sendResendEmail({ to, subject: params.subject, html })).success,
       });
     }
+    // 3+. Delegated fallbacks (send from an individual's mailbox). Only reached
+    // when the service mailbox isn't available — kept so notifications still
+    // deliver in environments without application Mail.Send consent.
+    if (params.actorUserId) {
+      attempts.push(delegatedAttempt(params.actorUserId, 'graph_delegated_actor'));
+    }
     if (params.userId && params.userId !== params.actorUserId) {
       attempts.push(delegatedAttempt(params.userId, 'graph_delegated_recipient'));
     }
+    // Last-resort org relay: when neither the actor nor the recipient has a
+    // connected mailbox (most users never connect Microsoft), borrow ANY
+    // connected mailbox in the recipient's organisation. This is what stops
+    // approval emails from silently dropping once a workflow reaches a
+    // token-less approver — e.g. the final CAPEX sign-offs never getting
+    // notified because the approver before them hadn't connected Microsoft.
+    attempts.push({
+      label: 'graph_delegated_org_relay',
+      run: async () => {
+        const senderId = await getAnyValidDelegatedSenderId(organizationId, [
+          params.actorUserId,
+          params.userId,
+        ]);
+        if (!senderId) return false;
+        const token = await getValidMsAccessToken(senderId);
+        if (!token) return false;
+        await sendDelegatedAsService(token);
+        return true;
+      },
+    });
 
     for (const attempt of attempts) {
       try {

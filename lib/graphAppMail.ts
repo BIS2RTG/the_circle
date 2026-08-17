@@ -21,12 +21,29 @@ interface CachedToken {
 }
 let cached: CachedToken | null = null;
 
+/**
+ * The mailbox all system/notification email is sent FROM. Notifications must
+ * appear to come from The Circle's own address — never from the individual
+ * approver/requester who happened to trigger them. Overridable via
+ * GRAPH_MAIL_SENDER, but defaults to the service mailbox so a missing env var
+ * can't silently flip the sender back to an individual's delegated mailbox.
+ */
+export const DEFAULT_MAIL_SENDER = 'thecircle@rtg.co.zw';
+
+export function graphMailSender(): string {
+  return process.env.GRAPH_MAIL_SENDER || DEFAULT_MAIL_SENDER;
+}
+
 export function isGraphAppMailConfigured(): boolean {
+  // The sender is always defaulted (DEFAULT_MAIL_SENDER), so configuration comes
+  // down to having the Azure app credentials for the client-credentials grant.
+  // Application Mail.Send admin consent is still required for the send to
+  // actually succeed; when it isn't granted the send returns { success:false }
+  // and the caller falls through to the next transport.
   return !!(
     process.env.AZURE_CLIENT_ID &&
     process.env.AZURE_CLIENT_SECRET &&
-    process.env.AZURE_TENANT &&
-    process.env.GRAPH_MAIL_SENDER
+    process.env.AZURE_TENANT
   );
 }
 
@@ -85,11 +102,7 @@ export interface SendAppMailOptions {
 export async function sendAppGraphMail(
   opts: SendAppMailOptions
 ): Promise<{ success: boolean; error?: string }> {
-  const sender = opts.sender || process.env.GRAPH_MAIL_SENDER;
-  if (!sender) {
-    console.warn('graphAppMail: GRAPH_MAIL_SENDER not configured. Email not sent.');
-    return { success: false, error: 'Graph mail sender not configured' };
-  }
+  const sender = opts.sender || graphMailSender();
 
   const token = await getAppToken();
   if (!token) return { success: false, error: 'Could not acquire Graph app token' };
