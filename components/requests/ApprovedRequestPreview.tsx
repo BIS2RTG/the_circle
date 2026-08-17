@@ -585,12 +585,40 @@ function buildCompSections(request: any, metadata: any): PreviewSection[] {
     // carries so populated fields don't show as '—'.
     const hasStayDates = units.some((u: any) => u.arrivalDate || u.departureDate);
 
+    // Retrospective stays: past-dated complimentary bookings are allowed (often
+    // logged after the guest has stayed). Flag them so approvers viewing the
+    // request know the stay has already taken place.
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const hasPastStay = units.some((u: any) => {
+        const d = u.departureDate || u.arrivalDate;
+        if (!d) return false;
+        const parsed = new Date(d);
+        return !isNaN(parsed.getTime()) && parsed < startOfToday;
+    });
+
     // A comp requester is usually the guest themselves — only surface the
     // "Requestor" (Submitted by) block when the request was filed on behalf of
     // someone else, so it doesn't duplicate the guest information.
     const onBehalf = metadata.onBehalfOf && (metadata.onBehalfOf.userId || metadata.onBehalfOf.name);
 
     const sections: PreviewSection[] = [
+        ...(hasPastStay ? [{
+            content: (
+                <div style={{
+                    border: '1px solid #C8A24A',
+                    background: '#FBF3DD',
+                    color: '#6B4E12',
+                    padding: '8px 12px',
+                    fontSize: 12,
+                    fontWeight: 700,
+                    borderRadius: 4,
+                }}>
+                    ⚠️ Retrospective booking — this complimentary stay includes dates that have already passed.
+                    The guest has already stayed / the complimentary has already been provided.
+                </div>
+            ),
+        }] : []),
         {
             title: 'Guest Information',
             fields: [

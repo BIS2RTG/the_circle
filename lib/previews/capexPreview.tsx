@@ -155,7 +155,6 @@ export function buildCapexPreviewSections(input: CapexPreviewInput): PreviewSect
                 <span style={bold}>{q && q.amount ? `$ ${q.amount}` : ''}</span>
                 <span style={{ ...bold, marginLeft: 30 }}>{q?.supplier || ''}</span>
               </div>
-              <div style={{ fontSize: 11, paddingLeft: 40, color: '#333' }}>NAME OF SUPPLIER</div>
             </div>
           );
         })}
