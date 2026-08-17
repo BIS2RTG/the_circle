@@ -3128,7 +3128,10 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                                 Review Request
                             </Button>
                         )}
-                        {/* Edit & Resubmit — only for the creator of a rejected request */}
+                        {/* Edit & Resubmit — temporarily disabled. The button and its
+                            resubmission edit-mode controls are commented out for now.
+                            The underlying handlers (beginResubmit / handleResubmit /
+                            cancelResubmit) remain in place so this can be re-enabled later.
                         {canResubmit && !isResubmitting && (
                             <Button
                                 variant="primary"
@@ -3141,7 +3144,6 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                                 Edit &amp; Resubmit
                             </Button>
                         )}
-                        {/* Resubmission edit mode: cancel / submit */}
                         {isResubmitting && (
                             <>
                                 <Button
@@ -3166,6 +3168,7 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                                 </Button>
                             </>
                         )}
+                        */}
                         {/* Unsubmit & Edit — creator only, while pending and no approver has acted */}
                         {canUnsubmit && !isResubmitting && (
                             <Button
@@ -3236,9 +3239,7 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                                     <p className="text-sm text-rose-600 mt-1">No reason was provided.</p>
                                 )}
                                 <p className="text-sm text-rose-700 mt-2">
-                                    {isResubmitting
-                                        ? 'Edit the fields below to address the feedback, then choose “Submit Resubmission”. A new versioned reference will be generated and your approvers re-notified.'
-                                        : 'Use “Edit & Resubmit” to address the feedback and send it back through the approval chain.'}
+                                    Please raise a new request that addresses the feedback above.
                                 </p>
                             </div>
                         </div>
@@ -3483,15 +3484,20 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                                 // Get quotations and supporting documents from metadata
                                 const quotations = Array.isArray(request.metadata?.quotations) ? request.metadata.quotations : [];
                                 const supportingDocs = Array.isArray(request.metadata?.supportingDocuments) ? request.metadata.supportingDocuments : [];
-                                
-                                // Get additional documents uploaded directly (not in metadata)
+                                const comparativeAnalysis = Array.isArray(request.metadata?.comparativeAnalysis) ? request.metadata.comparativeAnalysis : [];
+
+                                // Get additional documents uploaded directly (not in metadata).
+                                // Comparative-analysis files are tracked in metadata too, so they
+                                // must be excluded here — otherwise they'd fall into "Additional
+                                // Documents" instead of their own section below.
                                 const metadataFilenames = [
                                     ...quotations.map((q: any) => q.name),
-                                    ...supportingDocs.map((d: any) => d.name)
+                                    ...supportingDocs.map((d: any) => d.name),
+                                    ...comparativeAnalysis.map((d: any) => d.name)
                                 ];
                                 const additionalDocuments = documents.filter(doc => !metadataFilenames.includes(doc.filename));
-                                
-                                const hasDocuments = quotations.length > 0 || supportingDocs.length > 0 || additionalDocuments.length > 0;
+
+                                const hasDocuments = quotations.length > 0 || supportingDocs.length > 0 || comparativeAnalysis.length > 0 || additionalDocuments.length > 0;
 
                                 // Helper to find matching uploaded document by filename
                                 const findUploadedDocument = (filename: string) => {
@@ -3760,6 +3766,113 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                                                         const uploadedDoc = findUploadedDocument(doc.name);
                                                         const downloadUrl = uploadedDoc?.download_url;
                                                         
+                                                        return (
+                                                            <div key={index} className="p-4 bg-white rounded-xl border border-gray-200 hover:border-gray-300 transition-colors">
+                                                                <div className="flex items-start justify-between gap-4">
+                                                                    <div className="flex items-start gap-3 flex-1 min-w-0">
+                                                                        <div className="w-12 h-12 bg-[#F3EADC] rounded-lg flex items-center justify-center flex-shrink-0">
+                                                                            {getFileIcon(doc.type || '')}
+                                                                        </div>
+                                                                        <div className="flex-1 min-w-0">
+                                                                            <p className="font-semibold text-gray-900">{doc.name}</p>
+                                                                            <div className="grid grid-cols-2 gap-x-4 gap-y-1 mt-2 text-xs">
+                                                                                <div>
+                                                                                    <span className="text-gray-500">Size:</span>
+                                                                                    <span className="ml-1 text-gray-700 font-medium">{formatFileSize(doc.size)}</span>
+                                                                                </div>
+                                                                                <div>
+                                                                                    <span className="text-gray-500">Type:</span>
+                                                                                    <span className="ml-1 text-gray-700 font-medium">{doc.type || 'Unknown'}</span>
+                                                                                </div>
+                                                                                {doc.uploadedBy && (
+                                                                                    <div className="col-span-2 flex items-center gap-1 mt-1">
+                                                                                        <svg className="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                                                                                        </svg>
+                                                                                        <span className="text-gray-500">Uploaded by:</span>
+                                                                                        <span className="text-gray-700 font-medium">{doc.uploadedBy.name}</span>
+                                                                                        {doc.uploadedBy.isApprover && (
+                                                                                            <span className="px-1.5 py-0.5 rounded text-xs bg-primary-100 text-primary-700">Approver</span>
+                                                                                        )}
+                                                                                    </div>
+                                                                                )}
+                                                                                {doc.uploadedAt && (
+                                                                                    <div className="col-span-2">
+                                                                                        <span className="text-gray-500">Uploaded:</span>
+                                                                                        <span className="ml-1 text-gray-700 font-medium">
+                                                                                            {new Date(doc.uploadedAt).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })} at {new Date(doc.uploadedAt).toLocaleTimeString('en-US', {
+                                                                                                hour: '2-digit', minute: '2-digit'
+                                                                                            })}
+                                                                                        </span>
+                                                                                    </div>
+                                                                                )}
+                                                                            </div>
+                                                                            {doc.description && (
+                                                                                <p className="text-sm text-gray-600 mt-2 p-2 bg-gray-50 rounded-lg">{doc.description}</p>
+                                                                            )}
+                                                                        </div>
+                                                                    </div>
+                                                                    <div className="flex flex-col gap-2 flex-shrink-0">
+                                                                        {downloadUrl && (
+                                                                            <>
+                                                                                <Button
+                                                                                    variant="outline"
+                                                                                    size="sm"
+                                                                                    className="bg-white w-full"
+                                                                                    onClick={() => window.open(downloadUrl, '_blank', 'noopener,noreferrer')}
+                                                                                >
+                                                                                    <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                                                                    </svg>
+                                                                                    View
+                                                                                </Button>
+                                                                                <Button
+                                                                                    variant="outline"
+                                                                                    size="sm"
+                                                                                    className="bg-white w-full"
+                                                                                    onClick={() => {
+                                                                                        const link = document.createElement('a');
+                                                                                        link.href = downloadUrl;
+                                                                                        link.download = doc.name;
+                                                                                        document.body.appendChild(link);
+                                                                                        link.click();
+                                                                                        document.body.removeChild(link);
+                                                                                    }}
+                                                                                >
+                                                                                    <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                                                                    </svg>
+                                                                                    Download
+                                                                                </Button>
+                                                                            </>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </Card>
+                                        )}
+
+                                        {/* Comparative Analysis Section */}
+                                        {comparativeAnalysis.length > 0 && (
+                                            <Card className="!p-0 overflow-hidden border-gray-200 shadow-sm">
+                                                <div className="bg-[#F3EADC]/50 px-6 py-4 border-b border-[#E6D3B3] flex items-center justify-between">
+                                                    <h3 className="font-semibold text-[#3F2D19] flex items-center gap-2">
+                                                        <svg className="w-5 h-5 text-[#9A7545]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                                        </svg>
+                                                        Comparative Analysis
+                                                    </h3>
+                                                    <span className="text-sm text-[#9A7545] font-medium">{comparativeAnalysis.length} uploaded</span>
+                                                </div>
+                                                <div className="p-4 space-y-3">
+                                                    {comparativeAnalysis.map((doc: any, index: number) => {
+                                                        const uploadedDoc = findUploadedDocument(doc.name);
+                                                        const downloadUrl = uploadedDoc?.download_url;
+
                                                         return (
                                                             <div key={index} className="p-4 bg-white rounded-xl border border-gray-200 hover:border-gray-300 transition-colors">
                                                                 <div className="flex items-start justify-between gap-4">

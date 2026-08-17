@@ -243,8 +243,6 @@ export async function buildCapexPdf(
       cx += w(amt, bold, size);
     }
     if (q?.supplier) draw(q.supplier, cx + 30, bold);
-    y -= size + 2;
-    draw('NAME OF SUPPLIER', marginX + 36, font, size - 1.5, grey);
     y -= size + gapY;
   }
   spacer(2);

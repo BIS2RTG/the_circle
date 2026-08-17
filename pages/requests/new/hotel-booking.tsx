@@ -1035,7 +1035,42 @@ export default function HotelBookingPage() {
         });
         const requestorName = requestor.name || '—';
 
+        // Flag stays whose dates have already passed. Past-dated complimentary
+        // bookings are allowed (they're often captured after the guest has
+        // stayed) but we surface a banner so approvers know it's retrospective.
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+        const hasPastStay = selectedBusinessUnits.some((u) => {
+            const d = u.departureDate || u.arrivalDate;
+            if (!d) return false;
+            const parsed = new Date(d);
+            return !isNaN(parsed.getTime()) && parsed < startOfToday;
+        });
+
         const baseSections: PreviewSection[] = [
+            // Retrospective-stay banner — only shown when a stay date is in the past.
+            ...(hasPastStay ? [{
+                content: (
+                    <div style={{
+                        border: '1px solid #C8A24A',
+                        background: '#FBF3DD',
+                        color: '#6B4E12',
+                        padding: '8px 12px',
+                        fontSize: 11,
+                        fontWeight: 700,
+                        borderRadius: 4,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                    }}>
+                        <span aria-hidden="true">⚠️</span>
+                        <span>
+                            Retrospective booking — this complimentary stay includes dates that have already passed.
+                            The guest has already stayed / the complimentary has already been provided.
+                        </span>
+                    </div>
+                ),
+            }] : []),
             // Main form header section — table layout
             {
                 content: (
@@ -1290,24 +1325,11 @@ export default function HotelBookingPage() {
             errors.push('Please select at least one approver');
         }
 
-        // Validate dates are not in the past
+        // Note: arrival/departure dates are intentionally allowed to be in the
+        // past — complimentary stays are often captured after the guest has
+        // already stayed. A banner on the preview/PDF flags any past-dated stay.
         const todayDate = new Date();
         todayDate.setHours(0, 0, 0, 0);
-        
-        for (const unit of selectedBusinessUnits) {
-            if (unit.arrivalDate) {
-                const arrivalDate = new Date(unit.arrivalDate);
-                if (arrivalDate < todayDate) {
-                    errors.push(`Arrival date for ${unit.name} cannot be in the past`);
-                }
-            }
-            if (unit.departureDate) {
-                const departureDate = new Date(unit.departureDate);
-                if (departureDate < todayDate) {
-                    errors.push(`Departure date for ${unit.name} cannot be in the past`);
-                }
-            }
-        }
 
         // If processTravelDocument is checked, validate travel fields
         if (formData.processTravelDocument) {
@@ -1687,7 +1709,6 @@ export default function HotelBookingPage() {
                                                     value={selectedUnit.arrivalDate}
                                                     onChange={(e) => handleBusinessUnitFieldChange(selectedUnit.instanceId, 'arrivalDate', e.target.value)}
                                                     required
-                                                    min={todayISO}
                                                 />
                                                 <Input
                                                     type="date"
@@ -1695,7 +1716,7 @@ export default function HotelBookingPage() {
                                                     value={selectedUnit.departureDate}
                                                     onChange={(e) => handleBusinessUnitFieldChange(selectedUnit.instanceId, 'departureDate', e.target.value)}
                                                     required
-                                                    min={selectedUnit.arrivalDate || todayISO}
+                                                    min={selectedUnit.arrivalDate || undefined}
                                                 />
                                                 <Input
                                                     type="number"
