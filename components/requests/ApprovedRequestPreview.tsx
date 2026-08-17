@@ -818,6 +818,17 @@ function buildCapexSections(request: any, metadata: any): PreviewSection[] {
     const quotes: any[] = Array.isArray(data.quotations) ? data.quotations : [];
     const preferred = quotes.find((q) => q.isSelectedSupplier);
 
+    // Multiple-suppliers CAPEX: the selected quotations (with their order value)
+    // are shown as a compact table in place of the per-quotation lines.
+    const multiSupplier = !!data.allowMultipleSuppliers;
+    const selectedSuppliers = multiSupplier
+        ? quotes.filter((q) => q.isSelectedSupplier).map((q) => ({
+            supplier: q.supplierName || '',
+            quoteAmount: q.amount || '',
+            orderValue: q.sourcedAmount && String(q.sourcedAmount).trim() ? q.sourcedAmount : (q.amount || ''),
+        }))
+        : [];
+
     const parseNum = (s: any) => parseFloat(String(s ?? '').replace(/[^0-9.-]/g, '')) || 0;
     const fmt = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const isBudgeted = data.budgetType === 'budget';
@@ -841,6 +852,8 @@ function buildCapexSections(request: any, metadata: any): PreviewSection[] {
         irr: data.irr || '',
         evaluation: data.evaluation || '',
         quotations: quotes.map((q) => ({ supplier: q.supplierName || '', amount: q.amount || '' })),
+        multiSupplier,
+        selectedSuppliers,
         preferredSupplier: preferred?.supplierName || '',
         reason: preferred?.selectionReason || data.quotationJustification || '',
         fundingSource: data.fundingSource || '',

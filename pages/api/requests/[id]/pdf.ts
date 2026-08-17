@@ -207,6 +207,16 @@ async function buildCapexPdfForRequest(request: any, requestId: string): Promise
   }));
   const preferred = quotes.find((q) => q.isSelectedSupplier);
 
+  // Multiple-suppliers CAPEX: selected quotations with their order value.
+  const multiSupplier = !!md.allowMultipleSuppliers;
+  const selectedSuppliers = multiSupplier
+    ? quotes.filter((q) => q.isSelectedSupplier).map((q) => ({
+        supplier: q.supplierName || '',
+        quoteAmount: q.amount || '',
+        orderValue: q.sourcedAmount && String(q.sourcedAmount).trim() ? q.sourcedAmount : (q.amount || ''),
+      }))
+    : [];
+
   // Money helpers.
   const parseNum = (s: any) => parseFloat(String(s ?? '').replace(/[^0-9.-]/g, '')) || 0;
   const fmtMoney = (n: number) =>
@@ -241,6 +251,8 @@ async function buildCapexPdfForRequest(request: any, requestId: string): Promise
     irr: md.irr || '',
     evaluation: md.evaluation || '',
     quotations,
+    multiSupplier,
+    selectedSuppliers,
     preferredSupplier: preferred?.supplierName || '',
     reason: preferred?.selectionReason || md.quotationJustification || '',
     fundingSource: md.fundingSource || '',
