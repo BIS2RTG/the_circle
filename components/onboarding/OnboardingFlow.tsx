@@ -4,6 +4,7 @@ import dynamic from 'next/dynamic';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useSession } from 'next-auth/react';
 import { useSuppressToastsWhileOpen } from '../ui/ToastProvider';
+import { isStagingEnvironment } from '../../lib/isStaging';
 
 const SignaturePad = dynamic(() => import('../SignaturePad'), {
   ssr: false,
@@ -86,6 +87,26 @@ export default function OnboardingFlow({ user, needsProfileSetup, hasSignature, 
 
   // Step 3 — signature
   const [signatureSaved, setSignatureSaved] = useState(hasSignature);
+
+  // Staging/legal only: allow the whole wizard to be dismissed. Persisted
+  // server-side (onboardingDismissed) so it never prompts again on any device.
+  // Production keeps onboarding mandatory — the close control never renders.
+  const staging = isStagingEnvironment();
+  const [dismissing, setDismissing] = useState(false);
+  const dismissOnboarding = async () => {
+    setDismissing(true);
+    try {
+      await fetch('/api/user/preferences', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ onboardingDismissed: true }),
+      });
+    } catch {
+      /* best-effort — the localStorage flag set by onComplete still suppresses it here */
+    } finally {
+      onComplete();
+    }
+  };
 
   // Lock body scroll while the overlay is up.
   useEffect(() => {
@@ -442,6 +463,28 @@ export default function OnboardingFlow({ user, needsProfileSetup, hasSignature, 
         transition={{ duration: 0.35, ease: 'easeOut' }}
         className="relative w-full max-w-4xl h-[640px] max-h-[94vh] bg-surface rounded-3xl shadow-2xl ring-1 ring-black/5 flex flex-col overflow-hidden"
       >
+        {/* Staging/legal only: a dismiss control. Never rendered in production,
+            where completing onboarding stays mandatory. */}
+        {staging && (
+          <button
+            type="button"
+            onClick={dismissOnboarding}
+            disabled={dismissing}
+            title="Skip setup (staging only) — you won't be asked again"
+            aria-label="Skip onboarding"
+            className="absolute top-3 right-3 z-10 inline-flex items-center gap-1.5 rounded-full bg-white/80 px-3 py-1.5 text-xs font-medium text-text-secondary shadow-sm ring-1 ring-black/5 backdrop-blur transition-colors hover:bg-white hover:text-text-primary disabled:opacity-50"
+          >
+            {dismissing ? (
+              <Spinner />
+            ) : (
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            )}
+            Skip
+          </button>
+        )}
+
         {/* Stage — visual + body slide together */}
         <div className="relative flex-1 overflow-hidden">
           <AnimatePresence custom={dir} initial={false} mode="popLayout">

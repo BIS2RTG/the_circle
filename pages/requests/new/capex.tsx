@@ -1422,6 +1422,9 @@ export default function NewCapexRequestPage() {
     return isNaN(num) ? 0 : num;
   };
 
+  // Symbol shown in front of amounts for the selected currency.
+  const currencySymbol = (curr?: string) => (curr === 'ZIG' ? 'ZiG' : curr === 'ZAR' ? 'R' : '$');
+
   // ---- Multiple-suppliers helpers -----------------------------------------
   // The quotations the user flagged as selected suppliers (across both the
   // edit-mode existing quotations and the newly-uploaded ones). Used for the
@@ -1988,7 +1991,7 @@ export default function NewCapexRequestPage() {
                     <div>
                       <label className="block text-xs font-medium text-gray-600 mb-1">Quotation Amount</label>
                       <div className="relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{currencySymbol(formData.currency)}</span>
                         <input
                           type="text"
                           inputMode="decimal"
@@ -2028,7 +2031,7 @@ export default function NewCapexRequestPage() {
                         Order Value <span className="text-danger-500">*</span>
                       </label>
                       <div className="relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{currencySymbol(formData.currency)}</span>
                         <input
                           type="text"
                           inputMode="decimal"
@@ -2040,7 +2043,7 @@ export default function NewCapexRequestPage() {
                       </div>
                       <p className="mt-1 text-xs text-gray-500">
                         Value of the items you&apos;re buying from this supplier — this is what&apos;s summed into the Project Cost.
-                        Full quotation total: {formData.currency === 'ZIG' ? 'ZiG' : '$'} {quotation.amount || '0.00'}.
+                        Full quotation total: {currencySymbol(formData.currency)} {quotation.amount || '0.00'}.
                       </p>
                     </div>
                   )}
@@ -2168,7 +2171,7 @@ export default function NewCapexRequestPage() {
                         Quotation Amount <span className="text-danger-500">*</span>
                       </label>
                       <div className="relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{currencySymbol(formData.currency)}</span>
                         <input
                           type="text"
                           inputMode="decimal"
@@ -2212,7 +2215,7 @@ export default function NewCapexRequestPage() {
                         Order Value <span className="text-danger-500">*</span>
                       </label>
                       <div className="relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{currencySymbol(formData.currency)}</span>
                         <input
                           type="text"
                           inputMode="decimal"
@@ -2224,7 +2227,7 @@ export default function NewCapexRequestPage() {
                       </div>
                       <p className="mt-1 text-xs text-gray-500">
                         Value of the items you&apos;re buying from this supplier — this is what&apos;s summed into the Project Cost.
-                        Full quotation total: {formData.currency === 'ZIG' ? 'ZiG' : '$'} {doc.amount || '0.00'}.
+                        Full quotation total: {currencySymbol(formData.currency)} {doc.amount || '0.00'}.
                       </p>
                     </div>
                   )}
@@ -2360,7 +2363,7 @@ export default function NewCapexRequestPage() {
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {selectedSupplierQuotes.map((q, i) => {
-                    const sym = formData.currency === 'ZIG' ? 'ZiG' : '$';
+                    const sym = currencySymbol(formData.currency);
                     const sourcedDisplay = q.sourcedAmount && q.sourcedAmount.trim() ? q.sourcedAmount : (q.quoteAmount || '');
                     return (
                       <tr key={i}>
@@ -2377,7 +2380,7 @@ export default function NewCapexRequestPage() {
                   <tr className="bg-gray-50 font-semibold">
                     <td className="px-4 py-2 text-gray-900" colSpan={2}>Total Project Cost</td>
                     <td className="px-4 py-2 text-right text-gray-900">
-                      {formData.currency === 'ZIG' ? 'ZiG' : '$'} {formatMoneyInput(selectedSuppliersTotal.toFixed(2))}
+                      {currencySymbol(formData.currency)} {formatMoneyInput(selectedSuppliersTotal.toFixed(2))}
                     </td>
                   </tr>
                 </tbody>
@@ -2654,7 +2657,7 @@ export default function NewCapexRequestPage() {
                 Project Cost <span className="text-red-500">*</span>
               </label>
               <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{currencySymbol(formData.currency)}</span>
                 <input
                   type="text"
                   readOnly={allowMultipleSuppliers}
@@ -2682,6 +2685,7 @@ export default function NewCapexRequestPage() {
               >
                 <option value="USD">USD</option>
                 <option value="ZIG">ZIG</option>
+                <option value="ZAR">ZAR</option>
               </select>
             </div>
             {/* Budgeted CAPEX: capture the approved budget line, what's already
@@ -2696,7 +2700,7 @@ export default function NewCapexRequestPage() {
                       Budget Amount <span className="text-red-500">*</span>
                     </label>
                     <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{currencySymbol(formData.currency)}</span>
                       <input
                         type="text"
                         className={`w-full pl-8 pr-4 py-2 min-h-[44px] rounded-xl border bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:border-transparent transition-all ${fieldErrors.budgetAmount ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
@@ -2712,7 +2716,7 @@ export default function NewCapexRequestPage() {
                       Amount Spent <span className="text-red-500">*</span>
                     </label>
                     <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{currencySymbol(formData.currency)}</span>
                       <input
                         type="text"
                         className={`w-full pl-8 pr-4 py-2 min-h-[44px] rounded-xl border bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:border-transparent transition-all ${fieldErrors.amountSpent ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
@@ -2728,7 +2732,7 @@ export default function NewCapexRequestPage() {
                       Balance After Project
                     </label>
                     <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{currencySymbol(formData.currency)}</span>
                       <input
                         type="text"
                         readOnly
@@ -3241,7 +3245,7 @@ export default function NewCapexRequestPage() {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-500">Amount:</span>
-                    <span className="font-medium text-gray-900">{formData.currency === 'ZIG' ? 'ZiG' : '$'}{formData.amount}</span>
+                    <span className="font-medium text-gray-900">{currencySymbol(formData.currency)}{formData.amount}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-500">Approvers:</span>
