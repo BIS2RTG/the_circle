@@ -138,7 +138,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 }
 
-function generateVoucherHtml(request: any): string {
+export function generateVoucherHtml(request: any): string {
   const metadata = request.metadata || {};
   
   // Get the final approval date (when the request was fully approved)
@@ -188,9 +188,14 @@ function generateVoucherHtml(request: any): string {
     ? selectedBusinessUnits.map((u:any) => u.voucherValidityPeriod).filter(Boolean).join(', ')
     : (metadata.numberOfNights || metadata.nights || 'One Night Only');
 
-  // numberOfRooms in the form is actually "number of nights"
-  const numberOfNightsFromUnit = firstUnit.numberOfRooms || '1';
-  
+  // Nights: newer records store numberOfNights; older ones stored nights in the
+  // (misnamed) numberOfRooms field, so fall back to it for backwards compat.
+  const numberOfNightsFromUnit = firstUnit.numberOfNights || firstUnit.numberOfRooms || '1';
+
+  // Rooms: only genuine on newer records (those that carry numberOfNights). On
+  // older records numberOfRooms actually held nights, so we don't show rooms.
+  const numberOfRoomsFromUnit = firstUnit.numberOfNights ? (firstUnit.numberOfRooms || '') : '';
+
   // numberOfPeople - get directly from firstUnit to avoid join issues
   const numberOfPeopleFromUnit = firstUnit.numberOfPeople || '2';
 
@@ -311,13 +316,19 @@ Kind regards`;
     // Use the direct values from firstUnit
     const nightsCount = numberOfNightsFromUnit;
     const guestsCount = numberOfPeopleFromUnit;
+    const roomsCount = numberOfRoomsFromUnit;
     const room = unit.roomType || roomType || 'Double room';
     const mealsCount = unit.numberOfMeals || numberOfMeals || '1';
     const mealGuests = unit.mealPeopleCount || mealPeopleCount || '1';
-    
+
     // Helper for pluralization
     const nightText = parseInt(nightsCount) === 1 ? '1 night' : `${nightsCount} nights`;
     const guestText = parseInt(guestsCount) === 1 ? '1 guest' : `${guestsCount} guests`;
+    // "in a Double room" when 1 (or unknown) room, else "in 3 Double rooms".
+    const roomsNum = parseInt(roomsCount);
+    const roomText = roomsCount && roomsNum > 0
+        ? (roomsNum === 1 ? `a <strong>${room}</strong>` : `<strong>${roomsNum} ${room}s</strong>`)
+        : `a <strong>${room}</strong>`;
     const mealGuestText = parseInt(mealGuests) === 1 ? '1 guest' : `${mealGuests} guests`;
     const mealCountText = parseInt(mealsCount) === 1 ? '1 meal' : `${mealsCount} meals`;
     
@@ -342,34 +353,34 @@ Kind regards`;
     switch (accType) {
       case 'accommodation_only':
         entitlementParts.push(`<strong>${nightText}</strong> of <strong>Accommodation</strong> (bed only)`);
-        entitlementParts.push(`in a <strong>${room}</strong>`);
+        entitlementParts.push(`in ${roomText}`);
         entitlementParts.push(`for <strong>${guestText}</strong>`);
         break;
       case 'accommodation_and_breakfast':
         entitlementParts.push(`<strong>${nightText}</strong> of <strong>Bed & Breakfast</strong>`);
-        entitlementParts.push(`in a <strong>${room}</strong>`);
+        entitlementParts.push(`in ${roomText}`);
         entitlementParts.push(`for <strong>${guestText}</strong>`);
         break;
       case 'dinner_bed_breakfast':
         entitlementParts.push(`<strong>${nightText}</strong> of <strong>Dinner, Bed & Breakfast</strong>`);
-        entitlementParts.push(`in a <strong>${room}</strong>`);
+        entitlementParts.push(`in ${roomText}`);
         entitlementParts.push(`for <strong>${guestText}</strong>`);
         break;
       case 'accommodation_and_meals':
         entitlementParts.push(`<strong>${nightText}</strong> of <strong>Accommodation</strong>`);
-        entitlementParts.push(`in a <strong>${room}</strong>`);
+        entitlementParts.push(`in ${roomText}`);
         entitlementParts.push(`for <strong>${guestText}</strong>`);
         entitlementParts.push(`including <strong>Breakfast, Lunch, and Dinner</strong>`);
         break;
       case 'accommodation_meals_drink':
         entitlementParts.push(`<strong>${nightText}</strong> of <strong>Accommodation</strong>`);
-        entitlementParts.push(`in a <strong>${room}</strong>`);
+        entitlementParts.push(`in ${roomText}`);
         entitlementParts.push(`for <strong>${guestText}</strong>`);
         entitlementParts.push(`including <strong>Meals and a Soft Drink</strong>`);
         break;
       default:
         entitlementParts.push(`<strong>${nightText}</strong> of <strong>${formatAccommodationType(accType)}</strong>`);
-        entitlementParts.push(`in a <strong>${room}</strong>`);
+        entitlementParts.push(`in ${roomText}`);
         entitlementParts.push(`for <strong>${guestText}</strong>`);
     }
     

@@ -11,7 +11,7 @@ import { useRequestorIdentity } from '../../../hooks/useRequestorIdentity';
 import { OnBehalfOfField, type OnBehalfOf } from '../../../components/requests/OnBehalfOfField';
 import { isApproverRowLocked } from '../../../lib/approverLocking';
 import ApproverSectionLoader from '../../../components/requests/ApproverSectionLoader';
-import { Span } from 'next/dist/trace';
+import { buildPreviewForRequest } from '../../../components/requests/ApprovedRequestPreview';
 
 interface SelectedBusinessUnit {
     id: string;
@@ -19,6 +19,7 @@ interface SelectedBusinessUnit {
     bookingMade: boolean;
     voucherValidityPeriod: string;
     numberOfPeople: string;
+    numberOfNights: string;
     numberOfRooms: string;
     accommodationType: string;
     roomType: string;
@@ -286,10 +287,16 @@ export default function VoucherRequestPage() {
                     processTravelDocument: metadata.processTravelDocument || false,
                 });
 
-                // Set business units
+                // Set business units. Normalise older records that predate the
+                // numberOfNights field so the inputs stay controlled.
                 if (metadata.selectedBusinessUnits && Array.isArray(metadata.selectedBusinessUnits)) {
-                    setSelectedBusinessUnits(metadata.selectedBusinessUnits);
-                    setOriginalBusinessUnits(metadata.selectedBusinessUnits);
+                    const normalisedUnits = metadata.selectedBusinessUnits.map((u: any) => ({
+                        numberOfNights: '',
+                        numberOfRooms: '',
+                        ...u,
+                    }));
+                    setSelectedBusinessUnits(normalisedUnits);
+                    setOriginalBusinessUnits(normalisedUnits);
                 }
 
                 // Set travel data if present
@@ -487,6 +494,7 @@ export default function VoucherRequestPage() {
                     bookingMade: false,
                     voucherValidityPeriod: '',
                     numberOfPeople: '',
+                    numberOfNights: '',
                     numberOfRooms: '',
                     accommodationType: 'accommodation_only',
                     roomType: '',
@@ -501,6 +509,7 @@ export default function VoucherRequestPage() {
                 bookingMade: false,
                 voucherValidityPeriod: '',
                 numberOfPeople: '',
+                numberOfNights: '',
                 numberOfRooms: '',
                 accommodationType: 'accommodation_only',
                 roomType: '',
@@ -777,30 +786,89 @@ export default function VoucherRequestPage() {
 
     const [showPreview, setShowPreview] = useState(false);
     const [showConfirm, setShowConfirm] = useState(false);
+    const [previewingVoucher, setPreviewingVoucher] = useState(false);
 
-    const buildPreviewSections = (): PreviewSection[] => [
-        {
-            title: 'Voucher Details',
-            fields: [
-                { label: 'Voucher Number', value: formData.voucherNumber },
-                { label: 'Guest Title', value: formData.guestTitle || '—' },
-                { label: 'Guest First Name', value: formData.guestFirstName || '—' },
-                { label: 'Guest Name(s)', value: formData.guestNames, fullWidth: true },
-                { label: 'Show name on voucher', value: formData.showNameOnVoucher ? 'Yes' : 'No' },
-                { label: 'Allocation', value: formData.allocationType || '—' },
-                { label: 'Discount %', value: formData.percentageDiscount || '—' },
-                { label: 'Reason', value: formData.reason, fullWidth: true },
-                { label: 'Process Travel Document', value: formData.processTravelDocument ? 'Yes' : 'No' },
-            ],
+    // Build a request-shaped object from the current form so the pre-submission
+    // preview is rendered by the SAME builder used on the request [id] page —
+    // guaranteeing the two previews match. Approval steps are synthesised from
+    // the selected approvers so their names show (pending, no signatures yet).
+    const buildPreviewRequestObject = () => ({
+        id: 'preview',
+        title: `Voucher Request: ${formData.guestNames}`,
+        description: formData.reason,
+        status: 'pending',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        creator: {
+            display_name: requestor.name || user?.display_name || session?.user?.name || '',
+            email: user?.email || (session?.user as any)?.email || '',
+            job_title: (user as any)?.job_title || '',
+            department: requestor.department ? { name: requestor.department } : (user as any)?.department,
+            business_unit: requestor.businessUnit ? { name: requestor.businessUnit } : (user as any)?.business_unit,
         },
-        {
-            title: 'Approvers',
-            fields: approvalRoles.map(r => ({
-                label: r.label,
-                value: users.find(u => u.id === selectedApprovers[r.key])?.display_name || 'Not selected',
+        onBehalfProfile: onBehalfOf ? { display_name: onBehalfOf.name, email: (onBehalfOf as any).email } : null,
+        request_steps: approvalRoles
+            .filter(r => selectedApprovers[r.key])
+            .map((r, i) => ({
+                id: `preview-step-${i}`,
+                step_index: i,
+                approver_role: r.label,
+                approver: {
+                    id: selectedApprovers[r.key],
+                    display_name: users.find(u => u.id === selectedApprovers[r.key])?.display_name || '',
+                },
+                approvals: [],
             })),
+        metadata: {
+            type: 'voucher_request',
+            referenceCode: existingReferenceCode || referenceCode || undefined,
+            voucherNumber: formData.voucherNumber,
+            guestNames: formData.guestNames,
+            guestTitle: formData.guestTitle,
+            guestFirstName: formData.guestFirstName,
+            showNameOnVoucher: formData.showNameOnVoucher,
+            isExternalGuest: formData.isExternalGuest,
+            selectedBusinessUnits: selectedBusinessUnits,
+            allocationType: formData.allocationType,
+            percentageDiscount: formData.percentageDiscount,
+            reason: formData.reason,
+            processTravelDocument: formData.processTravelDocument,
+            ...(formData.processTravelDocument && { travelDocument: travelData }),
+            approverRoles: selectedApprovers,
+            watchers: selectedWatchers,
         },
-    ];
+    });
+
+    const requestPreview = () => buildPreviewForRequest(buildPreviewRequestObject());
+
+    // Preview the actual complimentary voucher document. It's rendered by the
+    // same server template used post-approval (/api/requests/voucher-preview),
+    // fed the current form data so it matches the final voucher.
+    const handlePreviewVoucher = async () => {
+        setPreviewingVoucher(true);
+        setError(null);
+        try {
+            const res = await fetch('/api/requests/voucher-preview', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ metadata: buildPreviewRequestObject().metadata }),
+            });
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                throw new Error(data.error || 'Failed to build voucher preview');
+            }
+            const html = await res.text();
+            const blob = new Blob([html], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+            window.open(url, '_blank', 'noopener,noreferrer');
+            // Revoke shortly after the new tab has had time to load the document.
+            setTimeout(() => URL.revokeObjectURL(url), 60000);
+        } catch (err: any) {
+            setError(err.message || 'Failed to build voucher preview');
+        } finally {
+            setPreviewingVoucher(false);
+        }
+    };
 
     const performSubmit = async () => {
         await doSubmit();
@@ -852,6 +920,9 @@ export default function VoucherRequestPage() {
                 }
                 if (!unit.numberOfPeople) {
                     errors.push(`Number of people is required for ${unit.name}`);
+                }
+                if (!unit.numberOfNights) {
+                    errors.push(`Number of nights is required for ${unit.name}`);
                 }
                 if (!unit.numberOfRooms) {
                     errors.push(`Number of rooms is required for ${unit.name}`);
@@ -1486,7 +1557,7 @@ export default function VoucherRequestPage() {
                                                                 </div>
                                                             </div>
 
-                                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
+                                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
                                                                 <div>
                                                                     <label className="block text-sm font-semibold text-gray-700 mb-1 uppercase">Validity Period <span className="text-danger-500">*</span></label>
                                                                     <div className="relative">
@@ -1519,6 +1590,14 @@ export default function VoucherRequestPage() {
                                                                 <Input
                                                                     type="number"
                                                                     label="No. Of Nights *"
+                                                                    value={selectedUnit.numberOfNights}
+                                                                    onChange={(e) => handleBusinessUnitFieldChange(unit.id, 'numberOfNights', e.target.value)}
+                                                                    required
+                                                                    min="1"
+                                                                />
+                                                                <Input
+                                                                    type="number"
+                                                                    label="No. Of Rooms *"
                                                                     value={selectedUnit.numberOfRooms}
                                                                     onChange={(e) => handleBusinessUnitFieldChange(unit.id, 'numberOfRooms', e.target.value)}
                                                                     required
@@ -2027,6 +2106,8 @@ export default function VoucherRequestPage() {
                         ) : (
                             <>
                                 <Button type="button" variant="secondary" className="flex-1" onClick={() => router.back()}>Cancel</Button>
+                                <Button type="button" variant="secondary" className="flex-1 border-primary-300 text-primary-600 hover:bg-primary-50" onClick={() => setShowPreview(true)} disabled={loading || savingDraft}>Preview Request</Button>
+                                <Button type="button" variant="secondary" className="flex-1 border-amber-300 text-amber-700 hover:bg-amber-50" onClick={handlePreviewVoucher} isLoading={previewingVoucher} disabled={loading || savingDraft}>Preview Voucher</Button>
                                 <Button type="button" variant="secondary" className="flex-1 border-primary-300 text-primary-600 hover:bg-primary-50" onClick={handleSaveDraft} isLoading={savingDraft} disabled={loading}>Save as Draft</Button>
                                 <Button type="submit" variant="primary" className="flex-1 shadow-primary-500/25 shadow-lg" isLoading={loading} disabled={savingDraft}>Submit Request</Button>
                             </>
@@ -2035,25 +2116,39 @@ export default function VoucherRequestPage() {
                 </div>
             </form>
 
-            <RequestPreviewModal
-                isOpen={showPreview}
-                onClose={() => setShowPreview(false)}
-                mode="preview"
-                title="Voucher Request"
-                sections={buildPreviewSections()}
-            />
-            <RequestPreviewModal
-                isOpen={showConfirm}
-                onClose={() => setShowConfirm(false)}
-                mode="confirm"
-                title="Voucher Request"
-                sections={buildPreviewSections()}
-                confirming={loading}
-                onConfirm={async () => {
-                    setShowConfirm(false);
-                    await performSubmit();
-                }}
-            />
+            {showPreview && (() => {
+                const doc = requestPreview();
+                return (
+                    <RequestPreviewModal
+                        isOpen={showPreview}
+                        onClose={() => setShowPreview(false)}
+                        mode="preview"
+                        title={doc.title}
+                        subtitle={doc.subtitle}
+                        sections={doc.sections}
+                        documentHeader={doc.documentHeader}
+                    />
+                );
+            })()}
+            {showConfirm && (() => {
+                const doc = requestPreview();
+                return (
+                    <RequestPreviewModal
+                        isOpen={showConfirm}
+                        onClose={() => setShowConfirm(false)}
+                        mode="confirm"
+                        title={doc.title}
+                        subtitle={doc.subtitle}
+                        sections={doc.sections}
+                        documentHeader={doc.documentHeader}
+                        confirming={loading}
+                        onConfirm={async () => {
+                            setShowConfirm(false);
+                            await performSubmit();
+                        }}
+                    />
+                );
+            })()}
             <UnsavedChangesModal
                 isOpen={unsavedPrompt.isOpen}
                 savingDraft={savingDraft}
