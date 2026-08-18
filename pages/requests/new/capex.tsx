@@ -962,8 +962,8 @@ export default function NewCapexRequestPage() {
           const baseApproversForEdit = [
             selectedApprovers.corporate_hod,
             selectedApprovers.finance_manager,
-            selectedApprovers.procurement_manager,
             selectedApprovers.general_manager,
+            selectedApprovers.procurement_manager,
             selectedApprovers.managing_director,
             selectedApprovers.finance_director,
             selectedApprovers.ceo,
@@ -1187,8 +1187,8 @@ export default function NewCapexRequestPage() {
       const baseApprovers = [
         selectedApprovers.corporate_hod,
         selectedApprovers.finance_manager,
-        selectedApprovers.procurement_manager,
         selectedApprovers.general_manager,
+        selectedApprovers.procurement_manager,
         selectedApprovers.managing_director,
         selectedApprovers.finance_director,
         selectedApprovers.ceo,
@@ -1470,8 +1470,8 @@ export default function NewCapexRequestPage() {
       const basePublishApprovers = [
         selectedApprovers.corporate_hod,
         selectedApprovers.finance_manager,
-        selectedApprovers.procurement_manager,
         selectedApprovers.general_manager,
+        selectedApprovers.procurement_manager,
         selectedApprovers.managing_director,
         selectedApprovers.finance_director,
         selectedApprovers.ceo,
