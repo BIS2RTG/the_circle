@@ -97,17 +97,42 @@ export default function AppLayout({
   // signature steps mid-wizard, those flags flip and would unmount the flow
   // before they reach the device / "all set" screens. `null` = undecided.
   const [runOnboarding, setRunOnboarding] = useState<boolean | null>(null);
+  const onboardingDecided = useRef(false);
 
   useEffect(() => {
     if (!shouldOnboard) { setRunOnboarding(false); return; }
-    if (runOnboarding !== null) return;              // already decided this session
+    if (onboardingDecided.current) return;           // already decided this session
     if (userLoading || signatureLoading || !user) return;
+    onboardingDecided.current = true;
 
-    let done = false;
-    try { done = localStorage.getItem(`onboarding:done:${user.id}`) === 'true'; } catch {}
+    let cancelled = false;
+    (async () => {
+      let done = false;
+      try { done = localStorage.getItem(`onboarding:done:${user.id}`) === 'true'; } catch {}
+      if (done) { if (!cancelled) setRunOnboarding(false); return; }
 
-    setRunOnboarding(!done && (needsProfileSetup || !hasSignature));
-  }, [shouldOnboard, runOnboarding, userLoading, signatureLoading, user, needsProfileSetup, hasSignature]);
+      const wants = needsProfileSetup || !hasSignature;
+      if (!wants) { if (!cancelled) setRunOnboarding(false); return; }
+
+      // Onboarding is warranted — but a prior server-side dismissal (the
+      // staging/legal "Skip" affordance) suppresses it across devices. Fail
+      // open (show it) only if the lookup errors.
+      try {
+        const res = await fetch('/api/user/preferences');
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.preferences?.onboardingDismissed) {
+            try { localStorage.setItem(`onboarding:done:${user.id}`, 'true'); } catch {}
+            if (!cancelled) setRunOnboarding(false);
+            return;
+          }
+        }
+      } catch { /* fall through and show onboarding */ }
+
+      if (!cancelled) setRunOnboarding(true);
+    })();
+    return () => { cancelled = true; };
+  }, [shouldOnboard, userLoading, signatureLoading, user, needsProfileSetup, hasSignature]);
 
   const handleOnboardingComplete = async () => {
     try { if (user) localStorage.setItem(`onboarding:done:${user.id}`, 'true'); } catch {}

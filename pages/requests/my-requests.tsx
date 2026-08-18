@@ -4,9 +4,9 @@ import { useEffect, useState } from 'react';
 import { AppLayout } from '../../components/layout';
 import RequestsView from '../../components/requests/RequestsView';
 import ArchiveView from '../../components/requests/ArchiveView';
-import { ListChecks, Archive } from 'lucide-react';
+import { ListChecks, Archive, FilePen } from 'lucide-react';
 
-type MyRequestsTab = 'requests' | 'archives';
+type MyRequestsTab = 'requests' | 'drafts' | 'archives';
 
 /**
  * My Requests — the single hub for everything a user has submitted.
@@ -27,10 +27,11 @@ export default function MyRequestsPage() {
     if (status === 'unauthenticated') router.push('/');
   }, [status, router]);
 
-  // Allow deep-links: /requests/my-requests?tab=archives (also used by the old
-  // /archive and /requests/history redirects).
+  // Allow deep-links: /requests/my-requests?tab=archives|drafts (also used by
+  // the old /archive, /requests/history and /requests/drafts redirects).
   useEffect(() => {
     if (router.query.tab === 'archives') setTab('archives');
+    else if (router.query.tab === 'drafts') setTab('drafts');
     else if (router.query.tab === 'requests') setTab('requests');
   }, [router.query.tab]);
 
@@ -49,7 +50,7 @@ export default function MyRequestsPage() {
   const switchTab = (next: MyRequestsTab) => {
     setTab(next);
     router.replace(
-      { pathname: '/requests/my-requests', query: next === 'archives' ? { tab: 'archives' } : {} },
+      { pathname: '/requests/my-requests', query: next === 'requests' ? {} : { tab: next } },
       undefined,
       { shallow: true }
     );
@@ -69,6 +70,15 @@ export default function MyRequestsPage() {
             Requests
           </button>
           <button
+            onClick={() => switchTab('drafts')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              tab === 'drafts' ? 'bg-white text-brand-600 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            <FilePen className="w-4 h-4" strokeWidth={1.5} />
+            Drafts
+          </button>
+          <button
             onClick={() => switchTab('archives')}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
               tab === 'archives' ? 'bg-white text-brand-600 shadow-sm' : 'text-gray-600 hover:text-gray-900'
@@ -82,6 +92,8 @@ export default function MyRequestsPage() {
 
       {tab === 'requests' ? (
         <RequestsView mode="tracking" />
+      ) : tab === 'drafts' ? (
+        <RequestsView mode="drafts" />
       ) : (
         <div className="p-4 sm:p-6 max-w-6xl mx-auto">
           <ArchiveView />

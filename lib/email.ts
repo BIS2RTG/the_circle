@@ -1,5 +1,6 @@
 import { Resend } from 'resend';
 import { brandedEmailShell } from './emailShell';
+import { graphMailSender } from './graphAppMail';
 
 // Construct the client lazily — `new Resend(undefined)` throws, which would
 // crash any API route that merely imports this module when RESEND_API_KEY is
@@ -26,8 +27,11 @@ export async function sendEmail({ to, subject, html, text }: SendEmailOptions) {
   }
 
   try {
+    // Single canonical sender for every notification, driven by the same env
+    // (GRAPH_MAIL_SENDER, default thecircle@rtg.co.zw) that the service mailbox
+    // uses — so the From is identical no matter which transport delivers.
     const { data, error } = await resend.emails.send({
-      from: process.env.RESEND_FROM_EMAIL || 'The Circle <noreply@rtg.co.zw>',
+      from: process.env.RESEND_FROM_EMAIL || `The Circle <${graphMailSender()}>`,
       to: [to],
       subject,
       html,

@@ -23,6 +23,13 @@ interface DocumentMetadata {
   amount: string;
   isSelectedSupplier: boolean;
   selectionReason: string;
+  /**
+   * In multiple-suppliers mode, the value of the items actually being sourced
+   * from THIS quotation (a subset of the full quotation total in `amount`).
+   * This is the figure summed into the Project Cost. Optional/blank when not in
+   * multi-supplier mode, in which case the full quotation amount is used.
+   */
+  sourcedAmount?: string;
 }
 
 export default function NewCapexRequestPage() {
@@ -75,9 +82,17 @@ export default function NewCapexRequestPage() {
   const [watcherSearch, setWatcherSearch] = useState('');
   const [showWatcherDropdown, setShowWatcherDropdown] = useState(false);
   const [quotationDocuments, setQuotationDocuments] = useState<DocumentMetadata[]>([]);
+  // Multiple-suppliers mode: when on, more than one uploaded quotation can be
+  // flagged as a selected supplier and their amounts sum to the Project Cost.
+  const [allowMultipleSuppliers, setAllowMultipleSuppliers] = useState(false);
   const [quotationJustification, setQuotationJustification] = useState('');
   const [quotationReason, setQuotationReason] = useState<string>('');
   const [supportingDocuments, setSupportingDocuments] = useState<DocumentMetadata[]>([]);
+  // Comparative Analysis — required once 3+ quotations are provided (so it can
+  // compare them). Waived when fewer than 3 quotations were uploaded, since the
+  // requester has already given a reason for the shortfall.
+  const [comparativeAnalysisDocuments, setComparativeAnalysisDocuments] = useState<DocumentMetadata[]>([]);
+  const [existingComparativeAnalysis, setExistingComparativeAnalysis] = useState<any[]>([]);
   const [onBehalfOf, setOnBehalfOf] = useState<OnBehalfOf | null>(null);
 
   // Supplier directory (auto-populated from prior CAPEX requests) powering the
@@ -113,6 +128,11 @@ export default function NewCapexRequestPage() {
   const [originalWatchers, setOriginalWatchers] = useState<Array<{ id: string; addedBy?: { id: string; name: string; isApprover: boolean }; addedAt?: string }>>([]);
   const [existingQuotations, setExistingQuotations] = useState<any[]>([]);
   const [existingSupportingDocs, setExistingSupportingDocs] = useState<any[]>([]);
+  // Actual uploaded files (documents table) loaded in edit mode — used to map a
+  // metadata entry back to its stored document so it can be deleted.
+  const [loadedDocuments, setLoadedDocuments] = useState<Array<{ id: string; filename: string }>>([]);
+  // Document ids the user removed while editing — deleted from storage on save.
+  const [removedDocumentIds, setRemovedDocumentIds] = useState<string[]>([]);
   const [referenceCode, setReferenceCode] = useState<string | null>(null);
   const [existingReferenceCode, setExistingReferenceCode] = useState<string | null>(null);
 
@@ -204,6 +224,63 @@ export default function NewCapexRequestPage() {
     setSupportingDocuments(prev => prev.filter((_, i) => i !== index));
   };
 
+  const handleComparativeAnalysisUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files) {
+      const newDocs: DocumentMetadata[] = Array.from(files).map(file => ({
+        file,
+        description: '',
+        supplierName: '',
+        amount: '',
+        isSelectedSupplier: false,
+        selectionReason: '',
+      }));
+      setComparativeAnalysisDocuments(prev => [...prev, ...newDocs]);
+    }
+  };
+
+  const handleRemoveComparativeAnalysis = (index: number) => {
+    setComparativeAnalysisDocuments(prev => prev.filter((_, i) => i !== index));
+  };
+
+  // ---- Existing (already-uploaded) documents: edit + remove ----
+  // Resolve a metadata entry to its stored document id so it can be deleted on save.
+  const resolveDocumentId = (item: any): string | null =>
+    item?.documentId || loadedDocuments.find(d => d.filename === item?.name)?.id || null;
+
+  const markDocumentRemoved = (item: any) => {
+    const docId = resolveDocumentId(item);
+    if (docId) setRemovedDocumentIds(prev => (prev.includes(docId) ? prev : [...prev, docId]));
+  };
+
+  const handleRemoveExistingQuotation = (index: number) => {
+    setExistingQuotations(prev => {
+      const item = prev[index];
+      if (item) markDocumentRemoved(item);
+      return prev.filter((_, i) => i !== index);
+    });
+  };
+
+  const handleUpdateExistingQuotation = (index: number, field: string, value: string | boolean) => {
+    setExistingQuotations(prev => prev.map((q, i) => (i === index ? { ...q, [field]: value } : q)));
+  };
+
+  const handleRemoveExistingSupportingDoc = (index: number) => {
+    setExistingSupportingDocs(prev => {
+      const item = prev[index];
+      if (item) markDocumentRemoved(item);
+      return prev.filter((_, i) => i !== index);
+    });
+  };
+
+  const handleRemoveExistingComparativeAnalysis = (index: number) => {
+    setExistingComparativeAnalysis(prev => {
+      const item = prev[index];
+      if (item) markDocumentRemoved(item);
+      return prev.filter((_, i) => i !== index);
+    });
+  };
+
   const handleAddWatcher = (userId: string) => {
     if (!selectedWatchers.find(w => w.id === userId)) {
       const newWatcher = {
@@ -272,13 +349,11 @@ export default function NewCapexRequestPage() {
   const handleUpdateQuotationMetadata = (index: number, field: keyof DocumentMetadata, value: string | boolean) => {
     setQuotationDocuments(prev => prev.map((doc, i) => {
       if (i === index) {
-        const updated = { ...doc, [field]: value };
-        if (field === 'isSelectedSupplier' && value === true) {
-          return { ...prev.map((d, j) => j === i ? updated : { ...d, isSelectedSupplier: false })[i] };
-        }
-        return updated;
+        return { ...doc, [field]: value };
       }
-      if (field === 'isSelectedSupplier' && value === true) {
+      // In single-supplier mode selecting one quotation deselects the others.
+      // In multiple-suppliers mode several quotations may be selected at once.
+      if (field === 'isSelectedSupplier' && value === true && !allowMultipleSuppliers) {
         return { ...doc, isSelectedSupplier: false, selectionReason: '' };
       }
       return doc;
@@ -404,17 +479,27 @@ export default function NewCapexRequestPage() {
           setOriginalWatchers(watchersWithMetadata);
         }
 
+        // Multiple-suppliers mode — restore the toggle.
+        const multiSupplierFlag = metadata.allowMultipleSuppliers ?? capexData.allowMultipleSuppliers;
+        if (typeof multiSupplierFlag === 'boolean') {
+          setAllowMultipleSuppliers(multiSupplierFlag);
+        }
+
         // Store existing document metadata (we can't re-upload existing files, but show them)
         // Check both root level and nested capex level for document arrays
         const quotationsData = metadata.quotations || capexData.quotations;
         const supportingDocsData = metadata.supportingDocuments || capexData.supportingDocuments;
+        const comparativeAnalysisData = metadata.comparativeAnalysis || capexData.comparativeAnalysis;
         const justificationData = metadata.quotationJustification || capexData.quotationJustification;
-        
+
         if (quotationsData && Array.isArray(quotationsData)) {
           setExistingQuotations(quotationsData);
         }
         if (supportingDocsData && Array.isArray(supportingDocsData)) {
           setExistingSupportingDocs(supportingDocsData);
+        }
+        if (comparativeAnalysisData && Array.isArray(comparativeAnalysisData)) {
+          setExistingComparativeAnalysis(comparativeAnalysisData);
         }
         if (justificationData) {
           setQuotationJustification(justificationData);
@@ -427,6 +512,11 @@ export default function NewCapexRequestPage() {
         // Also check for documents from the documents table (actual uploaded files)
         // and match them with metadata if metadata is missing
         if (request.documents && Array.isArray(request.documents) && request.documents.length > 0) {
+          // Keep the id↔filename map so an existing metadata entry can be
+          // resolved back to its stored file for deletion when removed.
+          setLoadedDocuments(
+            request.documents.map((doc: any) => ({ id: doc.id, filename: doc.filename }))
+          );
           // If we have documents in the table but no metadata, create metadata from documents
           if (!quotationsData && !supportingDocsData) {
             // All documents without metadata categorization - show them as existing quotations
@@ -668,6 +758,12 @@ export default function NewCapexRequestPage() {
       irr: formData.irr,
       evaluation: formData.evaluation,
       quotations: allQuotes.map(q => ({ supplier: q.supplier, amount: q.amount })),
+      multiSupplier: allowMultipleSuppliers,
+      selectedSuppliers: selectedSupplierQuotes.map(q => ({
+        supplier: q.supplier,
+        quoteAmount: q.quoteAmount,
+        orderValue: q.sourcedAmount && q.sourcedAmount.trim() ? q.sourcedAmount : q.quoteAmount,
+      })),
       preferredSupplier: preferred?.supplier || '',
       reason: preferredReason,
       fundingSource: formData.fundingSource,
@@ -689,6 +785,7 @@ export default function NewCapexRequestPage() {
     if (!formData.projectName) errs.push({ field: 'projectName', message: 'Project Name / Description is required.' });
     if (!formData.justification) errs.push({ field: 'justification', message: 'Business Justification is required.' });
     if (!formData.amount) errs.push({ field: 'amount', message: 'Project Cost is required.' });
+    if (!formData.fundingSource) errs.push({ field: 'fundingSource', message: 'Project Funded By is required.' });
     if (isBudgetedCapex && !formData.budgetAmount) errs.push({ field: 'budgetAmount', message: 'Budget Amount is required for a budgeted CAPEX.' });
     if (isBudgetedCapex && !formData.amountSpent) errs.push({ field: 'amountSpent', message: 'Amount Spent is required for a budgeted CAPEX.' });
 
@@ -697,6 +794,18 @@ export default function NewCapexRequestPage() {
     if (!isApproverEditing) {
       const selectedApproverCount = approvalRoles.filter(r => selectedApprovers[r.key]).length;
       if (selectedApproverCount < 1) errs.push({ field: 'approvers', message: 'Select at least one approver.' });
+    }
+
+    // Multiple-suppliers mode: at least two quotations must be flagged as
+    // selected suppliers (that's the whole point of the mode), and each must say
+    // how much is being sourced from it.
+    if (allowMultipleSuppliers) {
+      if (selectedSupplierQuotes.length < 2) {
+        errs.push({ field: 'quotations', message: 'Select at least two suppliers when "multiple suppliers" is enabled.' });
+      }
+      if (selectedSupplierQuotes.some(q => !(q.sourcedAmount && q.sourcedAmount.trim()))) {
+        errs.push({ field: 'quotations', message: 'Enter the amount to source from each selected supplier\'s quotation.' });
+      }
     }
 
     // Quotations: require at least 1; if fewer than 3, require a reason.
@@ -722,6 +831,14 @@ export default function NewCapexRequestPage() {
           errs.push({ field: 'quotationReason', message: 'Selecting "Other" requires the Chief Operating Officer to pre-approve.' });
         }
       }
+    }
+
+    // Comparative Analysis is required once 3+ quotations are present (it
+    // compares them). With fewer than 3, the requester already justified the
+    // shortfall above, so it is not required.
+    const totalComparativeAnalysis = existingComparativeAnalysis.length + comparativeAnalysisDocuments.length;
+    if (totalQuotations >= 3 && totalComparativeAnalysis < 1) {
+      errs.push({ field: 'comparativeAnalysis', message: 'Upload a Comparative Analysis (required when 3 or more quotations are provided).' });
     }
 
     return errs;
@@ -901,6 +1018,7 @@ export default function NewCapexRequestPage() {
               startDate: formData.startDate,
               endDate: formData.endDate,
               priority: formData.priority,
+              allowMultipleSuppliers,
               approvers: approversArray,
               approverRoles: selectedApprovers,
               useParallelApprovals: useParallelApprovals,
@@ -914,6 +1032,7 @@ export default function NewCapexRequestPage() {
                   description: doc.description,
                   supplierName: doc.supplierName,
                   amount: doc.amount,
+                  sourcedAmount: doc.sourcedAmount || '',
                   isSelectedSupplier: doc.isSelectedSupplier,
                   selectionReason: doc.selectionReason,
                   uploadedBy: {
@@ -927,6 +1046,21 @@ export default function NewCapexRequestPage() {
               supportingDocuments: [
                 ...(Array.isArray(existingSupportingDocs) ? existingSupportingDocs : []),
                 ...supportingDocuments.map(doc => ({
+                  name: doc.file.name,
+                  size: doc.file.size,
+                  type: doc.file.type,
+                  description: doc.description,
+                  uploadedBy: {
+                    id: user?.id || session?.user?.id,
+                    name: user?.display_name || session?.user?.name || 'Unknown',
+                    isApprover: isApproverEditing,
+                  },
+                  uploadedAt: new Date().toISOString(),
+                })),
+              ],
+              comparativeAnalysis: [
+                ...(Array.isArray(existingComparativeAnalysis) ? existingComparativeAnalysis : []),
+                ...comparativeAnalysisDocuments.map(doc => ({
                   name: doc.file.name,
                   size: doc.file.size,
                   type: doc.file.type,
@@ -966,6 +1100,15 @@ export default function NewCapexRequestPage() {
           }
         }
 
+        // Delete any documents the user removed while editing (best-effort).
+        for (const docId of removedDocumentIds) {
+          try {
+            await fetch(`/api/requests/${editRequestId}/documents?documentId=${docId}`, { method: 'DELETE' });
+          } catch (delErr) {
+            console.error(`Failed to delete removed document ${docId}:`, delErr);
+          }
+        }
+
         // Upload any new documents
         if (quotationDocuments.length > 0) {
           for (const doc of quotationDocuments) {
@@ -992,6 +1135,31 @@ export default function NewCapexRequestPage() {
           }
         }
 
+        if (comparativeAnalysisDocuments.length > 0) {
+          for (const doc of comparativeAnalysisDocuments) {
+            const uploadFormData = new FormData();
+            uploadFormData.append('file', doc.file);
+            uploadFormData.append('documentType', 'comparative_analysis');
+
+            try {
+              const endpoint = isApproverEditing
+                ? `/api/requests/${editRequestId}/approver-documents`
+                : `/api/requests/${editRequestId}/documents`;
+
+              const uploadResponse = await fetch(endpoint, {
+                method: 'POST',
+                body: uploadFormData,
+              });
+
+              if (!uploadResponse.ok) {
+                console.error(`Failed to upload comparative analysis: ${doc.file.name}`);
+              }
+            } catch (uploadErr) {
+              console.error(`Error uploading comparative analysis ${doc.file.name}:`, uploadErr);
+            }
+          }
+        }
+
         if (supportingDocuments.length > 0) {
           for (const doc of supportingDocuments) {
             const uploadFormData = new FormData();
@@ -999,10 +1167,10 @@ export default function NewCapexRequestPage() {
             uploadFormData.append('documentType', 'supporting');
 
             try {
-              const endpoint = isApproverEditing 
+              const endpoint = isApproverEditing
                 ? `/api/requests/${editRequestId}/approver-documents`
                 : `/api/requests/${editRequestId}/documents`;
-              
+
               const uploadResponse = await fetch(endpoint, {
                 method: 'POST',
                 body: uploadFormData,
@@ -1083,6 +1251,7 @@ export default function NewCapexRequestPage() {
             startDate: formData.startDate,
             endDate: formData.endDate,
             priority: formData.priority,
+            allowMultipleSuppliers,
             approvers: approversArray, // Sequential array of approver IDs
             approverRoles: selectedApprovers, // Keep original object for reference
             useParallelApprovals: useParallelApprovals, // Parallel or sequential approval mode
@@ -1095,6 +1264,7 @@ export default function NewCapexRequestPage() {
               description: doc.description,
               supplierName: doc.supplierName,
               amount: doc.amount,
+              sourcedAmount: doc.sourcedAmount || '',
               isSelectedSupplier: doc.isSelectedSupplier,
               selectionReason: doc.selectionReason,
               uploadedBy: {
@@ -1105,6 +1275,18 @@ export default function NewCapexRequestPage() {
               uploadedAt: new Date().toISOString(),
             })),
             supportingDocuments: supportingDocuments.map(doc => ({
+              name: doc.file.name,
+              size: doc.file.size,
+              type: doc.file.type,
+              description: doc.description,
+              uploadedBy: {
+                id: user?.id || session?.user?.id,
+                name: user?.display_name || session?.user?.name || 'Unknown',
+                isApprover: false,
+              },
+              uploadedAt: new Date().toISOString(),
+            })),
+            comparativeAnalysis: comparativeAnalysisDocuments.map(doc => ({
               name: doc.file.name,
               size: doc.file.size,
               type: doc.file.type,
@@ -1150,6 +1332,28 @@ export default function NewCapexRequestPage() {
             }
           } catch (uploadErr) {
             console.error(`Error uploading quotation ${doc.file.name}:`, uploadErr);
+          }
+        }
+      }
+
+      // Upload comparative analysis documents
+      if (requestId && comparativeAnalysisDocuments.length > 0) {
+        for (const doc of comparativeAnalysisDocuments) {
+          const uploadFormData = new FormData();
+          uploadFormData.append('file', doc.file);
+          uploadFormData.append('documentType', 'comparative_analysis');
+
+          try {
+            const uploadResponse = await fetch(`/api/requests/${requestId}/documents`, {
+              method: 'POST',
+              body: uploadFormData,
+            });
+
+            if (!uploadResponse.ok) {
+              console.error(`Failed to upload comparative analysis: ${doc.file.name}`);
+            }
+          } catch (uploadErr) {
+            console.error(`Error uploading comparative analysis ${doc.file.name}:`, uploadErr);
           }
         }
       }
@@ -1217,6 +1421,37 @@ export default function NewCapexRequestPage() {
     const num = parseFloat((value || '').replace(/[^0-9.]/g, ''));
     return isNaN(num) ? 0 : num;
   };
+
+  // Symbol shown in front of amounts for the selected currency.
+  const currencySymbol = (curr?: string) => (curr === 'ZIG' ? 'ZiG' : curr === 'ZAR' ? 'R' : '$');
+
+  // ---- Multiple-suppliers helpers -----------------------------------------
+  // The quotations the user flagged as selected suppliers (across both the
+  // edit-mode existing quotations and the newly-uploaded ones). Used for the
+  // read-only summary and to auto-total the Project Cost in multi mode.
+  // `quoteAmount` is the full quotation total; `sourcedAmount` is the value of
+  // the items actually being bought from that quotation. When a sourced amount
+  // isn't given we fall back to the full quotation total.
+  const selectedSupplierQuotes: Array<{ supplier: string; description: string; quoteAmount: string; sourcedAmount: string }> = [
+    ...(Array.isArray(existingQuotations) ? existingQuotations : [])
+      .filter((q: any) => q.isSelectedSupplier)
+      .map((q: any) => ({ supplier: q.supplierName || '', description: q.description || '', quoteAmount: q.amount || '', sourcedAmount: q.sourcedAmount || '' })),
+    ...quotationDocuments
+      .filter(d => d.isSelectedSupplier)
+      .map(d => ({ supplier: d.supplierName || '', description: d.description || '', quoteAmount: d.amount || '', sourcedAmount: d.sourcedAmount || '' })),
+  ];
+  const sourcedValueOf = (q: { quoteAmount: string; sourcedAmount: string }) =>
+    q.sourcedAmount && q.sourcedAmount.trim() ? parseCurrency(q.sourcedAmount) : parseCurrency(q.quoteAmount);
+  const selectedSuppliersTotal = selectedSupplierQuotes.reduce((sum, q) => sum + sourcedValueOf(q), 0);
+
+  // Keep the Project Cost in step with the selected suppliers while multi mode
+  // is on. The field is read-only in this mode, so it always mirrors the sum of
+  // the selected quotations' amounts.
+  useEffect(() => {
+    if (!allowMultipleSuppliers) return;
+    setFormData(prev => ({ ...prev, amount: formatMoneyInput(selectedSuppliersTotal.toFixed(2)) }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allowMultipleSuppliers, selectedSuppliersTotal]);
 
   // Budgeted CAPEX only: balance remaining once this project's cost is drawn
   // down against the approved budget line = budget − already spent − this project.
@@ -1304,6 +1539,7 @@ export default function NewCapexRequestPage() {
             startDate: formData.startDate,
             endDate: formData.endDate,
             priority: formData.priority,
+            allowMultipleSuppliers,
             approvers: approversArray,
             approverRoles: selectedApprovers,
             useParallelApprovals: useParallelApprovals,
@@ -1317,6 +1553,7 @@ export default function NewCapexRequestPage() {
                 description: doc.description,
                 supplierName: doc.supplierName,
                 amount: doc.amount,
+                sourcedAmount: doc.sourcedAmount || '',
                 isSelectedSupplier: doc.isSelectedSupplier,
                 selectionReason: doc.selectionReason,
                 uploadedBy: {
@@ -1342,6 +1579,21 @@ export default function NewCapexRequestPage() {
                 uploadedAt: new Date().toISOString(),
               })),
             ],
+            comparativeAnalysis: [
+              ...existingComparativeAnalysis,
+              ...comparativeAnalysisDocuments.map(doc => ({
+                name: doc.file.name,
+                size: doc.file.size,
+                type: doc.file.type,
+                description: doc.description,
+                uploadedBy: {
+                  id: user?.id || session?.user?.id,
+                  name: user?.display_name || session?.user?.name || 'Unknown',
+                  isApprover: false,
+                },
+                uploadedAt: new Date().toISOString(),
+              })),
+            ],
             quotationJustification: quotationJustification || null,
             quotationReason: quotationReason || null,
             cooApprovalRequired: requiresMdApproval,
@@ -1355,12 +1607,33 @@ export default function NewCapexRequestPage() {
         throw new Error(errorData.error || 'Failed to save changes before publishing');
       }
 
+      // Delete any documents the user removed while editing (best-effort).
+      for (const docId of removedDocumentIds) {
+        try {
+          await fetch(`/api/requests/${editRequestId}/documents?documentId=${docId}`, { method: 'DELETE' });
+        } catch (delErr) {
+          console.error(`Failed to delete removed document ${docId}:`, delErr);
+        }
+      }
+
       // Upload any new documents
       if (quotationDocuments.length > 0) {
         for (const doc of quotationDocuments) {
           const uploadFormData = new FormData();
           uploadFormData.append('file', doc.file);
           uploadFormData.append('documentType', 'quotation');
+          await fetch(`/api/requests/${editRequestId}/documents`, {
+            method: 'POST',
+            body: uploadFormData,
+          });
+        }
+      }
+
+      if (comparativeAnalysisDocuments.length > 0) {
+        for (const doc of comparativeAnalysisDocuments) {
+          const uploadFormData = new FormData();
+          uploadFormData.append('file', doc.file);
+          uploadFormData.append('documentType', 'comparative_analysis');
           await fetch(`/api/requests/${editRequestId}/documents`, {
             method: 'POST',
             body: uploadFormData,
@@ -1633,156 +1906,6 @@ export default function NewCapexRequestPage() {
           </div>
         </Card>
 
-        {/* Financials */}
-        <Card>
-          <h3 className="font-semibold text-text-primary mb-4 flex items-center gap-2 text-lg">
-            <svg className="w-5 h-5 text-success-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            Financial Analysis
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div data-field="amount">
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Project Cost <span className="text-red-500">*</span>
-              </label>
-              <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
-                <input
-                  type="text"
-                  className={`w-full pl-8 pr-4 py-2 min-h-[44px] rounded-xl border bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:border-transparent transition-all ${fieldErrors.amount ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
-                  placeholder="0.00"
-                  value={formData.amount}
-                  onChange={(e) => { setFormData({ ...formData, amount: formatCurrency(e.target.value) }); clearFieldError('amount'); }}
-                  required
-                />
-              </div>
-              {fieldErrors.amount && <p className="mt-1 text-sm text-red-500">{fieldErrors.amount}</p>}
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Currency
-              </label>
-              <select
-                className="w-full px-4 py-2 min-h-[44px] rounded-xl border border-gray-300 bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
-                value={formData.currency}
-                onChange={(e) => setFormData({ ...formData, currency: e.target.value })}
-              >
-                <option value="USD">USD</option>
-                <option value="ZIG">ZIG</option>
-              </select>
-            </div>
-            {/* Budgeted CAPEX: capture the approved budget line, what's already
-                been spent against it, and the balance remaining once this
-                project is drawn down. Only shown when Budget Type = Budgeted. */}
-            {isBudgetedCapex && (
-              <div className="md:col-span-2 rounded-xl border border-primary-100 bg-primary-50/40 p-4">
-                <p className="text-sm font-medium text-primary-800 mb-3">Budget Utilisation</p>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div data-field="budgetAmount">
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Budget Amount <span className="text-red-500">*</span>
-                    </label>
-                    <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
-                      <input
-                        type="text"
-                        className={`w-full pl-8 pr-4 py-2 min-h-[44px] rounded-xl border bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:border-transparent transition-all ${fieldErrors.budgetAmount ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
-                        placeholder="0.00"
-                        value={formData.budgetAmount}
-                        onChange={(e) => { setFormData({ ...formData, budgetAmount: formatCurrency(e.target.value) }); clearFieldError('budgetAmount'); }}
-                      />
-                    </div>
-                    {fieldErrors.budgetAmount && <p className="mt-1 text-sm text-red-500">{fieldErrors.budgetAmount}</p>}
-                  </div>
-                  <div data-field="amountSpent">
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Amount Spent <span className="text-red-500">*</span>
-                    </label>
-                    <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
-                      <input
-                        type="text"
-                        className={`w-full pl-8 pr-4 py-2 min-h-[44px] rounded-xl border bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:border-transparent transition-all ${fieldErrors.amountSpent ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
-                        placeholder="0.00"
-                        value={formData.amountSpent}
-                        onChange={(e) => { setFormData({ ...formData, amountSpent: formatCurrency(e.target.value) }); clearFieldError('amountSpent'); }}
-                      />
-                    </div>
-                    {fieldErrors.amountSpent && <p className="mt-1 text-sm text-red-500">{fieldErrors.amountSpent}</p>}
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Balance After Project
-                    </label>
-                    <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
-                      <input
-                        type="text"
-                        readOnly
-                        className={`w-full pl-8 pr-4 py-2 min-h-[44px] rounded-xl border bg-gray-50 cursor-not-allowed focus:outline-none transition-all ${budgetBalanceAfterProject < 0 ? 'border-red-300 text-red-600' : 'border-gray-300 text-gray-900'}`}
-                        value={budgetBalanceDisplay}
-                        tabIndex={-1}
-                      />
-                    </div>
-                    <p className="text-xs text-gray-500 mt-1">Budget − Spent − Project Cost</p>
-                  </div>
-                </div>
-                {budgetBalanceAfterProject < 0 && (
-                  <p className="text-xs text-red-600 mt-2">This project exceeds the remaining budget.</p>
-                )}
-              </div>
-            )}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Payback Period
-              </label>
-              <select
-                className="w-full px-4 py-2 min-h-[44px] rounded-xl border border-gray-300 bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
-                value={formData.paybackPeriod}
-                onChange={(e) => setFormData({ ...formData, paybackPeriod: e.target.value })}
-              >
-                <option value="">Select period</option>
-                <option value="<6m">Less than 6 months</option>
-                <option value="6-12m">6-12 months</option>
-                <option value="1-2y">1-2 years</option>
-                <option value="2-3y">2-3 years</option>
-                <option value=">3y">More than 3 years</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                NPV (Net Present Value)
-              </label>
-              <Input
-                placeholder="e.g. 50000"
-                value={formData.npv}
-                onChange={(e) => setFormData({ ...formData, npv: e.target.value })}
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                IRR (Internal Rate of Return)
-              </label>
-              <Input
-                placeholder="e.g. 15%"
-                value={formData.irr}
-                onChange={(e) => setFormData({ ...formData, irr: e.target.value })}
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Evaluation
-              </label>
-              <Input
-                placeholder="e.g. for cost reduction"
-                value={formData.evaluation}
-                onChange={(e) => setFormData({ ...formData, evaluation: e.target.value })}
-              />
-            </div>
-          </div>
-        </Card>
-
         {/* Quotations Section - Required */}
         <Card data-field="quotations">
           <h3 className="font-semibold text-text-primary mb-3 flex items-center gap-2 text-lg">
@@ -1800,18 +1923,38 @@ export default function NewCapexRequestPage() {
               ? 'You can upload additional quotations if needed.'
               : 'The standard is 3 quotations from different suppliers, but you may upload more. Each quotation should include supplier details.'}
           </p>
+
+          {/* Multiple-suppliers toggle — when on, more than one quotation can be
+              marked as a selected supplier and their amounts are summed into the
+              Project Cost (which then becomes read-only). */}
+          <label className="flex items-start gap-3 mb-4 p-3 rounded-xl border border-gray-200 bg-gray-50 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-0.5 w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+              checked={allowMultipleSuppliers}
+              onChange={(e) => { setAllowMultipleSuppliers(e.target.checked); setIsDirty(true); }}
+            />
+            <span>
+              <span className="block text-sm font-medium text-gray-800">Select multiple suppliers for this CAPEX</span>
+              <span className="block text-xs text-gray-500 mt-0.5">
+                Turn this on when the CAPEX is sourced from more than one supplier. Tick each supplier&apos;s quotation below —
+                their amounts are added up and auto-populated into the total Project Cost.
+              </span>
+            </span>
+          </label>
+
           {(fieldErrors.quotations || fieldErrors.quotationReason) && (
             <div className="mb-4 p-3 rounded-xl bg-red-50 border border-red-200 text-sm text-red-600">
               {fieldErrors.quotations || fieldErrors.quotationReason}
             </div>
           )}
 
-          {/* Existing Quotations (in edit mode) */}
+          {/* Existing Quotations (in edit mode) — editable + removable */}
           {isEditMode && existingQuotations.length > 0 && (
             <div className="mb-4 space-y-3">
               <h4 className="text-sm font-medium text-gray-700">Existing Quotations:</h4>
               {existingQuotations.map((quotation: any, index: number) => (
-                <div key={index} className={`p-4 rounded-xl border transition-all ${quotation.isSelectedSupplier ? 'bg-emerald-50 border-emerald-200' : 'bg-gray-50 border-gray-200'}`}>
+                <div key={index} className={`p-4 rounded-xl border transition-all space-y-4 ${quotation.isSelectedSupplier ? 'bg-emerald-50 border-emerald-200' : 'bg-gray-50 border-gray-200'}`}>
                   <div className="flex items-start gap-3">
                     <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${quotation.isSelectedSupplier ? 'bg-emerald-100' : 'bg-gray-100'}`}>
                       <svg className={`w-5 h-5 ${quotation.isSelectedSupplier ? 'text-emerald-600' : 'text-gray-500'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1819,25 +1962,104 @@ export default function NewCapexRequestPage() {
                       </svg>
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <p className="font-medium text-gray-900 text-sm">{quotation.name}</p>
-                        {quotation.isSelectedSupplier && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">
-                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 13l4 4L19 7" />
-                            </svg>
-                            Selected Supplier
-                          </span>
-                        )}
+                      <p className="font-medium text-gray-900 text-sm truncate">{quotation.name}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveExistingQuotation(index)}
+                      className="flex-shrink-0 p-1.5 rounded-lg hover:bg-danger-50 text-gray-400 hover:text-danger-500 transition-colors"
+                      title="Remove quotation"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Supplier Name</label>
+                      <input
+                        type="text"
+                        autoComplete="off"
+                        className="w-full px-3 py-2 text-sm rounded-lg border border-gray-300 bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                        placeholder="e.g., ABC Suppliers Ltd"
+                        value={quotation.supplierName || ''}
+                        onChange={(e) => handleUpdateExistingQuotation(index, 'supplierName', e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Quotation Amount</label>
+                      <div className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{currencySymbol(formData.currency)}</span>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          className="w-full pl-7 pr-3 py-2 text-sm rounded-lg border border-gray-300 bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                          placeholder="0.00"
+                          value={quotation.amount || ''}
+                          onChange={(e) => handleUpdateExistingQuotation(index, 'amount', formatCurrency(e.target.value))}
+                        />
                       </div>
-                      {quotation.supplierName && (
-                        <p className="text-xs text-gray-500 mt-1">Supplier: {quotation.supplierName}</p>
-                      )}
-                      {quotation.description && (
-                        <p className="text-xs text-gray-400 mt-0.5">{quotation.description}</p>
-                      )}
                     </div>
                   </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Quotation Description</label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-2 text-sm rounded-lg border border-gray-300 bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                      placeholder="e.g., Quotation for office equipment"
+                      value={quotation.description || ''}
+                      onChange={(e) => handleUpdateExistingQuotation(index, 'description', e.target.value)}
+                    />
+                  </div>
+
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                      checked={!!quotation.isSelectedSupplier}
+                      onChange={(e) => handleUpdateExistingQuotation(index, 'isSelectedSupplier', e.target.checked)}
+                    />
+                    <span className="text-sm font-medium text-gray-700">{allowMultipleSuppliers ? 'Include this supplier in the CAPEX' : 'This is the selected supplier'}</span>
+                  </label>
+
+                  {quotation.isSelectedSupplier && allowMultipleSuppliers && (
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">
+                        Order Value <span className="text-danger-500">*</span>
+                      </label>
+                      <div className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{currencySymbol(formData.currency)}</span>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          className="w-full pl-7 pr-3 py-2 text-sm rounded-lg border border-gray-300 bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                          placeholder="0.00"
+                          value={quotation.sourcedAmount || ''}
+                          onChange={(e) => handleUpdateExistingQuotation(index, 'sourcedAmount', formatCurrency(e.target.value))}
+                        />
+                      </div>
+                      <p className="mt-1 text-xs text-gray-500">
+                        Value of the items you&apos;re buying from this supplier — this is what&apos;s summed into the Project Cost.
+                        Full quotation total: {currencySymbol(formData.currency)} {quotation.amount || '0.00'}.
+                      </p>
+                    </div>
+                  )}
+
+                  {quotation.isSelectedSupplier && (
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Why was this supplier selected?</label>
+                      <textarea
+                        className="w-full px-3 py-2 text-sm rounded-lg border border-gray-300 bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-none transition-all"
+                        placeholder="Explain why this supplier was chosen over others..."
+                        rows={2}
+                        value={quotation.selectionReason || ''}
+                        onChange={(e) => handleUpdateExistingQuotation(index, 'selectionReason', e.target.value)}
+                      />
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -1949,7 +2171,7 @@ export default function NewCapexRequestPage() {
                         Quotation Amount <span className="text-danger-500">*</span>
                       </label>
                       <div className="relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{currencySymbol(formData.currency)}</span>
                         <input
                           type="text"
                           inputMode="decimal"
@@ -1983,9 +2205,32 @@ export default function NewCapexRequestPage() {
                         checked={doc.isSelectedSupplier}
                         onChange={(e) => handleUpdateQuotationMetadata(index, 'isSelectedSupplier', e.target.checked)}
                       />
-                      <span className="text-sm font-medium text-gray-700">This is the selected supplier</span>
+                      <span className="text-sm font-medium text-gray-700">{allowMultipleSuppliers ? 'Include this supplier in the CAPEX' : 'This is the selected supplier'}</span>
                     </label>
                   </div>
+
+                  {doc.isSelectedSupplier && allowMultipleSuppliers && (
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">
+                        Order Value <span className="text-danger-500">*</span>
+                      </label>
+                      <div className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{currencySymbol(formData.currency)}</span>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          className="w-full pl-7 pr-3 py-2 text-sm rounded-lg border border-gray-300 bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                          placeholder="0.00"
+                          value={doc.sourcedAmount || ''}
+                          onChange={(e) => handleUpdateQuotationMetadata(index, 'sourcedAmount', formatCurrency(e.target.value))}
+                        />
+                      </div>
+                      <p className="mt-1 text-xs text-gray-500">
+                        Value of the items you&apos;re buying from this supplier — this is what&apos;s summed into the Project Cost.
+                        Full quotation total: {currencySymbol(formData.currency)} {doc.amount || '0.00'}.
+                      </p>
+                    </div>
+                  )}
 
                   {doc.isSelectedSupplier && (
                     <div>
@@ -2091,6 +2336,191 @@ export default function NewCapexRequestPage() {
           )}
         </Card>
 
+        {/* Selected Suppliers Summary — read-only recap of the quotations flagged
+            as selected suppliers, shown only in multiple-suppliers mode. This is a
+            form-only helper; it is intentionally NOT included in the preview/PDF. */}
+        {allowMultipleSuppliers && selectedSupplierQuotes.length > 0 && (
+          <Card>
+            <h3 className="font-semibold text-text-primary mb-1 flex items-center gap-2 text-lg">
+              <svg className="w-5 h-5 text-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+              </svg>
+              Selected Suppliers Summary
+              <span className="ml-2 px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded-full">Read-only</span>
+            </h3>
+            <p className="text-sm text-gray-600 mb-4">
+              A summary of the suppliers you selected from the quotations above. The <span className="font-medium">order value</span> from
+              each quotation (not the full quotation total) adds up to the total Project Cost.
+            </p>
+            <div className="overflow-x-auto rounded-xl border border-gray-200">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    <th className="px-4 py-2">Supplier</th>
+                    <th className="px-4 py-2 text-right">Quotation Total</th>
+                    <th className="px-4 py-2 text-right">Order Value</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {selectedSupplierQuotes.map((q, i) => {
+                    const sym = currencySymbol(formData.currency);
+                    const sourcedDisplay = q.sourcedAmount && q.sourcedAmount.trim() ? q.sourcedAmount : (q.quoteAmount || '');
+                    return (
+                      <tr key={i}>
+                        <td className="px-4 py-2 text-gray-900">{q.supplier || '—'}</td>
+                        <td className="px-4 py-2 text-right text-gray-500">
+                          {q.quoteAmount ? `${sym} ${q.quoteAmount}` : '—'}
+                        </td>
+                        <td className="px-4 py-2 text-right font-medium text-gray-900">
+                          {sourcedDisplay ? `${sym} ${sourcedDisplay}` : '—'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  <tr className="bg-gray-50 font-semibold">
+                    <td className="px-4 py-2 text-gray-900" colSpan={2}>Total Project Cost</td>
+                    <td className="px-4 py-2 text-right text-gray-900">
+                      {currencySymbol(formData.currency)} {formatMoneyInput(selectedSuppliersTotal.toFixed(2))}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
+
+        {/* Comparative Analysis Section — required once 3+ quotations exist */}
+        {(() => {
+          const totalQuotationsCA = existingQuotations.length + quotationDocuments.length;
+          const caRequired = totalQuotationsCA >= 3;
+          const caCount = existingComparativeAnalysis.length + comparativeAnalysisDocuments.length;
+          return (
+        <Card data-field="comparativeAnalysis">
+          <h3 className="font-semibold text-text-primary mb-3 flex items-center gap-2 text-lg">
+            <svg className={`w-5 h-5 ${caRequired ? 'text-danger-500' : 'text-gray-500'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2" />
+            </svg>
+            Comparative Analysis
+            {caRequired
+              ? <span className="ml-2 px-2 py-0.5 text-xs font-medium bg-danger-100 text-danger-700 rounded-full">Required</span>
+              : <span className="ml-2 px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded-full">Optional</span>}
+            {caCount > 0 && (
+              <span className="ml-auto text-sm font-normal text-gray-500">({caCount} uploaded)</span>
+            )}
+          </h3>
+          <p className="text-sm text-gray-600 mb-4">
+            {caRequired
+              ? 'A comparative analysis of the quotations is required. Upload the document comparing the suppliers you obtained quotations from.'
+              : 'A comparative analysis is required once 3 or more quotations are provided. Because you have uploaded fewer than 3 (and given a reason above), it is optional here.'}
+          </p>
+
+          {fieldErrors.comparativeAnalysis && (
+            <div className="mb-4 p-3 rounded-xl bg-red-50 border border-red-200 text-sm text-red-600">
+              {fieldErrors.comparativeAnalysis}
+            </div>
+          )}
+
+          {/* Existing Comparative Analysis (in edit mode) */}
+          {isEditMode && existingComparativeAnalysis.length > 0 && (
+            <div className="mb-4 space-y-3">
+              <h4 className="text-sm font-medium text-gray-700">Existing Comparative Analysis:</h4>
+              {existingComparativeAnalysis.map((doc: any, index: number) => (
+                <div key={index} className="p-4 rounded-xl border transition-all bg-[#F3EADC] border-[#C9B896]">
+                  <div className="flex items-start gap-3">
+                    <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 bg-[#F3EADC]">
+                      <svg className="w-5 h-5 text-[#9A7545]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2" />
+                      </svg>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-gray-900 text-sm">{doc.name}</p>
+                      {doc.description && (
+                        <p className="text-xs text-gray-500 mt-1">{doc.description}</p>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveExistingComparativeAnalysis(index)}
+                      className="flex-shrink-0 p-1.5 rounded-lg hover:bg-danger-50 text-gray-400 hover:text-danger-500 transition-colors"
+                      title="Remove comparative analysis"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <input
+            type="file"
+            id="comparative-analysis-upload"
+            className="hidden"
+            multiple
+            accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png"
+            onChange={handleComparativeAnalysisUpload}
+          />
+
+          <label
+            htmlFor="comparative-analysis-upload"
+            className={`block border-2 border-dashed rounded-xl p-6 text-center transition-all cursor-pointer group ${caRequired ? 'border-danger-200 hover:border-danger-300 hover:bg-danger-50/20' : 'border-gray-300 hover:border-gray-400 hover:bg-gray-50'}`}
+          >
+            <div className={`w-10 h-10 rounded-full flex items-center justify-center mx-auto mb-2 group-hover:bg-white group-hover:shadow-sm ${caRequired ? 'bg-danger-50' : 'bg-gray-100'}`}>
+              <svg className={`w-5 h-5 transition-colors ${caRequired ? 'text-danger-400 group-hover:text-danger-500' : 'text-gray-400 group-hover:text-gray-500'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+              </svg>
+            </div>
+            <p className="text-sm text-gray-700 font-medium">Click to upload comparative analysis</p>
+            <p className="text-xs text-gray-400 mt-1">PDF, Excel, Word, or Images up to 10MB</p>
+          </label>
+
+          {/* Uploaded Comparative Analysis List */}
+          {comparativeAnalysisDocuments.length > 0 && (
+            <div className="mt-4 space-y-4">
+              <h4 className="text-sm font-medium text-gray-700">Uploaded Comparative Analysis:</h4>
+              {comparativeAnalysisDocuments.map((doc, index) => (
+                <div key={index} className="p-4 bg-gray-50 rounded-xl border border-gray-200 space-y-4">
+                  <div className="flex items-start gap-3">
+                    <div className="flex-shrink-0 mt-1">
+                      <svg className="w-8 h-8 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2" />
+                      </svg>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-900 truncate">{doc.file.name}</p>
+                      <p className="text-xs text-gray-500">{(doc.file.size / 1024).toFixed(1)} KB</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveComparativeAnalysis(index)}
+                      className="flex-shrink-0 p-1.5 rounded-lg hover:bg-danger-50 text-gray-400 hover:text-danger-500 transition-colors"
+                      title="Remove comparative analysis"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Description</label>
+                    <input
+                      type="text"
+                      className="w-full px-3 py-2 text-sm rounded-lg border border-gray-300 bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                      placeholder="e.g., Comparison of the 3 supplier quotations"
+                      value={doc.description}
+                      onChange={(e) => setComparativeAnalysisDocuments(prev => prev.map((d, i) => i === index ? { ...d, description: e.target.value } : d))}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+          );
+        })()}
+
         {/* Supporting Documents Section - Optional */}
         <Card>
           <h3 className="font-semibold text-text-primary mb-3 flex items-center gap-2 text-lg">
@@ -2128,6 +2558,16 @@ export default function NewCapexRequestPage() {
                         <p className="text-xs text-gray-400 mt-0.5">{(doc.size / 1024).toFixed(1)} KB</p>
                       )}
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveExistingSupportingDoc(index)}
+                      className="flex-shrink-0 p-1.5 rounded-lg hover:bg-danger-50 text-gray-400 hover:text-danger-500 transition-colors"
+                      title="Remove supporting document"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
                   </div>
                 </div>
               ))}
@@ -2200,6 +2640,180 @@ export default function NewCapexRequestPage() {
               ))}
             </div>
           )}
+        </Card>
+
+        {/* Financials — placed just before Watchers so the Project Cost can be
+            auto-totalled (and locked) from the selected suppliers above. */}
+        <Card>
+          <h3 className="font-semibold text-text-primary mb-4 flex items-center gap-2 text-lg">
+            <svg className="w-5 h-5 text-success-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            Financial Analysis
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div data-field="amount">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Project Cost <span className="text-red-500">*</span>
+              </label>
+              <div className="relative">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{currencySymbol(formData.currency)}</span>
+                <input
+                  type="text"
+                  readOnly={allowMultipleSuppliers}
+                  tabIndex={allowMultipleSuppliers ? -1 : undefined}
+                  className={`w-full pl-8 pr-4 py-2 min-h-[44px] rounded-xl border focus:outline-none focus:ring-2 focus:border-transparent transition-all ${allowMultipleSuppliers ? 'bg-gray-50 cursor-not-allowed text-gray-900' : 'bg-white text-gray-900 placeholder-gray-400'} ${fieldErrors.amount ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
+                  placeholder="0.00"
+                  value={formData.amount}
+                  onChange={(e) => { if (allowMultipleSuppliers) return; setFormData({ ...formData, amount: formatCurrency(e.target.value) }); clearFieldError('amount'); }}
+                  required
+                />
+              </div>
+              {allowMultipleSuppliers && (
+                <p className="mt-1 text-xs text-gray-500">Auto-calculated from the selected supplier quotations.</p>
+              )}
+              {fieldErrors.amount && <p className="mt-1 text-sm text-red-500">{fieldErrors.amount}</p>}
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Currency
+              </label>
+              <select
+                className="w-full px-4 py-2 min-h-[44px] rounded-xl border border-gray-300 bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                value={formData.currency || 'USD'}
+                onChange={(e) => setFormData({ ...formData, currency: e.target.value })}
+              >
+                <option value="USD">USD</option>
+                <option value="ZIG">ZIG</option>
+                <option value="ZAR">ZAR</option>
+              </select>
+            </div>
+            {/* Budgeted CAPEX: capture the approved budget line, what's already
+                been spent against it, and the balance remaining once this
+                project is drawn down. Only shown when Budget Type = Budgeted. */}
+            {isBudgetedCapex && (
+              <div className="md:col-span-2 rounded-xl border border-primary-100 bg-primary-50/40 p-4">
+                <p className="text-sm font-medium text-primary-800 mb-3">Budget Utilisation</p>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div data-field="budgetAmount">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Budget Amount <span className="text-red-500">*</span>
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{currencySymbol(formData.currency)}</span>
+                      <input
+                        type="text"
+                        className={`w-full pl-8 pr-4 py-2 min-h-[44px] rounded-xl border bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:border-transparent transition-all ${fieldErrors.budgetAmount ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
+                        placeholder="0.00"
+                        value={formData.budgetAmount}
+                        onChange={(e) => { setFormData({ ...formData, budgetAmount: formatCurrency(e.target.value) }); clearFieldError('budgetAmount'); }}
+                      />
+                    </div>
+                    {fieldErrors.budgetAmount && <p className="mt-1 text-sm text-red-500">{fieldErrors.budgetAmount}</p>}
+                  </div>
+                  <div data-field="amountSpent">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Amount Spent <span className="text-red-500">*</span>
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{currencySymbol(formData.currency)}</span>
+                      <input
+                        type="text"
+                        className={`w-full pl-8 pr-4 py-2 min-h-[44px] rounded-xl border bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:border-transparent transition-all ${fieldErrors.amountSpent ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
+                        placeholder="0.00"
+                        value={formData.amountSpent}
+                        onChange={(e) => { setFormData({ ...formData, amountSpent: formatCurrency(e.target.value) }); clearFieldError('amountSpent'); }}
+                      />
+                    </div>
+                    {fieldErrors.amountSpent && <p className="mt-1 text-sm text-red-500">{fieldErrors.amountSpent}</p>}
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Balance After Project
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{currencySymbol(formData.currency)}</span>
+                      <input
+                        type="text"
+                        readOnly
+                        className={`w-full pl-8 pr-4 py-2 min-h-[44px] rounded-xl border bg-gray-50 cursor-not-allowed focus:outline-none transition-all ${budgetBalanceAfterProject < 0 ? 'border-red-300 text-red-600' : 'border-gray-300 text-gray-900'}`}
+                        value={budgetBalanceDisplay}
+                        tabIndex={-1}
+                      />
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">Budget − Spent − Project Cost</p>
+                  </div>
+                </div>
+                {budgetBalanceAfterProject < 0 && (
+                  <p className="text-xs text-red-600 mt-2">This project exceeds the remaining budget.</p>
+                )}
+              </div>
+            )}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Payback Period
+              </label>
+              <select
+                className="w-full px-4 py-2 min-h-[44px] rounded-xl border border-gray-300 bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                value={formData.paybackPeriod}
+                onChange={(e) => setFormData({ ...formData, paybackPeriod: e.target.value })}
+              >
+                <option value="">Select period</option>
+                <option value="<6m">Less than 6 months</option>
+                <option value="6-12m">6-12 months</option>
+                <option value="1-2y">1-2 years</option>
+                <option value="2-3y">2-3 years</option>
+                <option value=">3y">More than 3 years</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                NPV (Net Present Value)
+              </label>
+              <Input
+                placeholder="e.g. 50000"
+                value={formData.npv}
+                onChange={(e) => setFormData({ ...formData, npv: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                IRR (Internal Rate of Return)
+              </label>
+              <Input
+                placeholder="e.g. 15%"
+                value={formData.irr}
+                onChange={(e) => setFormData({ ...formData, irr: e.target.value })}
+              />
+            </div>
+            <div data-field="fundingSource">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Project Funded By <span className="text-red-500">*</span>
+              </label>
+              <select
+                className={`w-full px-4 py-2 min-h-[44px] rounded-xl border bg-white text-gray-900 focus:outline-none focus:ring-2 focus:border-transparent transition-all ${fieldErrors.fundingSource ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
+                value={formData.fundingSource}
+                onChange={(e) => { setFormData({ ...formData, fundingSource: e.target.value }); clearFieldError('fundingSource'); }}
+                required
+              >
+                <option value="">Select funding source…</option>
+                <option value="Internal Resources">Internal Resources</option>
+                <option value="Corporate Funding">Corporate Funding</option>
+                <option value="Bank Loan">Bank Loan</option>
+              </select>
+              {fieldErrors.fundingSource && <p className="mt-1 text-sm text-red-500">{fieldErrors.fundingSource}</p>}
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Evaluation
+              </label>
+              <Input
+                placeholder="e.g. for cost reduction"
+                value={formData.evaluation}
+                onChange={(e) => setFormData({ ...formData, evaluation: e.target.value })}
+              />
+            </div>
+          </div>
         </Card>
 
         {/* Select Watchers Section */}
@@ -2631,7 +3245,7 @@ export default function NewCapexRequestPage() {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-500">Amount:</span>
-                    <span className="font-medium text-gray-900">{formData.currency === 'ZIG' ? 'ZiG' : '$'}{formData.amount}</span>
+                    <span className="font-medium text-gray-900">{currencySymbol(formData.currency)}{formData.amount}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-500">Approvers:</span>

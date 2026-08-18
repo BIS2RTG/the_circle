@@ -83,7 +83,20 @@ export default function SessionActivityGuard() {
     };
 
     const onVisibility = () => {
-      if (document.visibilityState === 'visible') markActivity();
+      if (document.visibilityState !== 'visible') return;
+      // A backgrounded tab has its timers heavily throttled (or paused), so the
+      // 1s idle watchdog above can miss the deadline while the tab is hidden.
+      // On refocus we must therefore RE-VALIDATE against the server rather than
+      // blindly calling markActivity() — which would reset the idle clock on a
+      // session that already lapsed, letting the user start editing inside a
+      // dead session and only discover it when a save/submit returns 401.
+      void getSession().then((s) => {
+        if (!s) {
+          endSession('session expired while tab was in background');
+        } else {
+          markActivity();
+        }
+      });
     };
 
     ACTIVITY_EVENTS.forEach((evt) =>
@@ -93,6 +106,9 @@ export default function SessionActivityGuard() {
 
     const interval = setInterval(() => {
       const now = Date.now();
+      // Idle deadline is measured from the user's LAST ACTIVITY — the warning
+      // only appears after a genuine stretch of inactivity, and any activity
+      // (or "Stay signed in") pushes it forward.
       const idleDeadline = lastActivityRef.current + IDLE_TIMEOUT_MS;
       const absoluteDeadline =
         typeof loginAt === 'number' ? loginAt + ABSOLUTE_TIMEOUT_MS : Infinity;
@@ -128,11 +144,19 @@ export default function SessionActivityGuard() {
     };
   }, [status, loginAt]);
 
-  const staySignedIn = () => {
+  const staySignedIn = async () => {
+    // Roll the server cookie forward and confirm the session is still valid. If
+    // the token already lapsed we can't revive it here — sign out cleanly rather
+    // than dismiss the warning and let the next action hit "Unauthorized".
+    // Reset the activity clock FIRST so the 1s watchdog doesn't re-open the
+    // warning while getSession() is in flight.
     lastActivityRef.current = Date.now();
     lastRefreshRef.current = Date.now();
-    void getSession();
     setWarning(null);
+    const s = await getSession();
+    if (!s) {
+      signOut({ callbackUrl: '/' });
+    }
   };
 
   if (!warning) return null;

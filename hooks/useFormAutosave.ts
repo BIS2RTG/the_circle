@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useRouter } from 'next/router';
 import { useSession } from 'next-auth/react';
+import { registerDraftSaver } from '../lib/draftRescue';
 
 /**
  * Client-side form autosave / crash recovery.
@@ -181,6 +182,30 @@ export function useFormAutosave<T extends Record<string, unknown>>(opts: Options
     // serialized is the change signal; dataRef.current holds the value to write.
   }, [serialized, enabled, storageKey, debounceMs]);
 
+  // Force-write the current snapshot to storage immediately. Used by the
+  // session-expiry "Save draft" rescue: it writes to localStorage (which the
+  // restore-on-mount path reads) so the draft survives the sign-out → sign-in
+  // round-trip and repopulates the form afterwards.
+  const saveNow = useCallback((): boolean => {
+    try {
+      const payload: StoredSnapshot<T> = { v: 1, savedAt: Date.now(), data: dataRef.current };
+      const raw = JSON.stringify(payload);
+      window.localStorage.setItem(storageKey, raw);
+      window.sessionStorage.setItem(storageKey, raw);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [storageKey]);
+
+  // Register this form's snapshotter so the global SessionExpiryHandler can
+  // rescue the draft before the user re-authenticates. Only while enabled
+  // (a fresh form) — edit mode / linked prefill use the server as source.
+  useEffect(() => {
+    if (!enabled) return;
+    return registerDraftSaver(saveNow);
+  }, [enabled, saveNow]);
+
   // Clear the snapshot when the user deliberately discards changes (fired by
   // useUnsavedChangesPrompt). Without this, a discarded form's entries would be
   // restored the next time the same form is opened.
@@ -204,5 +229,5 @@ export function useFormAutosave<T extends Record<string, unknown>>(opts: Options
     return () => router.events.off('routeChangeComplete', onComplete);
   }, [router.events, clear]);
 
-  return { clear };
+  return { clear, saveNow };
 }

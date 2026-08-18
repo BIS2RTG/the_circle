@@ -1,6 +1,6 @@
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/router';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { AppLayout } from '../../../components/layout';
 import { Card, Button, Input, RequestPreviewModal, UnsavedChangesModal, ReferenceCodeBanner, buildDocumentHeaderSection } from '../../../components/ui';
 import type { PreviewSection, DocumentHeader } from '../../../components/ui';
@@ -12,6 +12,7 @@ import { calculateTollgatesForItinerary, getTollgateRouteInfo, TollgateRouteType
 import { ALLOCATION_UNITS, buildTravelAuthPreviewSections, buildTravelAuthDocumentHeader } from '../../../lib/previews/travelAuthPreview';
 import { OnBehalfOfField, type OnBehalfOf } from '../../../components/requests/OnBehalfOfField';
 import { isApproverRowLocked } from '../../../lib/approverLocking';
+import { COMP_BOOKING_COO, resolveCompBookingCoo } from '../../../lib/fixedApprovers';
 import ApproverSectionLoader from '../../../components/requests/ApproverSectionLoader';
 import { AssociatesField, type Associate } from '../../../components/requests/AssociatesField';
 import { SupportingDocuments, uploadSupportingDocuments, makeSupportingDoc, type SupportingDoc } from '../../../components/requests/SupportingDocuments';
@@ -51,10 +52,10 @@ interface TollgateEntry {
 // live values are loaded from /api/settings/rates at runtime.
 type AARateTable = Record<string, { petrol: number; diesel: number }>;
 const AA_RATES_DEFAULTS: AARateTable = {
-    '1.1L-1.5L': { petrol: 0.32, diesel: 0.30 },
-    '1.6L-2.0L': { petrol: 0.40, diesel: 0.36 },
-    '2.1L-3.0L': { petrol: 0.54, diesel: 0.50 },
-    'Above 3.0L': { petrol: 0.66, diesel: 0.62 },
+    '1.1L-1.5L': { petrol: 0.30, diesel: 0.28 },
+    '1.6L-2.0L': { petrol: 0.38, diesel: 0.34 },
+    '2.1L-3.0L': { petrol: 0.52, diesel: 0.48 },
+    'Above 3.0L': { petrol: 0.64, diesel: 0.59 },
 };
 
 interface CostAllocation {
@@ -154,21 +155,46 @@ export default function HotelBookingPage() {
     // Unsaved-changes tracking — flipped true on first real user interaction via form onChange.
     const [isDirty, setIsDirty] = useState(false);
 
-    // Approver selection state - 4 fixed roles
+    // Approver selection state - 4 fixed roles. The COO occupies the
+    // `functional_head` slot and is a fixed, locked approver (see COMP_BOOKING_COO).
     const approvalRoles = [
         { key: 'line_manager', label: 'Line Manager', description: 'Recommendation' },
-        { key: 'functional_head', label: 'Functional Head', description: 'Functional Approval' },
-        { key: 'hrd', label: 'Chief Human Capital Officer', description: 'Human Capital Approval' },
+        { key: 'functional_head', label: COMP_BOOKING_COO.LABEL, description: 'Endorsement' },
+        { key: 'hrd', label: 'Chief Human Capital Officer', description: 'Approval' },
         { key: 'ceo', label: 'CEO', description: 'Authorisation' },
     ];
     const [users, setUsers] = useState<Array<{ id: string; display_name: string; email: string; job_title?: string }>>([]);
     const [loadingUsers, setLoadingUsers] = useState(true);
+    // The fixed COO, resolved from the loaded org users by email so it works in
+    // every environment (prod vs the RTG demo/local DB). Null until users load.
+    const coo = useMemo(() => resolveCompBookingCoo(users), [users]);
+    const cooUserId = coo?.id || '';
+    // When the COO themselves files a complimentary booking they can't approve
+    // their own request, so the slot must stay editable/empty for them.
+    const cooIsRequester = !!cooUserId && (session?.user as any)?.id === cooUserId;
     const [selectedApprovers, setSelectedApprovers] = useState<Record<string, string>>({
         line_manager: '',
+        // Locked to the current Chief Operating Officer — pinned once users load.
         functional_head: '',
         hrd: '',
         ceo: '',
     });
+    // Enforce the fixed COO: whatever else tries to set this slot (draft load,
+    // HRIMS auto-resolution, edit), it always resolves back to the current COO —
+    // except when the COO is the requester (see above). No-op until the COO is
+    // resolved from the user list.
+    useEffect(() => {
+        if (!cooUserId) return;
+        if (cooIsRequester) {
+            if (selectedApprovers.functional_head === cooUserId) {
+                setSelectedApprovers(prev => ({ ...prev, functional_head: '' }));
+            }
+            return;
+        }
+        if (selectedApprovers.functional_head !== cooUserId) {
+            setSelectedApprovers(prev => ({ ...prev, functional_head: cooUserId }));
+        }
+    }, [cooUserId, cooIsRequester, selectedApprovers.functional_head]);
     const [onBehalfOf, setOnBehalfOf] = useState<OnBehalfOf | null>(null);
     // Requestor identity shown on the form + document — the principal when filing
     // on behalf of someone (autofilled on selection), else the signed-in user.
@@ -1009,7 +1035,42 @@ export default function HotelBookingPage() {
         });
         const requestorName = requestor.name || '—';
 
+        // Flag stays whose dates have already passed. Past-dated complimentary
+        // bookings are allowed (they're often captured after the guest has
+        // stayed) but we surface a banner so approvers know it's retrospective.
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+        const hasPastStay = selectedBusinessUnits.some((u) => {
+            const d = u.departureDate || u.arrivalDate;
+            if (!d) return false;
+            const parsed = new Date(d);
+            return !isNaN(parsed.getTime()) && parsed < startOfToday;
+        });
+
         const baseSections: PreviewSection[] = [
+            // Retrospective-stay banner — only shown when a stay date is in the past.
+            ...(hasPastStay ? [{
+                content: (
+                    <div style={{
+                        border: '1px solid #C8A24A',
+                        background: '#FBF3DD',
+                        color: '#6B4E12',
+                        padding: '8px 12px',
+                        fontSize: 11,
+                        fontWeight: 700,
+                        borderRadius: 4,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                    }}>
+                        <span aria-hidden="true">⚠️</span>
+                        <span>
+                            Retrospective booking — this complimentary stay includes dates that have already passed.
+                            The guest has already stayed / the complimentary has already been provided.
+                        </span>
+                    </div>
+                ),
+            }] : []),
             // Main form header section — table layout
             {
                 content: (
@@ -1264,24 +1325,11 @@ export default function HotelBookingPage() {
             errors.push('Please select at least one approver');
         }
 
-        // Validate dates are not in the past
+        // Note: arrival/departure dates are intentionally allowed to be in the
+        // past — complimentary stays are often captured after the guest has
+        // already stayed. A banner on the preview/PDF flags any past-dated stay.
         const todayDate = new Date();
         todayDate.setHours(0, 0, 0, 0);
-        
-        for (const unit of selectedBusinessUnits) {
-            if (unit.arrivalDate) {
-                const arrivalDate = new Date(unit.arrivalDate);
-                if (arrivalDate < todayDate) {
-                    errors.push(`Arrival date for ${unit.name} cannot be in the past`);
-                }
-            }
-            if (unit.departureDate) {
-                const departureDate = new Date(unit.departureDate);
-                if (departureDate < todayDate) {
-                    errors.push(`Departure date for ${unit.name} cannot be in the past`);
-                }
-            }
-        }
 
         // If processTravelDocument is checked, validate travel fields
         if (formData.processTravelDocument) {
@@ -1661,7 +1709,6 @@ export default function HotelBookingPage() {
                                                     value={selectedUnit.arrivalDate}
                                                     onChange={(e) => handleBusinessUnitFieldChange(selectedUnit.instanceId, 'arrivalDate', e.target.value)}
                                                     required
-                                                    min={todayISO}
                                                 />
                                                 <Input
                                                     type="date"
@@ -1669,7 +1716,7 @@ export default function HotelBookingPage() {
                                                     value={selectedUnit.departureDate}
                                                     onChange={(e) => handleBusinessUnitFieldChange(selectedUnit.instanceId, 'departureDate', e.target.value)}
                                                     required
-                                                    min={selectedUnit.arrivalDate || todayISO}
+                                                    min={selectedUnit.arrivalDate || undefined}
                                                 />
                                                 <Input
                                                     type="number"
@@ -2622,10 +2669,13 @@ export default function HotelBookingPage() {
                         <div className={`space-y-4 ${loadingApproverResolution ? 'hidden' : ''}`}>
                             {approvalRoles.map((role, index) => {
                                 const selectedUserId = selectedApprovers[role.key];
+                                // The COO slot is a fixed, locked approver — never editable.
+                                // Exception: when the COO is the requester it stays editable.
+                                const isFixedCoo = role.key === COMP_BOOKING_COO.ROLE_KEY && !!coo && !cooIsRequester;
                                 const selectedUser = selectedUserId ? users.find(u => u.id === selectedUserId) : null;
                                 const filteredUsers = getFilteredUsersForRole(role.key);
                                 const isAutoResolved = autoResolvedRoles[role.key];
-                                const isLocked = isApproverRowLocked(role.key, isAutoResolved);
+                                const isLocked = isFixedCoo || isApproverRowLocked(role.key, isAutoResolved);
 
                                 return (
                                     <div key={role.key} className="relative">
@@ -2653,7 +2703,9 @@ export default function HotelBookingPage() {
                                                         <div className="flex-1 min-w-0">
                                                             <p className="text-sm font-medium text-gray-900 truncate">{selectedUser.display_name}</p>
                                                             <p className="text-xs text-gray-500 truncate">{selectedUser.email}</p>
-                                                            {isAutoResolved && <p className="text-xs text-green-600 mt-0.5">Auto-assigned from HRIMS organogram{isLocked ? ' · locked' : ''}</p>}
+                                                            {isFixedCoo
+                                                                ? <p className="text-xs text-green-600 mt-0.5">Chief Operating Officer · locked</p>
+                                                                : isAutoResolved && <p className="text-xs text-green-600 mt-0.5">Auto-assigned from HRIMS organogram{isLocked ? ' · locked' : ''}</p>}
                                                         </div>
                                                         {/* Senior fixed approvers (CEO, HRD, directors) are locked once
                                                             auto-resolved; departmental/managerial rows stay changeable. */}

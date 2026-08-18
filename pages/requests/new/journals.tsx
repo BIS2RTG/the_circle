@@ -17,7 +17,7 @@ import { useUserHrimsProfile } from '../../../hooks/useUserHrimsProfile';
 import { useRequestorIdentity } from '../../../hooks/useRequestorIdentity';
 import { OnBehalfOfField, type OnBehalfOf } from '../../../components/requests/OnBehalfOfField';
 
-const CURRENCY_OPTIONS = ['USD', 'ZWG'];
+const CURRENCY_OPTIONS = ['USD', 'ZWG', 'ZAR'];
 
 const JOURNAL_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
     { value: 'general', label: 'General Journal' },

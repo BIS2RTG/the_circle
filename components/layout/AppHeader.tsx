@@ -2,7 +2,7 @@ import { useSession, signOut } from 'next-auth/react';
 import Link from 'next/link';
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/router';
-import { Menu, ChevronLeft, ChevronDown, Bell, User, LogOut } from 'lucide-react';
+import { Menu, ChevronLeft, ChevronRight, ChevronDown, Bell, User, LogOut } from 'lucide-react';
 
 interface AppHeaderProps {
   title?: string;
@@ -105,15 +105,28 @@ export default function AppHeader({
               <Menu className="w-5 h-5" strokeWidth={1.5} />
             </button>
           )}
-          {showBack && (
+          {/* Global back / forward navigation arrows — shown on every page so
+              users can always move backward and forward through their history.
+              The back arrow prefers a page-supplied onBack handler (when the page
+              opts into showBack) and otherwise falls back to browser history. */}
+          <div className="flex items-center">
             <button
-              onClick={onBack}
-              className="p-2 -ml-2 text-text-secondary hover:text-text-primary hover:bg-neutral-100 rounded-lg transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
+              onClick={onBack || (() => router.back())}
+              className="p-2 text-text-secondary hover:text-text-primary hover:bg-neutral-100 rounded-lg transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
               aria-label="Go back"
+              title="Back"
             >
               <ChevronLeft className="w-5 h-5" strokeWidth={1.5} />
             </button>
-          )}
+            <button
+              onClick={() => router.forward()}
+              className="p-2 text-text-secondary hover:text-text-primary hover:bg-neutral-100 rounded-lg transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
+              aria-label="Go forward"
+              title="Forward"
+            >
+              <ChevronRight className="w-5 h-5" strokeWidth={1.5} />
+            </button>
+          </div>
           <h1 className="text-lg font-semibold tracking-tight text-text-primary">{title}</h1>
         </div>
 

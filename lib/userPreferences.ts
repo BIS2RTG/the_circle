@@ -43,6 +43,12 @@ export interface UserPreferences {
    * Persisted server-side so the tour doesn't re-run on a new browser/device.
    */
   tourCompleted: boolean;
+  /**
+   * Whether the user dismissed the first-login onboarding wizard (the business
+   * unit / department setup). Only offered on non-production (staging/legal)
+   * deployments; persisted server-side so it never prompts again on any device.
+   */
+  onboardingDismissed: boolean;
 }
 
 export const DEFAULT_USER_PREFERENCES: UserPreferences = {
@@ -58,6 +64,7 @@ export const DEFAULT_USER_PREFERENCES: UserPreferences = {
   oneDriveFolder: null,
   landingPage: null,
   tourCompleted: false,
+  onboardingDismissed: false,
 };
 
 function rowToPrefs(row: any): UserPreferences {
@@ -75,6 +82,7 @@ function rowToPrefs(row: any): UserPreferences {
     oneDriveFolder: row.onedrive_folder || null,
     landingPage: row.landing_page || null,
     tourCompleted: row.tour_completed ?? false,
+    onboardingDismissed: row.onboarding_dismissed ?? false,
   };
 }
 
@@ -149,6 +157,7 @@ export async function saveUserPreferences(
     row.landing_page = lp ? lp.slice(0, 120) : null;
   }
   if (prefs.tourCompleted !== undefined) row.tour_completed = !!prefs.tourCompleted;
+  if (prefs.onboardingDismissed !== undefined) row.onboarding_dismissed = !!prefs.onboardingDismissed;
 
   const { error } = await supabaseAdmin
     .from('user_preferences')

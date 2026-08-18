@@ -31,11 +31,21 @@ export const tempSignatureProxyUrl = (sessionId: string) =>
 export const pathSignatureProxyUrl = (path: string) =>
   `/api/signature/view?path=${encodeURIComponent(path)}`;
 
-/** True if an object exists at `path` in the signatures bucket. */
+/**
+ * True if an object exists at `path` in the signatures bucket.
+ * Uses a metadata-only `list` (no byte transfer) — this runs on the approval
+ * hot path, so downloading the whole image just to test existence was wasteful.
+ */
 export async function signatureExists(path: string): Promise<boolean> {
   if (!supabaseAdmin) return false;
-  const { data, error } = await supabaseAdmin.storage.from(SIGNATURE_BUCKET).download(path);
-  return !error && !!data;
+  const idx = path.lastIndexOf('/');
+  const folder = idx === -1 ? '' : path.slice(0, idx);
+  const name = idx === -1 ? path : path.slice(idx + 1);
+  const { data, error } = await supabaseAdmin.storage
+    .from(SIGNATURE_BUCKET)
+    .list(folder, { search: name, limit: 100 });
+  if (error || !data) return false;
+  return data.some((o) => o.name === name);
 }
 
 /** Download the raw bytes of a signature object, or null. */

@@ -24,6 +24,14 @@ export interface SendGraphMailOptions {
   html: string;
   /** Save a copy in the sender's Sent Items (default: true). */
   saveToSentItems?: boolean;
+  /**
+   * Override the visible From/Sender. Requires the token owner to have "Send As"
+   * (or Send on Behalf) rights on that mailbox — used to make notifications
+   * appear to come from the shared service mailbox even when delivered via an
+   * individual's delegated token. Graph rejects with ErrorSendAsDenied when the
+   * right isn't granted, so callers should be prepared to retry without it.
+   */
+  from?: GraphMailRecipient;
 }
 
 function toRecipientList(
@@ -48,6 +56,7 @@ export async function sendGraphMail(opts: SendGraphMailOptions): Promise<void> {
     subject,
     html,
     saveToSentItems = true,
+    from,
   } = opts;
 
   const message: Record<string, unknown> = {
@@ -57,6 +66,9 @@ export async function sendGraphMail(opts: SendGraphMailOptions): Promise<void> {
   };
   if (cc?.length) message.ccRecipients = toRecipientList(cc);
   if (bcc?.length) message.bccRecipients = toRecipientList(bcc);
+  if (from) {
+    message.from = { emailAddress: { address: from.email, name: from.name } };
+  }
 
   const resp = await fetch("https://graph.microsoft.com/v1.0/me/sendMail", {
     method: "POST",

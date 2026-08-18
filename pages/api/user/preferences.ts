@@ -55,6 +55,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       'oneDriveFolder',
       'landingPage',
       'tourCompleted',
+      'onboardingDismissed',
     ] as const;
     const update: Record<string, any> = {};
     for (const key of allowed) {

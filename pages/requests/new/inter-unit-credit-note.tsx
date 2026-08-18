@@ -25,7 +25,7 @@ const UNIT_OPTIONS: Array<{ code: string; label: string }> = [
     { code: 'AZAM', label: "A'Zambezi River Lodge (AZAM)" },
 ];
 
-const CURRENCY_OPTIONS = ['USD', 'ZWG'];
+const CURRENCY_OPTIONS = ['USD', 'ZWG', 'ZAR'];
 
 interface CreditNoteLineItem {
     qty: string;
