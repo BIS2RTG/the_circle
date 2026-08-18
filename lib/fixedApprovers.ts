@@ -45,6 +45,79 @@ export const CAPEX_PROCUREMENT_MANAGER = {
   EMAILS: ['bornwell.muchirahondo@rtg.co.zw'],
 };
 
+/**
+ * Board-member complimentary bookings run a DIFFERENT approval chain:
+ *   Company Secretary → Chief Finance Officer → CEO.
+ *
+ * The Company Secretary holds the HRIMS position "Chief Strategy, Growth and
+ * Investment Officer", so we resolve each of these three by matching known job
+ * titles against the loaded org users (works without a live HRIMS connection —
+ * the legal/staging environments deliberately have none). The requester can
+ * still override any slot manually if a title match isn't found.
+ */
+export const BOARD_COMP_APPROVERS: Array<{
+  key: 'company_secretary' | 'cfo' | 'ceo';
+  label: string;
+  description: string;
+  /** Job titles that identify this holder (case-insensitive, matched loosely). */
+  titles: string[];
+}> = [
+  {
+    key: 'company_secretary',
+    label: 'Company Secretary',
+    description: 'Chief Strategy, Growth and Investment Officer',
+    titles: [
+      'chief strategy, growth and investment officer',
+      'chief strategy growth and investment officer',
+      'company secretary',
+      'group company secretary',
+    ],
+  },
+  {
+    key: 'cfo',
+    label: 'Chief Finance Officer',
+    description: 'Finance Approval',
+    titles: [
+      'chief finance officer',
+      'chief financial officer',
+      'cfo',
+      'group finance director',
+      'finance director',
+    ],
+  },
+  {
+    key: 'ceo',
+    label: 'CEO',
+    description: 'Authorisation',
+    titles: [
+      'chief executive officer',
+      'group chief executive',
+      'group ceo',
+      'ceo',
+      'managing director',
+    ],
+  },
+];
+
+/**
+ * Find a user in a loaded list whose job title matches one of `titles`
+ * (case-insensitive; exact-after-trim first, then a contains match). Returns
+ * null when none is found.
+ */
+export function resolveByJobTitle<T extends { job_title?: string | null }>(
+  users: T[] | null | undefined,
+  titles: string[]
+): T | null {
+  if (!users?.length) return null;
+  const wanted = titles.map((t) => t.trim().toLowerCase());
+  const norm = (u: T) => (u.job_title || '').trim().toLowerCase();
+  return (
+    users.find((u) => wanted.includes(norm(u))) ||
+    users.find((u) => { const t = norm(u); return !!t && wanted.some((w) => t.includes(w) || w.includes(t)); }) ||
+    null
+  );
+}
+
 /** Request types (metadata.type / category) that are complimentary bookings. */
 export const COMP_BOOKING_TYPES = new Set(['hotel_booking', 'external_hotel_booking']);
 

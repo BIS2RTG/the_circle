@@ -30,10 +30,10 @@ export const CAPEX_APPROVAL_SECTIONS: CapexApprovalSection[] = [
   {
     title: 'Project Requested By',
     roles: [
-      { key: 'finance_manager', label: 'Finance Manager / Accountant', description: 'Financial Review' },
-      { key: 'general_manager', label: 'General Manager (Unit)', description: 'Unit Approval' },
-      { key: 'procurement_manager', label: 'Procurement and Projects Manager', description: 'Procurement & Projects Review' },
       { key: 'corporate_hod', label: 'Corporate Head of Dept', description: 'Department Approval' },
+      { key: 'finance_manager', label: 'Finance Manager / Accountant', description: 'Financial Review' },
+      { key: 'procurement_manager', label: 'Procurement and Projects Manager', description: 'Procurement & Projects Review' },
+      { key: 'general_manager', label: 'General Manager (Unit)', description: 'Unit Approval' },
       { key: 'managing_director', label: 'Chief Operating Officer', description: 'Operations Approval' },
     ],
   },

@@ -1,7 +1,7 @@
 import { NextApiRequest, NextApiResponse } from 'next';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '../auth/[...nextauth]';
-import { fetchHrimsBusinessUnits } from '@/lib/hrimsClient';
+import { getBusinessUnits } from '@/lib/orgStructure';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') {
@@ -15,7 +15,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    const businessUnits = await fetchHrimsBusinessUnits();
+    const orgId = (session.user as any).org_id;
+    const businessUnits = await getBusinessUnits(orgId);
 
     return res.status(200).json({ businessUnits, total: businessUnits.length });
   } catch (error: any) {

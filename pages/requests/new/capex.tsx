@@ -960,10 +960,10 @@ export default function NewCapexRequestPage() {
           // Regular update for non-approver edits (creator editing draft)
           // Always save even if no field changes detected (approvers/watchers might have changed)
           const baseApproversForEdit = [
-            selectedApprovers.finance_manager,
-            selectedApprovers.general_manager,
-            selectedApprovers.procurement_manager,
             selectedApprovers.corporate_hod,
+            selectedApprovers.finance_manager,
+            selectedApprovers.procurement_manager,
+            selectedApprovers.general_manager,
             selectedApprovers.managing_director,
             selectedApprovers.finance_director,
             selectedApprovers.ceo,
@@ -1185,10 +1185,10 @@ export default function NewCapexRequestPage() {
       // If "Other" reason was given for <3 quotations, the COO is prepended as the first approver
       // so the request cannot move into the official approval trail until the COO signs off.
       const baseApprovers = [
-        selectedApprovers.finance_manager,
-        selectedApprovers.general_manager,
-        selectedApprovers.procurement_manager,
         selectedApprovers.corporate_hod,
+        selectedApprovers.finance_manager,
+        selectedApprovers.procurement_manager,
+        selectedApprovers.general_manager,
         selectedApprovers.managing_director,
         selectedApprovers.finance_director,
         selectedApprovers.ceo,
@@ -1468,10 +1468,10 @@ export default function NewCapexRequestPage() {
     try {
       // First, save any changes to the draft
       const basePublishApprovers = [
-        selectedApprovers.finance_manager,
-        selectedApprovers.general_manager,
-        selectedApprovers.procurement_manager,
         selectedApprovers.corporate_hod,
+        selectedApprovers.finance_manager,
+        selectedApprovers.procurement_manager,
+        selectedApprovers.general_manager,
         selectedApprovers.managing_director,
         selectedApprovers.finance_director,
         selectedApprovers.ceo,
