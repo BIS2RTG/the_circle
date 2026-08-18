@@ -20,6 +20,7 @@ const ALLOCATION_LABELS: Record<string, string> = {
     administration: 'Administration',
     promotions: 'Promotions',
     personnel: 'Personnel',
+    legal: 'Legal',
 };
 
 export default function ExternalHotelBookingPage() {
@@ -501,6 +502,7 @@ export default function ExternalHotelBookingPage() {
                             <option value="administration">Administration</option>
                             <option value="promotions">Promotions</option>
                             <option value="personnel">Personnel</option>
+                            <option value="legal">Legal</option>
                         </select>
                     </Card>
 

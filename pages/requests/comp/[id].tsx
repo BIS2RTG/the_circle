@@ -95,6 +95,7 @@ const allocationLabels: Record<string, string> = {
     administration: 'Administration',
     promotions: 'Promotions',
     personnel: 'Personnel',
+    legal: 'Legal',
 };
 
 const accommodationLabels: Record<string, string> = {
