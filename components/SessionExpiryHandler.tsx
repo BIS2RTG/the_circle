@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { signOut, useSession } from 'next-auth/react';
+import { hasDraftSaver, rescueDraft } from '../lib/draftRescue';
 
 /**
  * Global "session expired" catch-net.
@@ -85,6 +86,17 @@ export default function SessionExpiryHandler() {
     signOut({ callbackUrl: `/?callbackUrl=${encodeURIComponent(callbackUrl)}` });
   };
 
+  // Whether the page the user is on has an in-progress form whose draft can be
+  // rescued to local storage before signing out.
+  const canSaveDraft = hasDraftSaver();
+
+  const saveDraftAndSignIn = () => {
+    // Snapshot the current form to storage (synchronous) BEFORE we navigate
+    // away — after re-login the form's autosave restores it.
+    rescueDraft();
+    signInAgain();
+  };
+
   return (
     <div
       className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 p-4"
@@ -100,17 +112,34 @@ export default function SessionExpiryHandler() {
           For your security you&apos;ve been signed out after a period of time, so your last
           action could not be completed. Please sign in again to continue.
         </p>
-        <p className="mt-2 text-sm text-gray-600">
-          Any unsaved changes on this page can&apos;t be saved now — if you have text you need,
-          copy it before signing in again.
-        </p>
-        <div className="mt-6 flex justify-end">
+        {canSaveDraft ? (
+          <p className="mt-2 text-sm text-gray-600">
+            You can save what you&apos;ve filled in as a draft first — we&apos;ll bring it
+            back automatically once you sign in again. (Uploaded files can&apos;t be kept and
+            will need to be re-attached.)
+          </p>
+        ) : (
+          <p className="mt-2 text-sm text-gray-600">
+            Any unsaved changes on this page can&apos;t be saved now — if you have text you need,
+            copy it before signing in again.
+          </p>
+        )}
+        <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          {canSaveDraft && (
+            <button
+              type="button"
+              onClick={saveDraftAndSignIn}
+              className="rounded-lg border border-primary-600 px-4 py-2 text-sm font-medium text-primary-700 hover:bg-primary-50"
+            >
+              Save draft &amp; sign in
+            </button>
+          )}
           <button
             type="button"
             onClick={signInAgain}
             className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700"
           >
-            Sign in again
+            {canSaveDraft ? 'Sign in without saving' : 'Sign in again'}
           </button>
         </div>
       </div>

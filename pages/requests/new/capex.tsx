@@ -23,6 +23,13 @@ interface DocumentMetadata {
   amount: string;
   isSelectedSupplier: boolean;
   selectionReason: string;
+  /**
+   * In multiple-suppliers mode, the value of the items actually being sourced
+   * from THIS quotation (a subset of the full quotation total in `amount`).
+   * This is the figure summed into the Project Cost. Optional/blank when not in
+   * multi-supplier mode, in which case the full quotation amount is used.
+   */
+  sourcedAmount?: string;
 }
 
 export default function NewCapexRequestPage() {
@@ -751,6 +758,12 @@ export default function NewCapexRequestPage() {
       irr: formData.irr,
       evaluation: formData.evaluation,
       quotations: allQuotes.map(q => ({ supplier: q.supplier, amount: q.amount })),
+      multiSupplier: allowMultipleSuppliers,
+      selectedSuppliers: selectedSupplierQuotes.map(q => ({
+        supplier: q.supplier,
+        quoteAmount: q.quoteAmount,
+        orderValue: q.sourcedAmount && q.sourcedAmount.trim() ? q.sourcedAmount : q.quoteAmount,
+      })),
       preferredSupplier: preferred?.supplier || '',
       reason: preferredReason,
       fundingSource: formData.fundingSource,
@@ -784,9 +797,15 @@ export default function NewCapexRequestPage() {
     }
 
     // Multiple-suppliers mode: at least two quotations must be flagged as
-    // selected suppliers (that's the whole point of the mode).
-    if (allowMultipleSuppliers && selectedSupplierQuotes.length < 2) {
-      errs.push({ field: 'quotations', message: 'Select at least two suppliers when "multiple suppliers" is enabled.' });
+    // selected suppliers (that's the whole point of the mode), and each must say
+    // how much is being sourced from it.
+    if (allowMultipleSuppliers) {
+      if (selectedSupplierQuotes.length < 2) {
+        errs.push({ field: 'quotations', message: 'Select at least two suppliers when "multiple suppliers" is enabled.' });
+      }
+      if (selectedSupplierQuotes.some(q => !(q.sourcedAmount && q.sourcedAmount.trim()))) {
+        errs.push({ field: 'quotations', message: 'Enter the amount to source from each selected supplier\'s quotation.' });
+      }
     }
 
     // Quotations: require at least 1; if fewer than 3, require a reason.
@@ -1013,6 +1032,7 @@ export default function NewCapexRequestPage() {
                   description: doc.description,
                   supplierName: doc.supplierName,
                   amount: doc.amount,
+                  sourcedAmount: doc.sourcedAmount || '',
                   isSelectedSupplier: doc.isSelectedSupplier,
                   selectionReason: doc.selectionReason,
                   uploadedBy: {
@@ -1244,6 +1264,7 @@ export default function NewCapexRequestPage() {
               description: doc.description,
               supplierName: doc.supplierName,
               amount: doc.amount,
+              sourcedAmount: doc.sourcedAmount || '',
               isSelectedSupplier: doc.isSelectedSupplier,
               selectionReason: doc.selectionReason,
               uploadedBy: {
@@ -1401,19 +1422,27 @@ export default function NewCapexRequestPage() {
     return isNaN(num) ? 0 : num;
   };
 
+  // Symbol shown in front of amounts for the selected currency.
+  const currencySymbol = (curr?: string) => (curr === 'ZIG' ? 'ZiG' : curr === 'ZAR' ? 'R' : '$');
+
   // ---- Multiple-suppliers helpers -----------------------------------------
   // The quotations the user flagged as selected suppliers (across both the
   // edit-mode existing quotations and the newly-uploaded ones). Used for the
   // read-only summary and to auto-total the Project Cost in multi mode.
-  const selectedSupplierQuotes: Array<{ supplier: string; description: string; amount: string }> = [
+  // `quoteAmount` is the full quotation total; `sourcedAmount` is the value of
+  // the items actually being bought from that quotation. When a sourced amount
+  // isn't given we fall back to the full quotation total.
+  const selectedSupplierQuotes: Array<{ supplier: string; description: string; quoteAmount: string; sourcedAmount: string }> = [
     ...(Array.isArray(existingQuotations) ? existingQuotations : [])
       .filter((q: any) => q.isSelectedSupplier)
-      .map((q: any) => ({ supplier: q.supplierName || '', description: q.description || '', amount: q.amount || '' })),
+      .map((q: any) => ({ supplier: q.supplierName || '', description: q.description || '', quoteAmount: q.amount || '', sourcedAmount: q.sourcedAmount || '' })),
     ...quotationDocuments
       .filter(d => d.isSelectedSupplier)
-      .map(d => ({ supplier: d.supplierName || '', description: d.description || '', amount: d.amount || '' })),
+      .map(d => ({ supplier: d.supplierName || '', description: d.description || '', quoteAmount: d.amount || '', sourcedAmount: d.sourcedAmount || '' })),
   ];
-  const selectedSuppliersTotal = selectedSupplierQuotes.reduce((sum, q) => sum + parseCurrency(q.amount), 0);
+  const sourcedValueOf = (q: { quoteAmount: string; sourcedAmount: string }) =>
+    q.sourcedAmount && q.sourcedAmount.trim() ? parseCurrency(q.sourcedAmount) : parseCurrency(q.quoteAmount);
+  const selectedSuppliersTotal = selectedSupplierQuotes.reduce((sum, q) => sum + sourcedValueOf(q), 0);
 
   // Keep the Project Cost in step with the selected suppliers while multi mode
   // is on. The field is read-only in this mode, so it always mirrors the sum of
@@ -1524,6 +1553,7 @@ export default function NewCapexRequestPage() {
                 description: doc.description,
                 supplierName: doc.supplierName,
                 amount: doc.amount,
+                sourcedAmount: doc.sourcedAmount || '',
                 isSelectedSupplier: doc.isSelectedSupplier,
                 selectionReason: doc.selectionReason,
                 uploadedBy: {
@@ -1992,8 +2022,31 @@ export default function NewCapexRequestPage() {
                       checked={!!quotation.isSelectedSupplier}
                       onChange={(e) => handleUpdateExistingQuotation(index, 'isSelectedSupplier', e.target.checked)}
                     />
-                    <span className="text-sm font-medium text-gray-700">This is the selected supplier</span>
+                    <span className="text-sm font-medium text-gray-700">{allowMultipleSuppliers ? 'Include this supplier in the CAPEX' : 'This is the selected supplier'}</span>
                   </label>
+
+                  {quotation.isSelectedSupplier && allowMultipleSuppliers && (
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">
+                        Order Value <span className="text-danger-500">*</span>
+                      </label>
+                      <div className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{currencySymbol(formData.currency)}</span>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          className="w-full pl-7 pr-3 py-2 text-sm rounded-lg border border-gray-300 bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                          placeholder="0.00"
+                          value={quotation.sourcedAmount || ''}
+                          onChange={(e) => handleUpdateExistingQuotation(index, 'sourcedAmount', formatCurrency(e.target.value))}
+                        />
+                      </div>
+                      <p className="mt-1 text-xs text-gray-500">
+                        Value of the items you&apos;re buying from this supplier — this is what&apos;s summed into the Project Cost.
+                        Full quotation total: {currencySymbol(formData.currency)} {quotation.amount || '0.00'}.
+                      </p>
+                    </div>
+                  )}
 
                   {quotation.isSelectedSupplier && (
                     <div>
@@ -2118,7 +2171,7 @@ export default function NewCapexRequestPage() {
                         Quotation Amount <span className="text-danger-500">*</span>
                       </label>
                       <div className="relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
                         <input
                           type="text"
                           inputMode="decimal"
@@ -2155,6 +2208,29 @@ export default function NewCapexRequestPage() {
                       <span className="text-sm font-medium text-gray-700">{allowMultipleSuppliers ? 'Include this supplier in the CAPEX' : 'This is the selected supplier'}</span>
                     </label>
                   </div>
+
+                  {doc.isSelectedSupplier && allowMultipleSuppliers && (
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">
+                        Order Value <span className="text-danger-500">*</span>
+                      </label>
+                      <div className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{currencySymbol(formData.currency)}</span>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          className="w-full pl-7 pr-3 py-2 text-sm rounded-lg border border-gray-300 bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                          placeholder="0.00"
+                          value={doc.sourcedAmount || ''}
+                          onChange={(e) => handleUpdateQuotationMetadata(index, 'sourcedAmount', formatCurrency(e.target.value))}
+                        />
+                      </div>
+                      <p className="mt-1 text-xs text-gray-500">
+                        Value of the items you&apos;re buying from this supplier — this is what&apos;s summed into the Project Cost.
+                        Full quotation total: {currencySymbol(formData.currency)} {doc.amount || '0.00'}.
+                      </p>
+                    </div>
+                  )}
 
                   {doc.isSelectedSupplier && (
                     <div>
@@ -2273,15 +2349,16 @@ export default function NewCapexRequestPage() {
               <span className="ml-2 px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded-full">Read-only</span>
             </h3>
             <p className="text-sm text-gray-600 mb-4">
-              A summary of the suppliers you selected from the quotations above. Their amounts add up to the total Project Cost.
+              A summary of the suppliers you selected from the quotations above. The <span className="font-medium">order value</span> from
+              each quotation (not the full quotation total) adds up to the total Project Cost.
             </p>
             <div className="overflow-x-auto rounded-xl border border-gray-200">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-50 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
                     <th className="px-4 py-2">Supplier</th>
-                    <th className="px-4 py-2">Description</th>
-                    <th className="px-4 py-2 text-right">Price</th>
+                    <th className="px-4 py-2 text-right">Quotation Total</th>
+                    <th className="px-4 py-2 text-right">Order Value</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -2290,14 +2367,14 @@ export default function NewCapexRequestPage() {
                       <td className="px-4 py-2 text-gray-900">{q.supplier || '—'}</td>
                       <td className="px-4 py-2 text-gray-700">{q.description || '—'}</td>
                       <td className="px-4 py-2 text-right text-gray-900">
-                        {q.amount ? `${formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'} ${q.amount}` : '—'}
+                        {q.amount ? `${formData.currency === 'ZIG' ? 'ZiG' : '$'} ${q.amount}` : '—'}
                       </td>
                     </tr>
                   ))}
                   <tr className="bg-gray-50 font-semibold">
                     <td className="px-4 py-2 text-gray-900" colSpan={2}>Total Project Cost</td>
                     <td className="px-4 py-2 text-right text-gray-900">
-                      {formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'} {formatMoneyInput(selectedSuppliersTotal.toFixed(2))}
+                      {formData.currency === 'ZIG' ? 'ZiG' : '$'} {formatMoneyInput(selectedSuppliersTotal.toFixed(2))}
                     </td>
                   </tr>
                 </tbody>
@@ -2574,7 +2651,7 @@ export default function NewCapexRequestPage() {
                 Project Cost <span className="text-red-500">*</span>
               </label>
               <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
                 <input
                   type="text"
                   readOnly={allowMultipleSuppliers}
@@ -2602,6 +2679,7 @@ export default function NewCapexRequestPage() {
               >
                 <option value="USD">USD</option>
                 <option value="ZIG">ZIG</option>
+                <option value="ZAR">ZAR</option>
               </select>
             </div>
             {/* Budgeted CAPEX: capture the approved budget line, what's already
@@ -2616,7 +2694,7 @@ export default function NewCapexRequestPage() {
                       Budget Amount <span className="text-red-500">*</span>
                     </label>
                     <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
                       <input
                         type="text"
                         className={`w-full pl-8 pr-4 py-2 min-h-[44px] rounded-xl border bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:border-transparent transition-all ${fieldErrors.budgetAmount ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
@@ -2632,7 +2710,7 @@ export default function NewCapexRequestPage() {
                       Amount Spent <span className="text-red-500">*</span>
                     </label>
                     <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
                       <input
                         type="text"
                         className={`w-full pl-8 pr-4 py-2 min-h-[44px] rounded-xl border bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:border-transparent transition-all ${fieldErrors.amountSpent ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
@@ -2648,7 +2726,7 @@ export default function NewCapexRequestPage() {
                       Balance After Project
                     </label>
                     <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
                       <input
                         type="text"
                         readOnly
@@ -3161,7 +3239,7 @@ export default function NewCapexRequestPage() {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-500">Amount:</span>
-                    <span className="font-medium text-gray-900">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}{formData.amount}</span>
+                    <span className="font-medium text-gray-900">{formData.currency === 'ZIG' ? 'ZiG' : '$'}{formData.amount}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-500">Approvers:</span>
