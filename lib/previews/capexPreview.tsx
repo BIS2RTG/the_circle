@@ -188,13 +188,13 @@ export function buildCapexPreviewSections(input: CapexPreviewInput): PreviewSect
                     {input.selectedSuppliers!.map((s, i) => (
                       <tr key={`ss${i}`}>
                         <td style={tdCell}>{s.supplier || '—'}</td>
-                        <td style={{ ...tdCell, textAlign: 'right' }}>{s.quoteAmount ? `$ ${curr} ${s.quoteAmount}` : '—'}</td>
-                        <td style={{ ...tdCell, textAlign: 'right' }}>{s.orderValue ? `$ ${curr} ${s.orderValue}` : '—'}</td>
+                        <td style={{ ...tdCell, textAlign: 'right' }}>{s.quoteAmount ? `${symbol} ${s.quoteAmount}` : '—'}</td>
+                        <td style={{ ...tdCell, textAlign: 'right' }}>{s.orderValue ? `${symbol} ${s.orderValue}` : '—'}</td>
                       </tr>
                     ))}
                     <tr>
                       <td style={{ ...tdCell, ...bold }} colSpan={2}>Total Project Cost</td>
-                      <td style={{ ...tdCell, ...bold, textAlign: 'right' }}>{`$ ${curr} ${ordersTotal}`}</td>
+                      <td style={{ ...tdCell, ...bold, textAlign: 'right' }}>{`${symbol} ${ordersTotal}`}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -209,7 +209,7 @@ export function buildCapexPreviewSections(input: CapexPreviewInput): PreviewSect
                 <div style={{ marginBottom: 10 }} key={`q${i}`}>
                   <div style={{ fontSize: 12 }}>
                     <span style={cap}>Quotation {i + 1}: </span>
-                    <span style={bold}>{q && q.amount ? `$ ${q.amount}` : ''}</span>
+                    <span style={bold}>{q && q.amount ? `${symbol} ${q.amount}` : ''}</span>
                     <span style={{ ...bold, marginLeft: 30 }}>{q?.supplier || ''}</span>
                   </div>
                 </div>

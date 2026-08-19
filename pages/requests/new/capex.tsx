@@ -2171,7 +2171,7 @@ export default function NewCapexRequestPage() {
                         Quotation Amount <span className="text-danger-500">*</span>
                       </label>
                       <div className="relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
                         <input
                           type="text"
                           inputMode="decimal"
@@ -2362,19 +2362,21 @@ export default function NewCapexRequestPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {selectedSupplierQuotes.map((q, i) => (
-                    <tr key={i}>
-                      <td className="px-4 py-2 text-gray-900">{q.supplier || '—'}</td>
-                      <td className="px-4 py-2 text-gray-700">{q.description || '—'}</td>
-                      <td className="px-4 py-2 text-right text-gray-900">
-                        {q.amount ? `${formData.currency === 'ZIG' ? 'ZiG' : '$'} ${q.amount}` : '—'}
-                      </td>
-                    </tr>
-                  ))}
+                  {selectedSupplierQuotes.map((q, i) => {
+                    const sym = formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$';
+                    const orderValue = q.sourcedAmount && q.sourcedAmount.trim() ? q.sourcedAmount : (q.quoteAmount || '');
+                    return (
+                      <tr key={i}>
+                        <td className="px-4 py-2 text-gray-900">{q.supplier || '—'}</td>
+                        <td className="px-4 py-2 text-right text-gray-500">{q.quoteAmount ? `${sym} ${q.quoteAmount}` : '—'}</td>
+                        <td className="px-4 py-2 text-right font-medium text-gray-900">{orderValue ? `${sym} ${orderValue}` : '—'}</td>
+                      </tr>
+                    );
+                  })}
                   <tr className="bg-gray-50 font-semibold">
                     <td className="px-4 py-2 text-gray-900" colSpan={2}>Total Project Cost</td>
                     <td className="px-4 py-2 text-right text-gray-900">
-                      {formData.currency === 'ZIG' ? 'ZiG' : '$'} {formatMoneyInput(selectedSuppliersTotal.toFixed(2))}
+                      {formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'} {formatMoneyInput(selectedSuppliersTotal.toFixed(2))}
                     </td>
                   </tr>
                 </tbody>
@@ -2651,7 +2653,7 @@ export default function NewCapexRequestPage() {
                 Project Cost <span className="text-red-500">*</span>
               </label>
               <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
                 <input
                   type="text"
                   readOnly={allowMultipleSuppliers}
@@ -2694,7 +2696,7 @@ export default function NewCapexRequestPage() {
                       Budget Amount <span className="text-red-500">*</span>
                     </label>
                     <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
                       <input
                         type="text"
                         className={`w-full pl-8 pr-4 py-2 min-h-[44px] rounded-xl border bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:border-transparent transition-all ${fieldErrors.budgetAmount ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
@@ -2710,7 +2712,7 @@ export default function NewCapexRequestPage() {
                       Amount Spent <span className="text-red-500">*</span>
                     </label>
                     <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
                       <input
                         type="text"
                         className={`w-full pl-8 pr-4 py-2 min-h-[44px] rounded-xl border bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:border-transparent transition-all ${fieldErrors.amountSpent ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
@@ -2726,7 +2728,7 @@ export default function NewCapexRequestPage() {
                       Balance After Project
                     </label>
                     <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : '$'}</span>
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
                       <input
                         type="text"
                         readOnly
@@ -3239,7 +3241,7 @@ export default function NewCapexRequestPage() {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-500">Amount:</span>
-                    <span className="font-medium text-gray-900">{formData.currency === 'ZIG' ? 'ZiG' : '$'}{formData.amount}</span>
+                    <span className="font-medium text-gray-900">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}{formData.amount}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-500">Approvers:</span>
