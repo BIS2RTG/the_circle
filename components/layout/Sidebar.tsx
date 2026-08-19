@@ -165,6 +165,13 @@ const navSections: NavSection[] = [
         icon: <Landmark {...iconProps} />,
       },
       {
+        href: '/legal/board/dashboard',
+        label: 'Governance Dashboard',
+        requiredPermissions: ['bgm.reports.view'],
+        requireAny: true,
+        icon: <BarChart3 {...iconProps} />,
+      },
+      {
         href: '/legal/board/declarations',
         label: 'Governance Declarations',
         requiredPermissions: ['bgm.declarations.view', 'legal.access'],
