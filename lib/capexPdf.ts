@@ -172,7 +172,10 @@ export async function buildCapexPdf(
   const spacer = (h: number) => {
     y -= h;
   };
-  const money = (v: string) => `$ ${data.currency} ${v && v.trim() ? v : 'NIL'}`;
+  // Currency symbol/prefix — never a bare "$" for non-dollar currencies
+  // ("$ ZAR …" is financially wrong). ZAR ⇒ R, ZIG ⇒ ZiG, otherwise "$".
+  const currencySymbol = data.currency === 'ZAR' ? 'R' : data.currency === 'ZIG' ? 'ZiG' : '$';
+  const money = (v: string) => `${currencySymbol} ${v && v.trim() ? v : 'NIL'}`;
 
   // ── Header: centred logo + title ──
   if (data.logo) {
@@ -258,13 +261,13 @@ export async function buildCapexPdf(
       ensure(s2 + 3);
       ordersTotal += parseFloat((s.orderValue || '').replace(/[^0-9.]/g, '')) || 0;
       draw(s.supplier || '-', marginX, font, s2);
-      drawRight(s.quoteAmount ? `$ ${data.currency} ${s.quoteAmount}` : '-', col2R, font, s2, grey);
-      drawRight(s.orderValue ? `$ ${data.currency} ${s.orderValue}` : '-', col3R, bold, s2);
+      drawRight(s.quoteAmount ? `${currencySymbol} ${s.quoteAmount}` : '-', col2R, font, s2, grey);
+      drawRight(s.orderValue ? `${currencySymbol} ${s.orderValue}` : '-', col3R, bold, s2);
       y -= s2 + 3;
     }
     ensure(s2 + 4);
     draw('Total Project Cost', marginX, bold, s2);
-    drawRight(`$ ${data.currency} ${ordersTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, col3R, bold, s2);
+    drawRight(`${currencySymbol} ${ordersTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, col3R, bold, s2);
     y -= s2 + gapY;
     spacer(2);
   } else {
@@ -277,7 +280,7 @@ export async function buildCapexPdf(
       const lbl = `QUOTATION ${i + 1}: `;
       draw(lbl, cx, font);
       cx += w(lbl, font, size);
-      const amt = q && q.amount ? `$ ${q.amount}` : '';
+      const amt = q && q.amount ? `${currencySymbol} ${q.amount}` : '';
       if (amt) {
         draw(amt, cx, bold);
         cx += w(amt, bold, size);
