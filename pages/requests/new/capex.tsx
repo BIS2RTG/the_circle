@@ -979,10 +979,10 @@ export default function NewCapexRequestPage() {
           // Regular update for non-approver edits (creator editing draft)
           // Always save even if no field changes detected (approvers/watchers might have changed)
           const baseApproversForEdit = [
+            selectedApprovers.corporate_hod,
             selectedApprovers.finance_manager,
             selectedApprovers.general_manager,
             selectedApprovers.procurement_manager,
-            selectedApprovers.corporate_hod,
             selectedApprovers.managing_director,
             selectedApprovers.finance_director,
             selectedApprovers.ceo,
@@ -1205,10 +1205,10 @@ export default function NewCapexRequestPage() {
       // If "Other" reason was given for <3 quotations, the COO is prepended as the first approver
       // so the request cannot move into the official approval trail until the COO signs off.
       const baseApprovers = [
+        selectedApprovers.corporate_hod,
         selectedApprovers.finance_manager,
         selectedApprovers.general_manager,
         selectedApprovers.procurement_manager,
-        selectedApprovers.corporate_hod,
         selectedApprovers.managing_director,
         selectedApprovers.finance_director,
         selectedApprovers.ceo,
@@ -1497,10 +1497,10 @@ export default function NewCapexRequestPage() {
     try {
       // First, save any changes to the draft
       const basePublishApprovers = [
+        selectedApprovers.corporate_hod,
         selectedApprovers.finance_manager,
         selectedApprovers.general_manager,
         selectedApprovers.procurement_manager,
-        selectedApprovers.corporate_hod,
         selectedApprovers.managing_director,
         selectedApprovers.finance_director,
         selectedApprovers.ceo,
@@ -1881,7 +1881,7 @@ export default function NewCapexRequestPage() {
                 I will keep a detailed description box as well. */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Detailed Description
+                Detailed Description (Optional)
               </label>
               <textarea
                 className="w-full px-4 py-3 min-h-[100px] rounded-xl border border-gray-300 bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-none transition-all"
@@ -1991,7 +1991,7 @@ export default function NewCapexRequestPage() {
                     <div>
                       <label className="block text-xs font-medium text-gray-600 mb-1">Quotation Amount</label>
                       <div className="relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{currencySymbol(formData.currency)}</span>
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
                         <input
                           type="text"
                           inputMode="decimal"
@@ -2171,7 +2171,7 @@ export default function NewCapexRequestPage() {
                         Quotation Amount <span className="text-danger-500">*</span>
                       </label>
                       <div className="relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{currencySymbol(formData.currency)}</span>
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
                         <input
                           type="text"
                           inputMode="decimal"
@@ -2363,24 +2363,20 @@ export default function NewCapexRequestPage() {
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {selectedSupplierQuotes.map((q, i) => {
-                    const sym = currencySymbol(formData.currency);
-                    const sourcedDisplay = q.sourcedAmount && q.sourcedAmount.trim() ? q.sourcedAmount : (q.quoteAmount || '');
+                    const sym = formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$';
+                    const orderValue = q.sourcedAmount && q.sourcedAmount.trim() ? q.sourcedAmount : (q.quoteAmount || '');
                     return (
                       <tr key={i}>
                         <td className="px-4 py-2 text-gray-900">{q.supplier || '—'}</td>
-                        <td className="px-4 py-2 text-right text-gray-500">
-                          {q.quoteAmount ? `${sym} ${q.quoteAmount}` : '—'}
-                        </td>
-                        <td className="px-4 py-2 text-right font-medium text-gray-900">
-                          {sourcedDisplay ? `${sym} ${sourcedDisplay}` : '—'}
-                        </td>
+                        <td className="px-4 py-2 text-right text-gray-500">{q.quoteAmount ? `${sym} ${q.quoteAmount}` : '—'}</td>
+                        <td className="px-4 py-2 text-right font-medium text-gray-900">{orderValue ? `${sym} ${orderValue}` : '—'}</td>
                       </tr>
                     );
                   })}
                   <tr className="bg-gray-50 font-semibold">
                     <td className="px-4 py-2 text-gray-900" colSpan={2}>Total Project Cost</td>
                     <td className="px-4 py-2 text-right text-gray-900">
-                      {currencySymbol(formData.currency)} {formatMoneyInput(selectedSuppliersTotal.toFixed(2))}
+                      {formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'} {formatMoneyInput(selectedSuppliersTotal.toFixed(2))}
                     </td>
                   </tr>
                 </tbody>
@@ -2657,7 +2653,7 @@ export default function NewCapexRequestPage() {
                 Project Cost <span className="text-red-500">*</span>
               </label>
               <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{currencySymbol(formData.currency)}</span>
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
                 <input
                   type="text"
                   readOnly={allowMultipleSuppliers}
@@ -2700,7 +2696,7 @@ export default function NewCapexRequestPage() {
                       Budget Amount <span className="text-red-500">*</span>
                     </label>
                     <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{currencySymbol(formData.currency)}</span>
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
                       <input
                         type="text"
                         className={`w-full pl-8 pr-4 py-2 min-h-[44px] rounded-xl border bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:border-transparent transition-all ${fieldErrors.budgetAmount ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
@@ -2716,7 +2712,7 @@ export default function NewCapexRequestPage() {
                       Amount Spent <span className="text-red-500">*</span>
                     </label>
                     <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{currencySymbol(formData.currency)}</span>
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
                       <input
                         type="text"
                         className={`w-full pl-8 pr-4 py-2 min-h-[44px] rounded-xl border bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:border-transparent transition-all ${fieldErrors.amountSpent ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
@@ -2732,7 +2728,7 @@ export default function NewCapexRequestPage() {
                       Balance After Project
                     </label>
                     <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{currencySymbol(formData.currency)}</span>
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
                       <input
                         type="text"
                         readOnly
@@ -3245,7 +3241,7 @@ export default function NewCapexRequestPage() {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-500">Amount:</span>
-                    <span className="font-medium text-gray-900">{currencySymbol(formData.currency)}{formData.amount}</span>
+                    <span className="font-medium text-gray-900">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}{formData.amount}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-500">Approvers:</span>

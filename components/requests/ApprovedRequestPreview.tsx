@@ -529,6 +529,7 @@ const COMP_ALLOCATION_LABELS: Record<string, string> = {
     administration: 'Administration',
     promotions: 'Promotions',
     personnel: 'Personnel',
+    legal: 'Legal',
 };
 
 const COMP_ACCOMMODATION_LABELS: Record<string, string> = {

@@ -1020,6 +1020,7 @@ export default function HotelBookingPage() {
         administration: 'Administration',
         promotions: 'Promotions',
         personnel: 'Personnel',
+        legal: 'Legal',
     };
 
     const hotelBookingDocumentHeader: DocumentHeader = {
