@@ -31,6 +31,7 @@ import {
   Scale,
   Landmark,
   Gavel,
+  KeyRound,
 } from 'lucide-react';
 import { useRef } from 'react';
 
@@ -176,6 +177,13 @@ const navSections: NavSection[] = [
         requiredPermissions: ['bgm.resolutions.view', 'legal.access'],
         requireAny: true,
         icon: <Gavel {...iconProps} />,
+      },
+      {
+        href: '/legal/board/access-log',
+        label: 'Director Portal Access',
+        requiredPermissions: ['bgm.portal.view', 'bgm.portal.manage'],
+        requireAny: true,
+        icon: <KeyRound {...iconProps} />,
       },
     ],
   },

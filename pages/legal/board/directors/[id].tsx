@@ -10,6 +10,7 @@ import Loader from '@/components/Loader';
 import { useToast } from '../../../../components/ui/ToastProvider';
 import { useRBAC, useRequirePermission } from '../../../../contexts/RBACContext';
 import AttendanceBadge from '../../../../components/legal/bgm/AttendanceBadge';
+import DirectorPortalCard from '../../../../components/legal/bgm/DirectorPortalCard';
 import { ATTENDANCE_LABELS, ATTENDANCE_STATUSES } from '@/lib/bgm';
 import { ArrowLeft, Crown, Mail, Phone, Pencil, Ban, RotateCcw } from 'lucide-react';
 
@@ -20,6 +21,8 @@ export default function DirectorDetail() {
   const { hasPermission } = useRBAC();
   useRequirePermission(['bgm.directors.view', 'bgm.attendance.view', 'legal.access']);
   const canManage = hasPermission('bgm.directors.manage');
+  const canViewPortal = hasPermission('bgm.portal.view') || hasPermission('bgm.portal.manage');
+  const canManagePortal = hasPermission('bgm.portal.manage');
 
   const [data, setData] = useState<any>(null);
   const [allCommittees, setAllCommittees] = useState<any[]>([]);
@@ -143,6 +146,9 @@ export default function DirectorDetail() {
             ))}
           </div>
         </Card>
+
+        {/* Secure links & portal access (BGM-05/07) */}
+        {canViewPortal && <DirectorPortalCard directorId={String(id)} canManage={canManagePortal} />}
 
         {/* Committee membership editor */}
         {canManage && (

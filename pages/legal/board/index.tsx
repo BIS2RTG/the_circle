@@ -12,7 +12,7 @@ import DirectorFormModal from '../../../components/legal/bgm/DirectorFormModal';
 import { ATTENDANCE_LABELS, ATTENDANCE_STATUSES } from '@/lib/bgm';
 import {
   CalendarDays, ListChecks, ClipboardCheck, Users, Plus, MapPin, Video, Crown, ChevronRight,
-  Search, ShieldCheck, Send, Clock, FileSignature, Gavel,
+  Search, ShieldCheck, Send, Clock, FileSignature, Gavel, KeyRound,
 } from 'lucide-react';
 import { useRBAC, useRequirePermission } from '../../../contexts/RBACContext';
 
@@ -41,6 +41,7 @@ export default function BoardGovernanceHub() {
   const canManageDirectors = hasPermission('bgm.directors.manage');
   const canViewDeclarations = hasPermission('bgm.declarations.view');
   const canViewResolutions = hasPermission('bgm.resolutions.view');
+  const canViewPortal = hasPermission('bgm.portal.view') || hasPermission('bgm.portal.manage');
 
   const [tab, setTab] = useState<Tab>('calendar');
   const [year, setYear] = useState<number>(new Date().getFullYear());
@@ -158,8 +159,8 @@ export default function BoardGovernanceHub() {
         </div>
 
         {/* Governance tools */}
-        {(canViewDeclarations || canViewResolutions) && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
+        {(canViewDeclarations || canViewResolutions || canViewPortal) && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
           {canViewDeclarations && (
           <Link href="/legal/board/declarations" className="group">
             <Card variant="default" padding="md" className="h-full hover:border-primary-300 hover:shadow-card-hover transition-all">
@@ -182,6 +183,20 @@ export default function BoardGovernanceHub() {
                 <div className="min-w-0 flex-1">
                   <p className="font-semibold text-text-primary group-hover:text-primary-600">Resolution &amp; Action Tracker</p>
                   <p className="text-xs text-neutral-500">Resolutions mapped to owners, deadlines &amp; status</p>
+                </div>
+                <ChevronRight className="w-4 h-4 text-neutral-300 group-hover:text-primary-500 shrink-0" />
+              </div>
+            </Card>
+          </Link>
+          )}
+          {canViewPortal && (
+          <Link href="/legal/board/access-log" className="group">
+            <Card variant="default" padding="md" className="h-full hover:border-primary-300 hover:shadow-card-hover transition-all">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-primary-50 text-primary-600 flex items-center justify-center shrink-0"><KeyRound className="w-5 h-5" /></div>
+                <div className="min-w-0 flex-1">
+                  <p className="font-semibold text-text-primary group-hover:text-primary-600">Director Portal &amp; Secure Links</p>
+                  <p className="text-xs text-neutral-500">Passwordless portal, tokenised links &amp; access audit trail</p>
                 </div>
                 <ChevronRight className="w-4 h-4 text-neutral-300 group-hover:text-primary-500 shrink-0" />
               </div>
