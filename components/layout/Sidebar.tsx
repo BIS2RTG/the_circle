@@ -30,6 +30,7 @@ import {
   ChevronsRight,
   Scale,
   Landmark,
+  Gavel,
 } from 'lucide-react';
 import { useRef } from 'react';
 
@@ -161,6 +162,20 @@ const navSections: NavSection[] = [
         requiredPermissions: ['bgm.meetings.view', 'bgm.directors.view', 'legal.access'],
         requireAny: true,
         icon: <Landmark {...iconProps} />,
+      },
+      {
+        href: '/legal/board/declarations',
+        label: 'Governance Declarations',
+        requiredPermissions: ['bgm.declarations.view', 'legal.access'],
+        requireAny: true,
+        icon: <FileSignature {...iconProps} />,
+      },
+      {
+        href: '/legal/board/resolutions',
+        label: 'Resolution Tracker',
+        requiredPermissions: ['bgm.resolutions.view', 'legal.access'],
+        requireAny: true,
+        icon: <Gavel {...iconProps} />,
       },
     ],
   },

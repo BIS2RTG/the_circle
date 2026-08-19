@@ -24,7 +24,7 @@ export default function LegalHome() {
       key: 'bgm',
       name: 'Board Governance',
       prefix: 'BGM',
-      description: 'Schedule board & committee meetings, distribute Outlook invitations, run the digital attendance register and manage director profiles.',
+      description: 'Schedule meetings, run the digital attendance register, issue e-signed governance declarations and track board resolutions to responsible owners.',
       href: '/legal/board',
       icon: <Landmark className="w-6 h-6" strokeWidth={1.5} />,
       available: true,
