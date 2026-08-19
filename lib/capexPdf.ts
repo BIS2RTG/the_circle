@@ -166,7 +166,10 @@ export async function buildCapexPdf(
   const spacer = (h: number) => {
     y -= h;
   };
-  const money = (v: string) => `$ ${data.currency} ${v && v.trim() ? v : 'NIL'}`;
+  // Currency symbol/prefix — never a bare "$" for non-dollar currencies
+  // ("$ ZAR …" is financially wrong). ZAR ⇒ R, ZIG ⇒ ZiG, otherwise "$".
+  const currencySymbol = data.currency === 'ZAR' ? 'R' : data.currency === 'ZIG' ? 'ZiG' : '$';
+  const money = (v: string) => `${currencySymbol} ${v && v.trim() ? v : 'NIL'}`;
 
   // ── Header: centred logo + title ──
   if (data.logo) {
@@ -237,7 +240,7 @@ export async function buildCapexPdf(
     const lbl = `QUOTATION ${i + 1}: `;
     draw(lbl, cx, font);
     cx += w(lbl, font, size);
-    const amt = q && q.amount ? `$ ${q.amount}` : '';
+    const amt = q && q.amount ? `${currencySymbol} ${q.amount}` : '';
     if (amt) {
       draw(amt, cx, bold);
       cx += w(amt, bold, size);

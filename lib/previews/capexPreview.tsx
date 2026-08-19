@@ -63,7 +63,10 @@ export const capexPreviewDocumentHeader: DocumentHeader = { docNo: '', departmen
 
 export function buildCapexPreviewSections(input: CapexPreviewInput): PreviewSection[] {
   const curr = input.currency || 'USD';
-  const money = (v?: string) => `$ ${curr} ${v && String(v).trim() ? v : 'NIL'}`;
+  // Currency symbol/prefix — never a bare "$" for non-dollar currencies
+  // ("$ ZAR …" is financially wrong). ZAR ⇒ R, ZIG ⇒ ZiG, otherwise "$".
+  const symbol = curr === 'ZAR' ? 'R' : curr === 'ZIG' ? 'ZiG' : '$';
+  const money = (v?: string) => `${symbol} ${v && String(v).trim() ? v : 'NIL'}`;
   const approverName = (key: string) => input.approverNameByRole[key] || '';
 
   const line: React.CSSProperties = { marginBottom: 10, fontSize: 12, color: '#111', lineHeight: 1.5 };
@@ -152,7 +155,7 @@ export function buildCapexPreviewSections(input: CapexPreviewInput): PreviewSect
             <div style={{ marginBottom: 10 }} key={`q${i}`}>
               <div style={{ fontSize: 12 }}>
                 <span style={cap}>Quotation {i + 1}: </span>
-                <span style={bold}>{q && q.amount ? `$ ${q.amount}` : ''}</span>
+                <span style={bold}>{q && q.amount ? `${symbol} ${q.amount}` : ''}</span>
                 <span style={{ ...bold, marginLeft: 30 }}>{q?.supplier || ''}</span>
               </div>
             </div>
