@@ -2,8 +2,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { GetServerSideProps } from 'next';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '../../../api/auth/[...nextauth]';
+import { requireBgmSSR, buildDirectorDetail, buildCommitteesList, jsonSafe } from '@/lib/bgmSSR';
 import { AppLayout } from '../../../../components/layout';
 import { Card, Button, Input } from '../../../../components/ui';
 import Loader from '@/components/Loader';
@@ -13,7 +12,13 @@ import AttendanceBadge from '../../../../components/legal/bgm/AttendanceBadge';
 import { ATTENDANCE_LABELS, ATTENDANCE_STATUSES } from '@/lib/bgm';
 import { ArrowLeft, Crown, Mail, Phone, Pencil, Ban, RotateCcw } from 'lucide-react';
 
-export default function DirectorDetail() {
+const formFromDirector = (d: any) => ({
+  email: d?.email || '', phone: d?.phone || '', appointed_date: d?.appointed_date || '', term_end_date: d?.term_end_date || '',
+});
+
+interface DirectorProps { initial: any; initialCommittees: any[] }
+
+export default function DirectorDetail({ initial, initialCommittees }: DirectorProps) {
   const router = useRouter();
   const { id } = router.query;
   const { addToast } = useToast();
@@ -21,16 +26,16 @@ export default function DirectorDetail() {
   useRequirePermission(['bgm.directors.view', 'bgm.attendance.view', 'legal.access']);
   const canManage = hasPermission('bgm.directors.manage');
 
-  const [data, setData] = useState<any>(null);
-  const [allCommittees, setAllCommittees] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState<any>(initial);
+  const [allCommittees, setAllCommittees] = useState<any[]>(initialCommittees || []);
+  const [loading] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState<any>({});
+  const [form, setForm] = useState<any>(() => formFromDirector(initial?.director));
   const [saving, setSaving] = useState(false);
 
+  // Client refetch after a mutation (edit, status change, committee change).
   const load = async () => {
     if (!id) return;
-    setLoading(true);
     const [r, cr] = await Promise.all([
       fetch(`/api/legal/bgm/directors/${id}`),
       fetch('/api/legal/bgm/committees'),
@@ -38,13 +43,17 @@ export default function DirectorDetail() {
     if (r.ok) {
       const d = await r.json();
       setData(d);
-      setForm({ email: d.director.email || '', phone: d.director.phone || '', appointed_date: d.director.appointed_date || '', term_end_date: d.director.term_end_date || '' });
+      setForm(formFromDirector(d.director));
     }
     if (cr.ok) setAllCommittees((await cr.json()).committees || []);
-    setLoading(false);
   };
 
-  useEffect(() => { if (id) load(); /* eslint-disable-next-line */ }, [id]);
+  // SSR provides the data; re-sync when navigating between director ids.
+  useEffect(() => {
+    setData(initial);
+    setAllCommittees(initialCommittees || []);
+    setForm(formFromDirector(initial?.director));
+  }, [initial, initialCommittees]);
 
   const setStatus = async (status: string) => {
     const res = await fetch(`/api/legal/bgm/directors/${id}`, {
@@ -212,7 +221,13 @@ function StatCard({ label, value, accent }: { label: string; value: string | num
 }
 
 export const getServerSideProps: GetServerSideProps = async (context) => {
-  const session = await getServerSession(context.req, context.res, authOptions);
-  if (!session?.user?.id) return { redirect: { destination: '/', permanent: false } };
-  return { props: {} };
+  const gate = await requireBgmSSR(context, ['bgm.directors.view', 'bgm.attendance.view', 'legal.access']);
+  if ('redirect' in gate) return { redirect: gate.redirect };
+  const id = String(context.params?.id || '');
+  const [detail, committees] = await Promise.all([
+    buildDirectorDetail(gate.ctx.organizationId, id),
+    buildCommitteesList(gate.ctx.organizationId),
+  ]);
+  if (!detail) return { notFound: true };
+  return { props: { initial: jsonSafe(detail), initialCommittees: jsonSafe(committees) } };
 };
