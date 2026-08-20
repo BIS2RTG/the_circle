@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '../../auth/[...nextauth]';
 import { supabaseAdmin } from '../../../../lib/supabaseAdmin';
 import { signatureExists, userSignaturePath, userSignatureProxyUrl } from '../../../../lib/signatureStorage';
+import { getUserRBACProfile, hasPermission, PERMISSIONS } from '@/lib/rbac';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') {
@@ -110,8 +111,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       (step: any) => step.approver_user_id === userId
     );
     const canApproverView = userStep && userStep.status !== 'waiting';
-    
+
+    // Elevated viewers — super admins and anyone granted requests.view_all
+    // (e.g. auditors, like Geraldine Ndoro) — can view any voucher. Mirrors the
+    // visibility rule on GET /api/requests/[id]. Resolved only when the cheaper
+    // involvement checks haven't already cleared the caller.
+    let isElevatedViewer = false;
     if (!isCreator && !isWatcher && !canApproverView) {
+      const rbacProfile = await getUserRBACProfile(userId);
+      isElevatedViewer =
+        rbacProfile.is_super_admin || hasPermission(rbacProfile, PERMISSIONS.REQUESTS_VIEW_ALL);
+    }
+
+    if (!isCreator && !isWatcher && !canApproverView && !isElevatedViewer) {
       return res.status(403).json({ error: 'You do not have permission to view this request' });
     }
 
@@ -396,9 +408,34 @@ Kind regards`;
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=Lato:wght@300;400;700&display=swap" rel="stylesheet">
   <style>
     @media print {
-      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      body {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+        background: #ffffff;
+        /* Compact the page so the whole voucher — signatures included — fits on
+           a single A4 sheet instead of the signature block spilling onto page 2. */
+        padding: 0 !important;
+        max-width: none !important;
+      }
       .no-print { display: none !important; }
-      @page { margin: 15mm; }
+      @page { size: A4 portrait; margin: 10mm; }
+      .voucher-container {
+        box-shadow: none !important;
+        padding: 24px 34px !important;
+        /* Keep the whole voucher together on one page. */
+        page-break-inside: avoid;
+        break-inside: avoid;
+      }
+      /* Trim the generous on-screen vertical rhythm for print. */
+      .header { margin-bottom: 20px !important; }
+      .main-title { margin-bottom: 14px !important; }
+      .guest-section { margin-bottom: 18px !important; }
+      .congratulations { margin-bottom: 12px !important; }
+      .entitlement-box { margin-bottom: 18px !important; padding: 16px 24px !important; }
+      .terms-section { margin-bottom: 18px !important; }
+      .terms-list li { margin-bottom: 7px !important; }
+      .signatures-container { margin-top: 26px !important; margin-bottom: 22px !important; }
+      .footer { margin-top: 18px !important; padding-top: 12px !important; }
     }
     * {
       margin: 0;
@@ -583,10 +620,15 @@ Kind regards`;
       position: relative;
       z-index: 10;
       gap: 40px;
+      /* Never split the signatures across a page boundary. */
+      page-break-inside: avoid;
+      break-inside: avoid;
     }
     .signature-block {
       width: 45%;
       text-align: center;
+      page-break-inside: avoid;
+      break-inside: avoid;
     }
     .signature-image-container {
       height: 80px;

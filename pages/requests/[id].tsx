@@ -1949,6 +1949,24 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
         external_comp_booking: 'external-comp-booking',
     };
 
+    // Resolve the dedicated form route for a request, accounting for the fact
+    // that the External Complimentary Booking form saves with `type:
+    // 'hotel_booking'` (same as the internal staff hotel booking) and is only
+    // distinguishable by `metadata.isExternalGuest === true`. Without this the
+    // external comp draft would open in the internal hotel-booking form, which
+    // lacks the board-member workflow (the "board member checkbox is gone"
+    // bug). Returns the route slug, or undefined for types with no form page.
+    const resolveFormRoute = (
+        req: { metadata?: Record<string, any> | null } | null | undefined,
+        map: Record<string, string>
+    ): string | undefined => {
+        const requestType = req?.metadata?.type || req?.metadata?.requestType;
+        if (requestType === 'hotel_booking' && req?.metadata?.isExternalGuest) {
+            return 'external-comp-booking';
+        }
+        return requestType ? map[requestType] : undefined;
+    };
+
     // Enter the inline "edit & resubmit" flow for a rejected request. Reuses the
     // existing inline-edit state (title/description in the header, form fields
     // in the Details tab) and jumps the user straight to the editable fields.
@@ -1966,8 +1984,7 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
     // edit-capable form page.
     const beginResubmit = () => {
         if (!request || !canResubmit) return;
-        const requestType = request.metadata?.type || request.metadata?.requestType;
-        const route = requestType ? RESUBMIT_FORM_ROUTES[requestType] : undefined;
+        const route = resolveFormRoute(request, RESUBMIT_FORM_ROUTES);
         if (route) {
             router.push(`/requests/new/${route}?edit=${id}`);
             return;
@@ -2117,8 +2134,7 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                 message: 'Amend your request, then submit it again for approval.',
             });
 
-            const requestType = request?.metadata?.type || request?.metadata?.requestType;
-            const route = requestType ? RESUBMIT_FORM_ROUTES[requestType] : undefined;
+            const route = resolveFormRoute(request, RESUBMIT_FORM_ROUTES);
             if (route) {
                 router.push(`/requests/new/${route}?edit=${id}`);
             } else {
@@ -3090,7 +3106,12 @@ export default function RequestDetailsPage({ initialRequest, initialError }: Req
                                         'inter_unit_debit_note': 'inter-unit-debit-note',
                                         'inter_unit_credit_note': 'inter-unit-credit-note',
                                     };
-                                    const route = routeMap[requestType] || requestType;
+                                    // External Complimentary Bookings share the
+                                    // 'hotel_booking' type but must reopen in the
+                                    // external comp form (which carries the
+                                    // board-member workflow). Distinguished by
+                                    // metadata.isExternalGuest.
+                                    const route = resolveFormRoute(request, routeMap) || requestType;
                                     router.push(`/requests/new/${route}?edit=${id}`);
                                 }}
                             >

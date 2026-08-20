@@ -697,7 +697,15 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
     // wrongly defaulted them to the voucher form on unsubmit/edit.
     const compEditRoute = (): string => {
         const t = request?.metadata?.type || request?.metadata?.requestType || (request as any)?.type;
-        if (t === 'hotel_booking') return 'hotel-booking';
+        // External Complimentary Bookings share the 'hotel_booking' type with the
+        // internal staff hotel booking and are only distinguishable by
+        // metadata.isExternalGuest. Route them to the external comp form, which
+        // carries the board-member workflow + approval chain — otherwise the
+        // draft reopens in the internal form (board-member checkbox missing,
+        // wrong workflow, empty approvers in the preview).
+        if (t === 'hotel_booking') {
+            return request?.metadata?.isExternalGuest ? 'external-comp-booking' : 'hotel-booking';
+        }
         if (t === 'external_hotel_booking') return 'external-hotel-booking';
         return 'voucher';
     };
@@ -1348,14 +1356,7 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
                                 variant="outline" 
                                 className="gap-2 bg-white text-primary-600 border-primary-200 hover:bg-primary-50" 
                                 onClick={() => {
-                                    const reqType = request?.metadata?.type || request?.metadata?.requestType || (request as any)?.type;
-                                    if (reqType === 'hotel_booking') {
-                                        router.push(`/requests/new/hotel-booking?edit=${id}`);
-                                    } else if (reqType === 'external_hotel_booking') {
-                                        router.push(`/requests/new/external-hotel-booking?edit=${id}`);
-                                    } else {
-                                        router.push(`/requests/new/voucher?edit=${id}`);
-                                    }
+                                    router.push(`/requests/new/${compEditRoute()}?edit=${id}`);
                                 }}
                             >
                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

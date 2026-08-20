@@ -13,7 +13,7 @@ import { calculateTollgatesForItinerary, getTollgateRouteInfo, TollgateRouteType
 import { SupportingDocuments, uploadSupportingDocuments, makeSupportingDoc, type SupportingDoc } from '../../../components/requests/SupportingDocuments';
 import { OnBehalfOfField, type OnBehalfOf } from '../../../components/requests/OnBehalfOfField';
 import { isApproverRowLocked } from '../../../lib/approverLocking';
-import { COMP_BOOKING_COO, resolveCompBookingCoo, BOARD_COMP_APPROVERS, resolveByJobTitle } from '../../../lib/fixedApprovers';
+import { COMP_BOOKING_COO, resolveCompBookingCoo, BOARD_COMP_APPROVERS, resolveBoardApprover } from '../../../lib/fixedApprovers';
 import ApproverSectionLoader from '../../../components/requests/ApproverSectionLoader';
 
 interface SelectedBusinessUnit {
@@ -197,10 +197,7 @@ export default function ExternalCompBookingPage() {
         const picks: Record<string, string> = {};
         const currentUserId = (session?.user as any)?.id;
         for (const role of BOARD_COMP_APPROVERS) {
-            const match = resolveByJobTitle(
-                users.filter(u => u.id !== currentUserId),
-                role.titles
-            );
+            const match = resolveBoardApprover(users, role, currentUserId);
             if (match) { picks[role.key] = match.id; resolved[role.key] = true; }
         }
         if (Object.keys(picks).length > 0) {
