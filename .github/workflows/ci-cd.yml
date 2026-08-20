@@ -1,17 +1,18 @@
 name: CI Pipeline
 
 # ─────────────────────────────────────────────────────────────
-# CI checks for pushes to develop / main and PRs targeting them.
+# CI checks for pushes to develop / main / legal and PRs targeting them.
 #
 # Deployment is handled by Vercel's native Git integration (it
-# auto-deploys develop → staging and main → production on push),
-# so this workflow only runs quality gates — it does NOT deploy.
+# auto-deploys develop → staging, main → production, and
+# legal → the-circle-legal.vercel.app on push/merge), so this
+# workflow only runs quality gates — it does NOT deploy.
 # ─────────────────────────────────────────────────────────────
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, legal]
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, legal]
 
 jobs:
   # ═══════════════════════════════════════════════════════════
