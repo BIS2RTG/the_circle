@@ -286,7 +286,7 @@ export default function FeatureTour({ steps, run, onFinish, onSidebar }: Props) 
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: isMobile ? 20 : -8, scale: 0.98 }}
           transition={{ duration: 0.25, ease: 'easeOut' }}
-          style={{ ...cardStyle, pointerEvents: 'auto' }}
+          style={{ ...cardStyle, pointerEvents: 'auto' } as any}
           className="rounded-2xl bg-surface shadow-2xl ring-1 ring-black/5 overflow-hidden"
         >
           <div className="h-1 w-full bg-gradient-to-r from-primary-500 to-accent-500" />
