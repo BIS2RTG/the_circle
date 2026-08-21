@@ -132,12 +132,12 @@ export default function AttendanceReport({ initial }: { initial: any }) {
         </div>
       </div>
 
-      <style jsx global>{`
+      <style dangerouslySetInnerHTML={{ __html: `
         @media print {
           @page { margin: 14mm; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         }
-      `}</style>
+      ` }} />
     </>
   );
 }
