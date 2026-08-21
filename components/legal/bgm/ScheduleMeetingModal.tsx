@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Modal, Button, Input } from '../../ui';
 import { useToast } from '../../ui/ToastProvider';
 import { AssociatesField, Associate } from '../../requests/AssociatesField';
-import { MeetingType, VIRTUAL_PLATFORMS, VIRTUAL_PLATFORM_LABELS, VirtualPlatform, platformNeedsManualLink } from '@/lib/bgm';
+import { MeetingType, VIRTUAL_PLATFORMS, VIRTUAL_PLATFORM_LABELS, VirtualPlatform, platformNeedsManualLink } from '../../../lib/bgm';
 import { Users, UserCheck, CalendarClock, History } from 'lucide-react';
 
 interface DirectorOption {

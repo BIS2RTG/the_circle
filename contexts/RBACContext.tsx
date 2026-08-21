@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
+import { useRouter } from 'next/router';
 
 // ============================================================
 // Types
@@ -240,4 +241,18 @@ export function useRBAC() {
     throw new Error('useRBAC must be used within an RBACProvider');
   }
   return context;
+}
+
+export function useRequirePermission(permissions: string[], redirectTo = '/dashboard') {
+  const { hasAnyPermission, loading, isSuperAdmin } = useRBAC();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (loading) return;
+    if (!permissions || permissions.length === 0) return;
+    if (isSuperAdmin) return;
+    if (!hasAnyPermission(permissions)) {
+      router.replace(redirectTo);
+    }
+  }, [permissions, loading, isSuperAdmin, hasAnyPermission, router, redirectTo]);
 }
