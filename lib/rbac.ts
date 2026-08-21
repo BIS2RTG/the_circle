@@ -127,21 +127,33 @@ export const ROLE_SLUGS = {
 // ============================================================
 
 export async function getUserRBACProfile(userId: string): Promise<UserRBACProfile> {
-  // Fetch all active user_roles with their role + role_permissions + permissions
-  const { data: userRoles, error: urError } = await supabaseAdmin
-    .from('user_roles')
-    .select(`
-      *,
-      role:roles(
+  // Fetch the roles+permissions and the per-user overrides concurrently — they
+  // are independent, and the app runs a long way from the database, so doing
+  // them in parallel shaves a full network round-trip off every authenticated
+  // request (this runs in requireBgm/requirePermission and the sidebar).
+  const [
+    { data: userRoles, error: urError },
+    { data: overrideRows, error: ovError },
+  ] = await Promise.all([
+    supabaseAdmin
+      .from('user_roles')
+      .select(`
         *,
-        role_permissions(
-          permission:permissions(*)
+        role:roles(
+          *,
+          role_permissions(
+            permission:permissions(*)
+          )
         )
-      )
-    `)
-    .eq('user_id', userId)
-    .eq('is_active', true)
-    .or('expires_at.is.null,expires_at.gt.' + new Date().toISOString());
+      `)
+      .eq('user_id', userId)
+      .eq('is_active', true)
+      .or('expires_at.is.null,expires_at.gt.' + new Date().toISOString()),
+    supabaseAdmin
+      .from('user_permission_overrides')
+      .select('granted, permission:permissions ( code )')
+      .eq('user_id', userId),
+  ]);
 
   if (urError) {
     console.error('Error fetching user RBAC profile:', urError);
@@ -177,13 +189,9 @@ export async function getUserRBACProfile(userId: string): Promise<UserRBACProfil
 
   // Per-user overrides: grant adds the permission even if no role has it,
   // deny removes it even if a role grants it. (Super admins bypass all
-  // checks in hasPermission, so denies never lock them out.)
+  // checks in hasPermission, so denies never lock them out.) Fetched in
+  // parallel with the roles above.
   const overrides: { code: string; granted: boolean }[] = [];
-  const { data: overrideRows, error: ovError } = await supabaseAdmin
-    .from('user_permission_overrides')
-    .select('granted, permission:permissions ( code )')
-    .eq('user_id', userId);
-
   if (ovError) {
     console.error('Error fetching user permission overrides:', ovError);
   } else {

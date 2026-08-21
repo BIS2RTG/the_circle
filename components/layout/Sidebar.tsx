@@ -286,14 +286,18 @@ export default function Sidebar({ isOpen, onClose, collapsed = false, onToggleCo
     return () => el.removeEventListener('scroll', onScroll);
   }, []);
 
-  // Filter nav items based on RBAC permissions
+  // Filter nav items based on RBAC permissions. While RBAC is still loading we
+  // show only items that require NO permission (e.g. Dashboard) — that's always
+  // safe and keeps the nav from flashing completely empty — and reveal the
+  // permission-gated items once the profile resolves (preventing an
+  // unauthorized flash).
   const filteredNavSections = useMemo(() => {
-    if (rbacLoading) return []; // Hide nav while RBAC loads to prevent unauthorized flash
     return navSections
       .map(section => ({
         ...section,
         items: section.items.filter(item => {
           if (!item.requiredPermissions || item.requiredPermissions.length === 0) return true;
+          if (rbacLoading) return false; // hide gated items until RBAC resolves
           return item.requireAny
             ? hasAnyPermission(item.requiredPermissions)
             : hasAllPermissions(item.requiredPermissions);
