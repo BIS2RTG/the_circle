@@ -2,28 +2,31 @@ import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { GetServerSideProps } from 'next';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '../../api/auth/[...nextauth]';
+import { requireBgmSSR, buildBoardOverview, jsonSafe } from '@/lib/bgmSSR';
 import { AppLayout } from '../../../components/layout';
 import { Card, Button } from '../../../components/ui';
 import Loader from '@/components/Loader';
 import ScheduleMeetingModal from '../../../components/legal/bgm/ScheduleMeetingModal';
 import DirectorFormModal from '../../../components/legal/bgm/DirectorFormModal';
+import ManageCommitteeModal from '../../../components/legal/bgm/ManageCommitteeModal';
 import { ATTENDANCE_LABELS, ATTENDANCE_STATUSES } from '@/lib/bgm';
 import {
   CalendarDays, ListChecks, ClipboardCheck, Users, Plus, MapPin, Video, Crown, ChevronRight,
-  Search, ShieldCheck, Send, Clock,
+  Search, ShieldCheck, Send, Clock, Building2, ArrowRight, Settings2,
 } from 'lucide-react';
 import { useRBAC, useRequirePermission } from '../../../contexts/RBACContext';
 
-type Tab = 'calendar' | 'meetings' | 'attendance' | 'directors';
+type Tab = 'calendar' | 'meetings' | 'attendance' | 'directors' | 'committees';
 
 const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
   { key: 'calendar', label: 'Calendar', icon: <CalendarDays className="w-4 h-4" /> },
   { key: 'meetings', label: 'Meetings', icon: <ListChecks className="w-4 h-4" /> },
   { key: 'attendance', label: 'Attendance', icon: <ClipboardCheck className="w-4 h-4" /> },
-  { key: 'directors', label: 'Directors', icon: <Users className="w-4 h-4" /> },
+  { key: 'directors', label: 'Board Members', icon: <Users className="w-4 h-4" /> },
+  { key: 'committees', label: 'Committees', icon: <Building2 className="w-4 h-4" /> },
 ];
+
+const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
@@ -33,17 +36,21 @@ function fmtDateTime(iso: string, tz?: string) {
   } catch { return new Date(iso).toLocaleString(); }
 }
 
-export default function BoardGovernanceHub() {
+interface HubProps { initial: any; initialYear: number }
+
+export default function BoardGovernanceHub({ initial, initialYear }: HubProps) {
   const router = useRouter();
   const { hasPermission } = useRBAC();
   useRequirePermission(['bgm.meetings.view', 'bgm.directors.view', 'legal.access']);
   const canManageMeetings = hasPermission('bgm.meetings.manage');
   const canManageDirectors = hasPermission('bgm.directors.manage');
+  const canManageCommittees = hasPermission('bgm.committees.manage') || hasPermission('bgm.directors.manage');
 
   const [tab, setTab] = useState<Tab>('calendar');
-  const [year, setYear] = useState<number>(new Date().getFullYear());
+  const [year, setYear] = useState<number>(initialYear);
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [directorFormOpen, setDirectorFormOpen] = useState(false);
+  const [manageCommittee, setManageCommittee] = useState<any>(null);
 
   // Meetings tab filters/sorting
   const [searchQ, setSearchQ] = useState('');
@@ -53,24 +60,11 @@ export default function BoardGovernanceHub() {
   const [filterMonth, setFilterMonth] = useState('');
   const [sortBy, setSortBy] = useState<'date_asc' | 'date_desc' | 'title'>('date_asc');
 
-  const [committees, setCommittees] = useState<any[]>([]);
-  const [meetings, setMeetings] = useState<any[]>([]);
-  const [directors, setDirectors] = useState<any[]>([]);
-  const [summary, setSummary] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  // One consolidated fetch for the whole hub (committees, directors, meetings,
-  // summary) — far fewer round trips than four separate calls.
-  const loadOverview = useCallback(async (y: number) => {
-    const r = await fetch(`/api/legal/bgm/overview?year=${y}`);
-    if (r.ok) {
-      const d = await r.json();
-      setCommittees(d.committees || []);
-      setDirectors(d.directors || []);
-      setMeetings(d.meetings || []);
-      setSummary(d.summary || []);
-    }
-  }, []);
+  const [committees, setCommittees] = useState<any[]>(initial.committees || []);
+  const [meetings, setMeetings] = useState<any[]>(initial.meetings || []);
+  const [directors, setDirectors] = useState<any[]>(initial.directors || []);
+  const [summary, setSummary] = useState<any[]>(initial.summary || []);
+  const [loading] = useState(false);
 
   // Lightweight refetch of just the meetings when the year changes.
   const loadMeetings = useCallback(async (y: number) => {
@@ -78,29 +72,53 @@ export default function BoardGovernanceHub() {
     if (r.ok) setMeetings((await r.json()).meetings || []);
   }, []);
 
-  const loadDirectors = useCallback(async () => {
-    const r = await fetch('/api/legal/bgm/directors');
-    if (r.ok) setDirectors((await r.json()).directors || []);
+  // Refresh committees (with members) + directors after a composition change.
+  const loadCommittees = useCallback(async () => {
+    const [cr, dr] = await Promise.all([
+      fetch('/api/legal/bgm/committees'),
+      fetch('/api/legal/bgm/directors'),
+    ]);
+    if (cr.ok) setCommittees((await cr.json()).committees || []);
+    if (dr.ok) setDirectors((await dr.json()).directors || []);
   }, []);
 
+  // Data arrives via SSR (getServerSideProps) so the page renders immediately —
+  // no client fetch / loader on navigation. This effect only opportunistically
+  // fires any due scheduled invitation sends (Vercel crons don't run on
+  // preview/staging), then refreshes the meetings list if something dispatched.
   const didInit = useRef(false);
   useEffect(() => {
-    (async () => {
-      setLoading(true);
-      await loadOverview(year);
-      setLoading(false);
-      didInit.current = true;
-    })();
+    didInit.current = true;
+    if (canManageMeetings) {
+      fetch('/api/legal/bgm/dispatch', { method: 'POST' }).then((r) => (r.ok ? r.json() : null)).then((d) => {
+        if (d?.dispatched) loadMeetings(year);
+      }).catch(() => {});
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // On year change (after the first load), refresh just the meetings list.
   useEffect(() => { if (didInit.current) loadMeetings(year); }, [year, loadMeetings]);
 
+  // Only the current governance year onward — there's no reason to surface
+  // prior-year board calendars in day-to-day administration.
   const years = useMemo(() => {
     const now = new Date().getFullYear();
-    return [now - 1, now, now + 1];
+    return [now, now + 1];
   }, []);
+
+  const calendarStats = useMemo(() => {
+    const nowMs = Date.now();
+    let board = 0, committee = 0;
+    let next: any = null;
+    for (const m of meetings) {
+      if (m.meeting_type === 'committee') committee += 1; else board += 1;
+      if (m.status === 'scheduled' && new Date(m.scheduled_start).getTime() >= nowMs) {
+        if (!next || new Date(m.scheduled_start).getTime() < new Date(next.scheduled_start).getTime()) next = m;
+      }
+    }
+    return { board, committee, next };
+  }, [meetings]);
 
   const meetingsByMonth = useMemo(() => {
     const map: Record<number, any[]> = {};
@@ -177,33 +195,62 @@ export default function BoardGovernanceHub() {
             {/* ---- Calendar ---- */}
             {tab === 'calendar' && (
               <div>
-                <div className="flex items-center gap-2 mb-5">
-                  {years.map((y) => (
-                    <button
-                      key={y}
-                      onClick={() => setYear(y)}
-                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                        y === year ? 'bg-primary-600 text-white' : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200'
-                      }`}
-                    >
-                      {y}
-                    </button>
-                  ))}
-                  <span className="ml-2 text-sm text-neutral-500">{meetings.length} meeting(s) in {year}</span>
+                {/* Year toggle + summary */}
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+                  <div className="inline-flex rounded-lg border border-border overflow-hidden">
+                    {years.map((y) => (
+                      <button key={y} onClick={() => setYear(y)}
+                        className={`px-4 py-1.5 text-sm font-semibold transition-colors ${y === year ? 'bg-primary-600 text-white' : 'bg-white text-neutral-600 hover:bg-neutral-50'}`}>
+                        {y}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-4 text-sm text-neutral-500">
+                    <span><span className="font-semibold text-text-primary">{meetings.length}</span> meeting{meetings.length === 1 ? '' : 's'}</span>
+                    <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-primary-500" /> {calendarStats.board} board</span>
+                    <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-sky-500" /> {calendarStats.committee} committee</span>
+                  </div>
                 </div>
 
+                {/* Next meeting highlight */}
+                {calendarStats.next && (
+                  <Link href={`/legal/board/meetings/${calendarStats.next.id}`}>
+                    <Card variant="default" padding="md" className="mb-5 border-primary-200 bg-primary-50/40 hover:bg-primary-50/70 transition-colors">
+                      <div className="flex items-center gap-4">
+                        <div className="flex flex-col items-center justify-center w-14 h-14 rounded-xl bg-white border border-primary-100 shrink-0">
+                          <span className="text-lg font-bold text-primary-700 leading-none">{new Date(calendarStats.next.scheduled_start).getDate()}</span>
+                          <span className="text-[10px] uppercase tracking-wider text-primary-500">{MONTHS[new Date(calendarStats.next.scheduled_start).getMonth()].slice(0, 3)}</span>
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[11px] font-semibold uppercase tracking-wider text-primary-500">Next meeting</p>
+                          <p className="font-semibold text-text-primary truncate">{calendarStats.next.title}</p>
+                          <p className="text-xs text-neutral-500 mt-0.5">{fmtDateTime(calendarStats.next.scheduled_start, calendarStats.next.time_zone)}</p>
+                        </div>
+                        <ArrowRight className="w-5 h-5 text-primary-400 shrink-0" />
+                      </div>
+                    </Card>
+                  </Link>
+                )}
+
                 {meetings.length === 0 ? (
-                  <EmptyState label={`No meetings scheduled for ${year}.`} />
+                  <Card variant="default" padding="lg" className="text-center">
+                    <CalendarDays className="w-10 h-10 text-neutral-300 mx-auto mb-2" />
+                    <p className="text-sm text-neutral-500">No meetings scheduled for {year}.</p>
+                    {canManageMeetings && (
+                      <Button variant="outline" className="mt-3" onClick={() => setScheduleOpen(true)}><Plus className="w-4 h-4 mr-1.5" /> Schedule a meeting</Button>
+                    )}
+                  </Card>
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                     {MONTHS.map((mo, i) =>
                       meetingsByMonth[i] ? (
-                        <Card key={i} variant="default" padding="md">
-                          <p className="text-xs font-semibold uppercase tracking-wider text-neutral-400 mb-2">{mo}</p>
-                          <div className="space-y-2">
-                            {meetingsByMonth[i].map((m) => (
-                              <MeetingRow key={m.id} m={m} />
-                            ))}
+                        <Card key={i} variant="default" padding="md" className="flex flex-col">
+                          <div className="flex items-center justify-between mb-2.5">
+                            <p className="text-sm font-semibold text-text-primary">{mo}</p>
+                            <span className="text-[11px] font-medium text-neutral-400 bg-neutral-100 rounded-full px-2 py-0.5">{meetingsByMonth[i].length}</span>
+                          </div>
+                          <div className="space-y-1.5">
+                            {meetingsByMonth[i].map((m) => <CalMeeting key={m.id} m={m} />)}
                           </div>
                         </Card>
                       ) : null
@@ -305,7 +352,7 @@ export default function BoardGovernanceHub() {
                   <span className="text-sm text-neutral-500">{directors.filter((d) => d.status === 'active').length} active · {directors.length} total</span>
                   {canManageDirectors && (
                     <Button variant="primary" onClick={() => setDirectorFormOpen(true)}>
-                      <Plus className="w-4 h-4 mr-1.5" /> Add board member
+                      <Plus className="w-4 h-4 mr-1.5" /> Add member
                     </Button>
                   )}
                 </div>
@@ -336,6 +383,48 @@ export default function BoardGovernanceHub() {
                 </div>
               </div>
             )}
+
+            {/* ---- Committees ---- */}
+            {tab === 'committees' && (
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <span className="text-sm text-neutral-500">{committees.length} committee{committees.length === 1 ? '' : 's'}</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {committees.map((c) => {
+                    const members: any[] = c.members || [];
+                    const chair = members.find((m) => m.is_chair);
+                    return (
+                      <Card key={c.id} variant="default" padding="lg" className="flex flex-col">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="font-semibold text-text-primary flex items-center gap-1.5">
+                              {c.is_main_board && <Crown className="w-4 h-4 text-amber-500 shrink-0" />}{c.name}
+                            </p>
+                            <p className="text-xs text-neutral-500 mt-0.5">
+                              {members.length} member{members.length === 1 ? '' : 's'} · {chair ? `Chair: ${chair.full_name}` : 'No chair set'}
+                            </p>
+                          </div>
+                          {canManageCommittees && (
+                            <Button variant="outline" size="sm" onClick={() => setManageCommittee(c)}>
+                              <Settings2 className="w-4 h-4 mr-1.5" /> Manage
+                            </Button>
+                          )}
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-1.5">
+                          {members.length === 0 && <span className="text-xs text-neutral-400">No members yet.</span>}
+                          {members.map((m) => (
+                            <span key={m.id} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] ${m.is_chair ? 'bg-amber-50 text-amber-700' : 'bg-neutral-100 text-neutral-600'}`}>
+                              {m.is_chair && <Crown className="w-3 h-3 text-amber-500" />}{m.full_name}
+                            </span>
+                          ))}
+                        </div>
+                      </Card>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -351,9 +440,57 @@ export default function BoardGovernanceHub() {
       <DirectorFormModal
         isOpen={directorFormOpen}
         onClose={() => setDirectorFormOpen(false)}
-        onCreated={() => { setDirectorFormOpen(false); loadDirectors(); }}
+        committees={committees}
+        onCreated={(director) => {
+          setDirectorFormOpen(false);
+          // Optimistic insert — avoids a slow full refetch of directors + committees.
+          // Dedupe by id: a staff/AD pick may reuse an existing board member.
+          setDirectors((prev) => [...prev.filter((d) => d.id !== director.id), director].sort((a, b) => a.full_name.localeCompare(b.full_name)));
+          const assigned: any[] = director.committees || [];
+          if (assigned.length) {
+            setCommittees((prev) => prev.map((c) => {
+              const m = assigned.find((a) => a.id === c.id);
+              if (!m) return c;
+              const others = (c.members || []).filter((x: any) => x.id !== director.id);
+              const members = [...others, { id: director.id, full_name: director.full_name, is_chair: m.is_chair }];
+              return { ...c, members, member_count: members.length };
+            }));
+          }
+        }}
+      />
+
+      <ManageCommitteeModal
+        isOpen={!!manageCommittee}
+        onClose={() => setManageCommittee(null)}
+        committee={manageCommittee}
+        directors={directors}
+        onChanged={loadCommittees}
       />
     </AppLayout>
+  );
+}
+
+function CalMeeting({ m }: { m: any }) {
+  const d = new Date(m.scheduled_start);
+  const isCommittee = m.meeting_type === 'committee';
+  const time = (() => {
+    try { return new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: m.time_zone }).format(d); } catch { return ''; }
+  })();
+  const statusColor = m.status === 'completed' ? 'bg-emerald-400' : m.status === 'cancelled' ? 'bg-neutral-300' : 'bg-sky-400';
+  return (
+    <Link href={`/legal/board/meetings/${m.id}`}>
+      <div className="group flex items-center gap-2.5 rounded-lg border border-transparent hover:border-primary-200 hover:bg-primary-50/40 p-1.5 transition-colors">
+        <div className={`flex flex-col items-center justify-center w-9 h-9 rounded-lg shrink-0 ${isCommittee ? 'bg-sky-50 text-sky-600' : 'bg-primary-50 text-primary-600'}`}>
+          <span className="text-sm font-bold leading-none">{d.getDate()}</span>
+          <span className="text-[8px] uppercase tracking-wide leading-none mt-0.5">{WEEKDAY[d.getDay()]}</span>
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className={`text-sm font-medium truncate ${m.status === 'cancelled' ? 'text-neutral-400 line-through' : 'text-text-primary'}`}>{m.title}</p>
+          <p className="text-[11px] text-neutral-500 truncate">{time}{time ? ' · ' : ''}{isCommittee ? (m.committee?.name || 'Committee') : 'Board'}</p>
+        </div>
+        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusColor}`} title={m.status} />
+      </div>
+    </Link>
   );
 }
 
@@ -422,10 +559,9 @@ function FilterSelect({ value, onChange, options }: { value: string; onChange: (
 }
 
 export const getServerSideProps: GetServerSideProps = async (context) => {
-  // Fast session-only gate (no DB). The permission gate runs client-side via
-  // useRequirePermission using the cached RBAC profile — the API routes enforce
-  // permissions server-side regardless.
-  const session = await getServerSession(context.req, context.res, authOptions);
-  if (!session?.user?.id) return { redirect: { destination: '/', permanent: false } };
-  return { props: {} };
+  const gate = await requireBgmSSR(context, ['bgm.meetings.view', 'bgm.directors.view', 'legal.access']);
+  if ('redirect' in gate) return { redirect: gate.redirect };
+  const year = new Date().getFullYear();
+  const overview = await buildBoardOverview(gate.ctx.organizationId, year);
+  return { props: { initial: jsonSafe(overview), initialYear: year } };
 };

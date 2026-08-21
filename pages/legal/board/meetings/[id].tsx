@@ -2,19 +2,17 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { GetServerSideProps } from 'next';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '../../../api/auth/[...nextauth]';
+import { requireBgmSSR, buildMeetingDetail, jsonSafe } from '@/lib/bgmSSR';
 import { AppLayout } from '../../../../components/layout';
 import { Card, Button, Modal } from '../../../../components/ui';
 import ConfirmDialog from '../../../../components/ui/ConfirmDialog';
-import Loader from '@/components/Loader';
 import { useToast } from '../../../../components/ui/ToastProvider';
 import { useRBAC, useRequirePermission } from '../../../../contexts/RBACContext';
 import { AssociatesField, Associate } from '../../../../components/requests/AssociatesField';
 import { AttendanceStatus, CHECK_IN_METHOD_LABELS, VIRTUAL_PLATFORM_LABELS } from '@/lib/bgm';
 import QrCheckInModal from '../../../../components/legal/bgm/QrCheckInModal';
 import SignatureCaptureModal from '../../../../components/legal/bgm/SignatureCaptureModal';
-import SignPromptModal from '../../../../components/legal/bgm/SignPromptModal';
+import SignOffModal from '../../../../components/legal/bgm/SignOffModal';
 import AttendanceEmailModal from '../../../../components/legal/bgm/AttendanceEmailModal';
 import { ArrowLeft, MapPin, Video, CalendarClock, Send, Ban, Save, Lock, LockOpen, UserPlus, X, ShieldCheck, QrCode, FileText, PenLine, Mail } from 'lucide-react';
 
@@ -28,7 +26,7 @@ function fmtRange(start: string, end: string | null, tz?: string) {
 }
 const fmtTime = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null);
 
-export default function MeetingDetail() {
+export default function MeetingDetail({ initial }: { initial: any }) {
   const router = useRouter();
   const { id } = router.query;
   const { addToast } = useToast();
@@ -37,11 +35,10 @@ export default function MeetingDetail() {
   const canManageMeeting = hasPermission('bgm.meetings.manage');
   const canManageAttendance = hasPermission('bgm.attendance.manage');
 
-  const [meeting, setMeeting] = useState<any>(null);
-  const [register, setRegister] = useState<any[]>([]);
-  const [guests, setGuests] = useState<any[]>([]);
-  const [quorum, setQuorum] = useState<number>(0);
-  const [loading, setLoading] = useState(true);
+  const [meeting, setMeeting] = useState<any>(initial?.meeting || null);
+  const [register, setRegister] = useState<any[]>(initial?.register || []);
+  const [guests, setGuests] = useState<any[]>(initial?.guests || []);
+  const [quorum, setQuorum] = useState<number>(initial?.quorum || 0);
   const [saving, setSaving] = useState(false);
   const [inviting, setInviting] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -53,14 +50,26 @@ export default function MeetingDetail() {
   const [finalizeOpen, setFinalizeOpen] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
   const [emailOpen, setEmailOpen] = useState(false);
+  const [emailingKey, setEmailingKey] = useState<string | null>(null);
 
   const finalized = !!meeting?.finalized_at;
   const editable = canManageAttendance && !finalized && meeting?.status !== 'cancelled';
-  const started = !!meeting && new Date(meeting.scheduled_start).getTime() <= Date.now();
+  // Meeting timing (mirrors the public sign window in /api/legal/bgm/attend).
+  const startMs = meeting ? new Date(meeting.scheduled_start).getTime() : 0;
+  const endMs = meeting ? (meeting.scheduled_end ? new Date(meeting.scheduled_end).getTime() : startMs + 3 * 3600_000) : 0;
+  const now = Date.now();
+  const started = !!meeting && startMs <= now;
+  const ended = !!meeting && now > endMs;                              // the meeting is over
+  const happened = ended || meeting?.status === 'completed';           // over / recorded as past
+  // Attendance sign-off is open from shortly before the meeting and stays open
+  // AFTER it (so members can still sign off) until the register is finalized.
+  const signOpen = !!meeting && now >= startMs - 3 * 3600_000 && !finalized && meeting?.status !== 'cancelled';
+  // Calendar invitations only make sense before the meeting starts.
+  const canSendInvites = canManageMeeting && !finalized && !started && meeting?.status === 'scheduled';
 
+  // Refetch after a mutation (data is already present from SSR, so no page loader).
   const load = async () => {
     if (!id) return;
-    setLoading(true);
     const r = await fetch(`/api/legal/bgm/meetings/${id}`);
     if (r.ok) {
       const data = await r.json();
@@ -69,10 +78,15 @@ export default function MeetingDetail() {
       setGuests(data.guests || []);
       setQuorum(data.quorum || 0);
     }
-    setLoading(false);
     setDirty(false);
   };
-  useEffect(() => { if (id) load(); /* eslint-disable-next-line */ }, [id]);
+  // SSR provides the data; re-sync when navigating between meeting ids.
+  useEffect(() => {
+    setMeeting(initial?.meeting || null);
+    setRegister(initial?.register || []);
+    setGuests(initial?.guests || []);
+    setQuorum(initial?.quorum || 0);
+  }, [initial]);
 
   const attended = useMemo(
     () => register.filter((r) => r.status === 'present' || r.status === 'virtual').length,
@@ -165,7 +179,31 @@ export default function MeetingDetail() {
     if (res.ok) load(); else addToast({ type: 'error', message: 'Failed to remove.' });
   };
 
-  if (loading) return <AppLayout title="Meeting"><div className="py-24 flex justify-center"><Loader /></div></AppLayout>;
+  // Email one attendee their personal sign-off link (used post-meeting in place
+  // of on-device signing). The member's status must be set first — their
+  // signature acknowledges that recorded status.
+  const emailOneLink = async (kind: 'director' | 'guest', keyId: string, name: string, status: AttendanceStatus | null) => {
+    const st = status === 'virtual' ? 'present' : status && ['present', 'apology', 'absent'].includes(status) ? status : '';
+    if (!st) { addToast({ type: 'error', message: `Set ${name}'s attendance status (Present or Apology / Absent) first.` }); return; }
+    setEmailingKey(`${kind}:${keyId}`);
+    try {
+      const res = await fetch(`/api/legal/bgm/meetings/${id}/attendance-emails`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targets: [{ kind, id: keyId, status: st }] }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to send the link');
+      if (data.sent > 0) addToast({ type: 'success', message: `Sign-off link sent to ${name}.` });
+      else if (data.missing) addToast({ type: 'warning', message: `${name} has no email address on file.` });
+      else throw new Error('Could not send the link.');
+      load();
+    } catch (err) {
+      addToast({ type: 'error', message: (err as Error).message });
+    } finally {
+      setEmailingKey(null);
+    }
+  };
+
   if (!meeting) return <AppLayout title="Meeting"><div className="max-w-3xl mx-auto p-8 text-center text-neutral-500">Meeting not found.</div></AppLayout>;
 
   const invitedDirIds = new Set(register.map((r) => r.director_id));
@@ -200,11 +238,15 @@ export default function MeetingDetail() {
 
             {canManageMeeting && meeting.status !== 'cancelled' && (
               <div className="flex flex-col gap-2 w-full sm:w-auto">
-                {!finalized && (
+                {canSendInvites ? (
                   <Button variant="primary" onClick={sendInvites} isLoading={inviting}>
                     <Send className="w-4 h-4 mr-1.5" /> {meeting.invitations_sent_at ? 'Resend invitations' : 'Send Outlook invitations'}
                   </Button>
-                )}
+                ) : !finalized && happened ? (
+                  <span className="inline-flex items-center gap-1.5 text-xs text-neutral-500 bg-neutral-100 rounded-lg px-3 py-2">
+                    <CalendarClock className="w-3.5 h-3.5" /> This meeting has already taken place — invitations can no longer be sent.
+                  </span>
+                ) : null}
                 {canManageAttendance && (
                   <Button variant={finalized ? 'outline' : 'secondary'} onClick={() => (finalized ? reopenRegister() : setFinalizeOpen(true))}>
                     {finalized ? <><LockOpen className="w-4 h-4 mr-1.5" /> Re-open register</> : <><Lock className="w-4 h-4 mr-1.5" /> Finalize register</>}
@@ -233,8 +275,10 @@ export default function MeetingDetail() {
             <Link href={`/legal/board/meetings/${id}/report`}>
               <Button variant="outline"><FileText className="w-4 h-4 mr-1.5" /> Attendance report</Button>
             </Link>
-            {editable && <Button variant="outline" onClick={openQr}><QrCode className="w-4 h-4 mr-1.5" /> QR check-in</Button>}
-            {editable && started && <Button variant="outline" onClick={() => setEmailOpen(true)}><Mail className="w-4 h-4 mr-1.5" /> Email check-in links</Button>}
+            {/* QR check-in is hidden for past meetings for now — sign-off there is
+                done via emailed links, not an in-room QR. */}
+            {editable && signOpen && !happened && <Button variant="outline" onClick={openQr}><QrCode className="w-4 h-4 mr-1.5" /> QR check-in</Button>}
+            {editable && signOpen && <Button variant="outline" onClick={() => setEmailOpen(true)}><Mail className="w-4 h-4 mr-1.5" /> {happened ? 'Email sign-off links' : 'Email check-in links'}</Button>}
             {editable && <Button variant="outline" onClick={() => setAddOpen(true)}><UserPlus className="w-4 h-4 mr-1.5" /> Add attendees</Button>}
             {editable && <Button variant="primary" onClick={save} isLoading={saving} disabled={!dirty}><Save className="w-4 h-4 mr-1.5" /> Save</Button>}
           </div>
@@ -250,8 +294,12 @@ export default function MeetingDetail() {
                 status={r.status} signature={r.check_in_signature}
                 checkedInAt={r.checked_in_at} method={r.check_in_method}
                 editable={editable}
+                happened={happened}
+                linkSentAt={r.checkin_link_sent_at}
+                emailing={emailingKey === `director:${r.director_id}`}
                 onStatus={(v) => setDirField(r.director_id, 'status', v)}
                 onSign={editable ? () => setSignFor({ id: r.director_id, kind: 'director', name: r.full_name }) : undefined}
+                onEmailLink={editable && signOpen ? () => emailOneLink('director', r.director_id, r.full_name, r.status) : undefined}
                 onRemove={editable ? () => removeInvitee('director', r.director_id) : undefined}
                 href={`/legal/board/directors/${r.director_id}`}
               />
@@ -273,8 +321,12 @@ export default function MeetingDetail() {
                     status={g.status} signature={g.check_in_signature}
                     checkedInAt={g.checked_in_at} method={null}
                     editable={editable}
+                    happened={happened}
+                    linkSentAt={g.checkin_link_sent_at}
+                    emailing={emailingKey === `guest:${g.id}`}
                     onStatus={(v) => setGuestField(g.id, 'status', v)}
                     onSign={editable ? () => setSignFor({ id: g.id, kind: 'guest', name: g.full_name }) : undefined}
+                    onEmailLink={editable && signOpen ? () => emailOneLink('guest', g.id, g.full_name, g.status) : undefined}
                     onRemove={editable ? () => removeInvitee('guest', g.id) : undefined}
                   />
                 ))}
@@ -309,15 +361,16 @@ export default function MeetingDetail() {
           meetingId={String(id)}
           register={register}
           guests={guests}
+          happened={happened}
           onClose={() => setEmailOpen(false)}
-          onSent={() => setEmailOpen(false)}
+          onSent={() => { setEmailOpen(false); load(); }}
         />
       )}
 
       {finalizeOpen && (
-        <SignPromptModal
+        <SignOffModal
           title="Finalize the register"
-          subtitle="Finalizing locks the attendance record for the minute book. Sign below to confirm — your signature appears on the report."
+          subtitle="Finalizing locks the attendance record for the minute book. Use your saved signature or draw one to confirm — it appears on the report."
           confirmLabel="Sign & finalize"
           busy={finalizing}
           onSubmit={doFinalize}
@@ -352,6 +405,10 @@ const ATT_BUCKETS: { key: AttBucket; label: string; value: AttendanceStatus; act
   { key: 'present', label: 'Present', value: 'present', active: 'border-emerald-500 bg-emerald-50 text-emerald-700' },
   { key: 'absent', label: 'Apology / Absent', value: 'absent', active: 'border-rose-500 bg-rose-50 text-rose-700' },
 ];
+// After a sign-off link is emailed, gray out that member's "Email link" button
+// for this long so it isn't fired repeatedly; it re-enables afterwards.
+const EMAIL_LINK_COOLDOWN_MS = 10 * 60 * 1000;
+const fmtDateTime = (iso: string) => { try { return new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' } as any); } catch { return new Date(iso).toLocaleString(); } };
 
 /** One attendee row with a two-option attendance control + signature. */
 function AttendeeRow(props: {
@@ -359,11 +416,15 @@ function AttendeeRow(props: {
   status: AttendanceStatus | null; signature?: string | null;
   checkedInAt?: string | null; method?: string | null;
   editable: boolean; href?: string;
+  happened?: boolean; emailing?: boolean; linkSentAt?: string | null;
   onStatus: (v: AttendanceStatus | null) => void;
   onSign?: () => void;
+  onEmailLink?: () => void;
   onRemove?: () => void;
 }) {
   const bucket = bucketOf(props.status);
+  const linkSentMs = props.linkSentAt ? new Date(props.linkSentAt).getTime() : 0;
+  const sentRecently = linkSentMs > 0 && Date.now() - linkSentMs < EMAIL_LINK_COOLDOWN_MS;
   const nameEl = props.href ? (
     <Link href={props.href} className="font-medium text-text-primary hover:text-primary-600">{props.name}</Link>
   ) : <span className="font-medium text-text-primary">{props.name}</span>;
@@ -389,12 +450,29 @@ function AttendeeRow(props: {
               {b.label}
             </button>
           ))}
-          {props.onSign && (
+          {/* After the meeting, the primary action is to (re)send the member's
+              sign-off link by email; on-device signing stays available but is
+              rarely needed once the meeting is over. */}
+          {props.happened && !props.signature && props.onEmailLink ? (
+            <>
+              <button onClick={props.onEmailLink} disabled={props.emailing || sentRecently}
+                title={sentRecently ? `Link last sent ${fmtDateTime(props.linkSentAt!)} — you can resend shortly.` : 'Email this member their personal sign-off link'}
+                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium border disabled:cursor-not-allowed ${sentRecently ? 'border-gray-200 bg-neutral-50 text-neutral-400' : 'border-primary-300 text-primary-700 hover:bg-primary-50 disabled:opacity-60'}`}>
+                <Mail className="w-3.5 h-3.5" /> {props.emailing ? 'Sending…' : sentRecently ? 'Link sent' : 'Email link'}
+              </button>
+              {props.onSign && (
+                <button onClick={props.onSign} title="Rarely needed — capture a signature in person"
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border border-gray-200 text-neutral-500 hover:bg-neutral-50">
+                  <PenLine className="w-3.5 h-3.5" /> In person
+                </button>
+              )}
+            </>
+          ) : props.onSign ? (
             <button onClick={props.onSign} title={props.signature ? 'Re-capture signature' : 'Sign on this device'}
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium border border-primary-300 text-primary-700 hover:bg-primary-50">
               <PenLine className="w-3.5 h-3.5" /> Sign
             </button>
-          )}
+          ) : null}
           {props.onRemove && (
             <button onClick={props.onRemove} className="p-1 text-neutral-300 hover:text-rose-500" title="Remove attendee"><X className="w-4 h-4" /></button>
           )}
@@ -402,7 +480,12 @@ function AttendeeRow(props: {
       </div>
       {props.checkedInAt && (
         <p className="mt-1 text-[11px] text-emerald-600">
-          Checked in {fmtTime(props.checkedInAt)}{props.method ? ` · ${CHECK_IN_METHOD_LABELS[props.method] || props.method}` : ''}
+          Registered: {fmtTime(props.checkedInAt)}{props.method ? ` · ${CHECK_IN_METHOD_LABELS[props.method] || props.method}` : ''}
+        </p>
+      )}
+      {props.linkSentAt && !props.signature && (
+        <p className="mt-1 text-[11px] text-neutral-400">
+          Sign-off link last sent {fmtDateTime(props.linkSentAt)}
         </p>
       )}
     </div>
@@ -474,7 +557,10 @@ function AddAttendeesModal({ meetingId, excludedDirectorIds, onClose, onAdded }:
 }
 
 export const getServerSideProps: GetServerSideProps = async (context) => {
-  const session = await getServerSession(context.req, context.res, authOptions);
-  if (!session?.user?.id) return { redirect: { destination: '/', permanent: false } };
-  return { props: {} };
+  const gate = await requireBgmSSR(context, ['bgm.meetings.view', 'bgm.attendance.view', 'legal.access']);
+  if ('redirect' in gate) return { redirect: gate.redirect };
+  const id = String(context.params?.id || '');
+  const detail = await buildMeetingDetail(gate.ctx.organizationId, id);
+  if (!detail) return { notFound: true };
+  return { props: { initial: jsonSafe(detail) } };
 };

@@ -2,8 +2,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { GetServerSideProps } from 'next';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '../../../api/auth/[...nextauth]';
+import { requireBgmSSR, buildDirectorDetail, buildCommitteesList, jsonSafe } from '@/lib/bgmSSR';
 import { AppLayout } from '../../../../components/layout';
 import { Card, Button, Input } from '../../../../components/ui';
 import Loader from '@/components/Loader';
@@ -13,7 +12,15 @@ import AttendanceBadge from '../../../../components/legal/bgm/AttendanceBadge';
 import { ATTENDANCE_LABELS, ATTENDANCE_STATUSES } from '@/lib/bgm';
 import { ArrowLeft, Crown, Mail, Phone, Pencil, Ban, RotateCcw } from 'lucide-react';
 
-export default function DirectorDetail() {
+const formFromDirector = (d: any) => ({
+  email: d?.email || '', phone: d?.phone || '', appointed_date: d?.appointed_date || '', term_end_date: d?.term_end_date || '',
+  // '' = auto-detect (null), 'yes' = staff/HRIMS, 'no' = external.
+  is_hrims: d?.is_hrims === true ? 'yes' : d?.is_hrims === false ? 'no' : '',
+});
+
+interface DirectorProps { initial: any; initialCommittees: any[] }
+
+export default function DirectorDetail({ initial, initialCommittees }: DirectorProps) {
   const router = useRouter();
   const { id } = router.query;
   const { addToast } = useToast();
@@ -21,16 +28,16 @@ export default function DirectorDetail() {
   useRequirePermission(['bgm.directors.view', 'bgm.attendance.view', 'legal.access']);
   const canManage = hasPermission('bgm.directors.manage');
 
-  const [data, setData] = useState<any>(null);
-  const [allCommittees, setAllCommittees] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState<any>(initial);
+  const [allCommittees, setAllCommittees] = useState<any[]>(initialCommittees || []);
+  const [loading] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState<any>({});
+  const [form, setForm] = useState<any>(() => formFromDirector(initial?.director));
   const [saving, setSaving] = useState(false);
 
+  // Client refetch after a mutation (edit, status change, committee change).
   const load = async () => {
     if (!id) return;
-    setLoading(true);
     const [r, cr] = await Promise.all([
       fetch(`/api/legal/bgm/directors/${id}`),
       fetch('/api/legal/bgm/committees'),
@@ -38,13 +45,17 @@ export default function DirectorDetail() {
     if (r.ok) {
       const d = await r.json();
       setData(d);
-      setForm({ email: d.director.email || '', phone: d.director.phone || '', appointed_date: d.director.appointed_date || '', term_end_date: d.director.term_end_date || '' });
+      setForm(formFromDirector(d.director));
     }
     if (cr.ok) setAllCommittees((await cr.json()).committees || []);
-    setLoading(false);
   };
 
-  useEffect(() => { if (id) load(); /* eslint-disable-next-line */ }, [id]);
+  // SSR provides the data; re-sync when navigating between director ids.
+  useEffect(() => {
+    setData(initial);
+    setAllCommittees(initialCommittees || []);
+    setForm(formFromDirector(initial?.director));
+  }, [initial, initialCommittees]);
 
   const setStatus = async (status: string) => {
     const res = await fetch(`/api/legal/bgm/directors/${id}`, {
@@ -54,11 +65,28 @@ export default function DirectorDetail() {
     else addToast({ type: 'error', message: 'Failed to update status.' });
   };
 
+  // Optimistic committee toggle: update the UI immediately, then persist. The
+  // register/detail is already in state (SSR), so there's no need to refetch on
+  // every click — that round-trip is what made the checkboxes feel sluggish.
   const setMembership = async (committeeId: string, member: boolean, isChair = false) => {
+    const prev = data;
+    const committee = allCommittees.find((c: any) => c.id === committeeId);
+    setData((d: any) => {
+      if (!d) return d;
+      let committees = d.committees || [];
+      if (member) {
+        committees = committees.some((c: any) => c.id === committeeId)
+          ? committees.map((c: any) => (c.id === committeeId ? { ...c, is_chair: isChair } : c))
+          : [...committees, { id: committeeId, name: committee?.name, slug: committee?.slug, is_chair: isChair }];
+      } else {
+        committees = committees.filter((c: any) => c.id !== committeeId);
+      }
+      return { ...d, committees };
+    });
     const res = member
       ? await fetch(`/api/legal/bgm/directors/${id}/committees`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ committee_id: committeeId, is_chair: isChair }) })
       : await fetch(`/api/legal/bgm/directors/${id}/committees?committee_id=${committeeId}`, { method: 'DELETE' });
-    if (res.ok) load(); else addToast({ type: 'error', message: 'Failed to update committee.' });
+    if (!res.ok) { setData(prev); addToast({ type: 'error', message: 'Failed to update committee.' }); }
   };
 
   const save = async () => {
@@ -67,7 +95,10 @@ export default function DirectorDetail() {
       const res = await fetch(`/api/legal/bgm/directors/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
+        body: JSON.stringify({
+          email: form.email, phone: form.phone, appointed_date: form.appointed_date, term_end_date: form.term_end_date,
+          is_hrims: form.is_hrims === 'yes' ? true : form.is_hrims === 'no' ? false : null,
+        }),
       });
       if (!res.ok) throw new Error((await res.json()).error || 'Failed to save');
       addToast({ type: 'success', message: 'Director updated.' });
@@ -119,6 +150,16 @@ export default function DirectorDetail() {
               <Input label="Phone" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
               <Input label="Appointed" type="date" value={form.appointed_date} onChange={(e) => setForm({ ...form, appointed_date: e.target.value })} />
               <Input label="Term ends" type="date" value={form.term_end_date} onChange={(e) => setForm({ ...form, term_end_date: e.target.value })} />
+              <div className="sm:col-span-2">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Membership type</label>
+                <select value={form.is_hrims} onChange={(e) => setForm({ ...form, is_hrims: e.target.value })}
+                  className="w-full px-3 py-2 min-h-[44px] rounded-xl border border-gray-300 bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500">
+                  <option value="">Auto-detect (by email)</option>
+                  <option value="yes">Staff / HRIMS member</option>
+                  <option value="no">External board member</option>
+                </select>
+                <p className="text-xs text-gray-400 mt-1">External members must accept the governance terms before signing for attendance.</p>
+              </div>
               <div className="sm:col-span-2 flex justify-end gap-2 mt-1">
                 <Button variant="ghost" onClick={() => setEditing(false)} disabled={saving}>Cancel</Button>
                 <Button variant="primary" onClick={save} isLoading={saving}>Save</Button>
@@ -212,7 +253,13 @@ function StatCard({ label, value, accent }: { label: string; value: string | num
 }
 
 export const getServerSideProps: GetServerSideProps = async (context) => {
-  const session = await getServerSession(context.req, context.res, authOptions);
-  if (!session?.user?.id) return { redirect: { destination: '/', permanent: false } };
-  return { props: {} };
+  const gate = await requireBgmSSR(context, ['bgm.directors.view', 'bgm.attendance.view', 'legal.access']);
+  if ('redirect' in gate) return { redirect: gate.redirect };
+  const id = String(context.params?.id || '');
+  const [detail, committees] = await Promise.all([
+    buildDirectorDetail(gate.ctx.organizationId, id),
+    buildCommitteesList(gate.ctx.organizationId),
+  ]);
+  if (!detail) return { notFound: true };
+  return { props: { initial: jsonSafe(detail), initialCommittees: jsonSafe(committees) } };
 };

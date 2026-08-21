@@ -48,6 +48,7 @@ export default function ScheduleMeetingModal({ isOpen, onClose, committees, dire
 
   const [inviteMode, setInviteMode] = useState<InviteMode>('all');
   const [selectedDirs, setSelectedDirs] = useState<Set<string>>(new Set());
+  const [extraCommittees, setExtraCommittees] = useState<Set<string>>(new Set());
   const [guests, setGuests] = useState<Associate[]>([]);
 
   const [sendMode, setSendMode] = useState<SendMode>('manual');
@@ -65,11 +66,38 @@ export default function ScheduleMeetingModal({ isOpen, onClose, committees, dire
     return new Set(activeDirectors.map((d) => d.id));
   }, [type, committeeId, committees, activeDirectors]);
 
+  // Members pulled in by the "also include a committee" selector (union).
+  const extraMemberIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const cid of extraCommittees) {
+      const c = committees.find((x) => x.id === cid);
+      (c?.members || []).forEach((m) => s.add(m.id));
+    }
+    return s;
+  }, [extraCommittees, committees]);
+
+  // The final invitee set. null → let the server apply the base scope default.
+  const finalInviteeIds = useMemo<Set<string> | null>(() => {
+    if (inviteMode === 'custom') return new Set([...selectedDirs, ...extraMemberIds]);
+    if (extraMemberIds.size > 0) return new Set([...scopeDirectorIds, ...extraMemberIds]);
+    return null;
+  }, [inviteMode, selectedDirs, extraMemberIds, scopeDirectorIds]);
+
+  const inviteeCount = finalInviteeIds ? finalInviteeIds.size : scopeDirectorIds.size;
+
   const reset = () => {
     setPastMode(false); setType('board'); setCommitteeId(''); setTitle(''); setDate('');
     setStartTime('09:00'); setEndTime('11:00'); setLocation(''); setIsVirtual(false);
     setPlatform('zoom'); setVirtualLink(''); setAgenda(''); setInviteMode('all'); setSelectedDirs(new Set());
-    setGuests([]); setSendMode('manual'); setSendAt('');
+    setExtraCommittees(new Set()); setGuests([]); setSendMode('manual'); setSendAt('');
+  };
+
+  const toggleExtraCommittee = (id: string) => {
+    setExtraCommittees((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
   };
   const handleClose = () => { if (!saving) { reset(); onClose(); } };
 
@@ -98,8 +126,8 @@ export default function ScheduleMeetingModal({ isOpen, onClose, committees, dire
       return setFormError('That date/time is in the past. Switch to “Record a past meeting” to backfill attendance.');
     }
 
-    const director_ids = inviteMode === 'custom' ? Array.from(selectedDirs) : undefined;
-    if (inviteMode === 'custom' && director_ids && director_ids.length === 0 && guests.length === 0) {
+    const director_ids = finalInviteeIds ? Array.from(finalInviteeIds) : undefined;
+    if (director_ids && director_ids.length === 0 && guests.length === 0) {
       return setFormError('Select at least one director or guest to invite.');
     }
 
@@ -242,7 +270,7 @@ export default function ScheduleMeetingModal({ isOpen, onClose, committees, dire
 
         {/* Invitees */}
         <div className="border-t border-border pt-4">
-          <label className="block text-sm font-medium text-gray-700 mb-2">Who is invited?</label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">{pastMode ? 'Who was invited?' : 'Who is invited?'}</label>
           <div className="grid grid-cols-2 gap-2 mb-3">
             <button type="button" onClick={() => setInviteMode('all')}
               className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-sm ${inviteMode === 'all' ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
@@ -274,6 +302,34 @@ export default function ScheduleMeetingModal({ isOpen, onClose, committees, dire
               </div>
             </div>
           )}
+
+          {/* Also include committee members — for meetings that mix the board
+              and one or more committees. Their members are added to the invite. */}
+          {committees.length > 0 && (
+            <div className="mb-3">
+              <p className="text-xs text-gray-500 mb-1.5">Also include committee members <span className="text-gray-400">(optional)</span></p>
+              <div className="flex flex-wrap gap-1.5">
+                {committees.map((c) => {
+                  const on = extraCommittees.has(c.id);
+                  const count = c.members?.length || 0;
+                  return (
+                    <button key={c.id} type="button" onClick={() => toggleExtraCommittee(c.id)}
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors ${on ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+                      {on && <UserCheck className="w-3.5 h-3.5" />}{c.name}{count ? ` (${count})` : ''}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <p className="text-xs text-gray-500 mb-3">
+            {pastMode ? (
+              <><b className="text-gray-700">{inviteeCount}</b> member{inviteeCount === 1 ? '' : 's'} who {inviteeCount === 1 ? 'was' : 'were'} invited{guests.length ? ` · ${guests.length} guest${guests.length === 1 ? '' : 's'}` : ''}.</>
+            ) : (
+              <><b className="text-gray-700">{inviteeCount}</b> board / committee member{inviteeCount === 1 ? '' : 's'} will be invited{guests.length ? ` · ${guests.length} guest${guests.length === 1 ? '' : 's'}` : ''}.</>
+            )}
+          </p>
 
           {/* Guests — AD directory picker + non-RTG free text */}
           <AssociatesField

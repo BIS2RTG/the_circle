@@ -28,6 +28,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (error || !meeting) return res.status(404).json({ error: 'Meeting not found' });
   if (meeting.status === 'cancelled') return res.status(400).json({ error: 'Meeting is cancelled' });
+  if (meeting.status === 'completed' || new Date(meeting.scheduled_start).getTime() <= Date.now()) {
+    return res.status(409).json({ error: 'This meeting has already started or taken place — invitations can only be sent beforehand.' });
+  }
 
   // Gather invitees (directors + guests) with emails.
   const { data: register } = await supabaseAdmin
