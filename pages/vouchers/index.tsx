@@ -162,7 +162,12 @@ export default function VoucherRegisterPage() {
                 </thead>
                 <tbody className="divide-y divide-border">
                   {vouchers.map((v) => (
-                    <tr key={v.id} className="hover:bg-neutral-50/60">
+                    <tr
+                      key={v.id}
+                      className={`hover:bg-neutral-50/60 ${v.request?.id ? 'cursor-pointer' : ''}`}
+                      onClick={() => { if (v.request?.id) router.push(`/requests/comp/${v.request.id}`); }}
+                      title={v.request?.id ? 'Open request' : ''}
+                    >
                       <td className="px-4 py-3 font-mono font-bold text-text-primary whitespace-nowrap">
                         {v.voucher_number || <span className="text-xs font-sans font-normal italic text-neutral-400">pending</span>}
                       </td>
@@ -190,7 +195,7 @@ export default function VoucherRegisterPage() {
                       <td className="px-4 py-3">
                         <button
                           type="button"
-                          onClick={() => toggleDelivered(v)}
+                          onClick={(e) => { e.stopPropagation(); toggleDelivered(v); }}
                           disabled={updatingId === v.id || !v.voucher_number}
                           className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors disabled:opacity-50 ${
                             v.delivered

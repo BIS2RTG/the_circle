@@ -7,13 +7,13 @@ import { GetServerSideProps } from 'next';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '../api/auth/[...nextauth]';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { computeViewerStatus, type ViewerStatusBucket } from '@/lib/recentActivityStatus';
 import { AppLayout } from '@/components/layout';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { useState, useEffect } from 'react';
-import { Clock, CheckCircle2, XCircle, FileText, ArrowRight, TrendingUp, AlertTriangle, Fingerprint, ShieldCheck } from 'lucide-react';
+import { Clock, CheckCircle2, XCircle, FileText, ArrowRight, TrendingUp } from 'lucide-react';
 import Lottie from 'lottie-react';
-import BiometricSetupModal from '@/components/approvals/BiometricSetupModal';
 import dashboardAnimation from '@/lotties/Dashboard.json';
 
 function cn(...inputs: ClassValue[]) {
@@ -65,6 +65,10 @@ interface RecentActivity {
   id: string;
   title: string;
   status: string;
+  /** Status from the signed-in user's perspective (drives the badge). */
+  viewerStatus: ViewerStatusBucket;
+  /** Human label for the badge, e.g. "You approved" / "Awaiting you" / "Pending". */
+  viewerStatusLabel: string;
   created_at: string;
   creator: {
     display_name: string | null;
@@ -196,10 +200,16 @@ export const getServerSideProps: GetServerSideProps<DashboardProps> = async (con
         return false;
       }).slice(0, 10); // Take only first 10 after filtering
 
-      recentActivity = filteredRequests.map((req: any) => ({
-        ...req,
-        creator: Array.isArray(req.creator) ? req.creator[0] : req.creator,
-      })) as RecentActivity[];
+      recentActivity = filteredRequests.map((req: any) => {
+        const viewer = computeViewerStatus(req, userId);
+        const { request_steps, ...rest } = req;
+        return {
+          ...rest,
+          creator: Array.isArray(req.creator) ? req.creator[0] : req.creator,
+          viewerStatus: viewer.status,
+          viewerStatusLabel: viewer.label,
+        };
+      }) as RecentActivity[];
     }
   } catch (error) {
     console.error('Error fetching dashboard data:', error);
@@ -223,35 +233,6 @@ export default function Dashboard({
 }: DashboardProps) {
   const { data: session } = useSession();
   const router = useRouter();
-
-  // Device (passkey / biometric) registration status for the security card.
-  const [deviceRegistered, setDeviceRegistered] = useState<boolean | null>(null);
-  const [deviceCount, setDeviceCount] = useState(0);
-  const [showBiometricSetup, setShowBiometricSetup] = useState(false);
-
-  const loadDevices = async () => {
-    try {
-      const res = await fetch('/api/webauthn/credentials');
-      // Leave state as "unknown" (null) on failure — reporting "no device
-      // registered" off a transient error both misleads the user and would
-      // fire the enrollment prompt at people who ARE registered.
-      if (!res.ok) return;
-      const data = await res.json();
-      // Count only credentials usable on THIS domain (usable_here === false
-      // means the passkey was registered for a different environment).
-      const active = (data.credentials || []).filter(
-        (c: any) => c.is_active && c.usable_here !== false
-      );
-      setDeviceCount(active.length);
-      setDeviceRegistered(active.length > 0);
-    } catch {
-      /* network hiccup — keep the loading/unknown state */
-    }
-  };
-
-  useEffect(() => {
-    loadDevices();
-  }, []);
 
   // Seed from SSR for an instant first paint, then keep the cards live by
   // refetching whenever the dashboard mounts or the tab regains focus — so the
@@ -418,7 +399,11 @@ export default function Dashboard({
                   recentActivity.slice(0, 5).map((activity) => {
                     const creatorName = activity.creator?.display_name || activity.creator?.email?.split('@')[0] || 'Unknown';
                     const requestType = activity.metadata?.type || 'Request';
-                    const statusDisplay = activity.status.charAt(0).toUpperCase() + activity.status.slice(1);
+                    // Badge reflects the request from THIS user's perspective:
+                    // an approver who has signed sees "You approved" rather than
+                    // the request's still-in-progress "Pending".
+                    const statusDisplay = activity.viewerStatusLabel;
+                    const badgeStatus = activity.viewerStatus;
 
                     return (
                       <Link
@@ -441,9 +426,9 @@ export default function Dashboard({
                         </div>
                         <span className={cn(
                           "px-2 py-0.5 rounded-md text-[11px] font-medium border",
-                          activity.status === 'approved' && "bg-emerald-50 text-emerald-700 border-emerald-100",
-                          (activity.status === 'pending' || activity.status === 'draft') && "bg-amber-50 text-amber-700 border-amber-100",
-                          activity.status === 'rejected' && "bg-rose-50 text-rose-700 border-rose-100",
+                          badgeStatus === 'approved' && "bg-emerald-50 text-emerald-700 border-emerald-100",
+                          badgeStatus === 'pending' && "bg-amber-50 text-amber-700 border-amber-100",
+                          badgeStatus === 'rejected' && "bg-rose-50 text-rose-700 border-rose-100",
                         )}>
                           {statusDisplay}
                         </span>
@@ -484,63 +469,10 @@ export default function Dashboard({
                   </div>
                 </div>
               </section>
-
-              {/* Device Registration (passkey / biometric) */}
-              <section className="bg-white rounded-xl border border-[#C9B896] p-6">
-                <div className="flex items-center gap-2 mb-4">
-                  <Fingerprint className="w-4 h-4 text-neutral-700" strokeWidth={1.5} />
-                  <h3 className="text-sm font-semibold text-gray-900">Device Registration</h3>
-                </div>
-                {deviceRegistered === null ? (
-                  <div className="flex items-center justify-center py-4">
-                    <div className="w-5 h-5 border-2 border-gray-300 border-t-gray-700 rounded-full animate-spin" />
-                  </div>
-                ) : deviceRegistered ? (
-                  <div className="flex items-start gap-3">
-                    <div className="p-1.5 bg-emerald-50 border border-emerald-200 rounded-md text-emerald-600">
-                      <ShieldCheck className="w-4 h-4" strokeWidth={1.5} />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-gray-900">Device registered</p>
-                      <p className="text-xs text-gray-500 mt-0.5">
-                        {deviceCount} {deviceCount === 1 ? 'device is' : 'devices are'} set up for biometric verification.
-                      </p>
-                      <button
-                        onClick={() => setShowBiometricSetup(true)}
-                        className="mt-2.5 inline-flex items-center gap-1 text-xs font-medium text-gray-900 hover:text-gray-700"
-                      >
-                        Register another <ArrowRight className="w-3 h-3" />
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex items-start gap-3">
-                    <div className="p-1.5 bg-neutral-100 border border-neutral-200 rounded-md text-neutral-700">
-                      <AlertTriangle className="w-4 h-4" strokeWidth={1.5} />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-gray-900">No device registered</p>
-                      <p className="text-xs text-gray-500 mt-0.5 mb-2.5">Register this device to verify sensitive approvals with biometrics.</p>
-                      <button
-                        onClick={() => setShowBiometricSetup(true)}
-                        className="inline-flex items-center gap-1 text-xs font-medium text-gray-900 hover:text-gray-700"
-                      >
-                        Register now <ArrowRight className="w-3 h-3" />
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </section>
             </div>
           </div>
 
         </div>
-
-        <BiometricSetupModal
-          isOpen={showBiometricSetup}
-          onClose={() => setShowBiometricSetup(false)}
-          onSuccess={() => { setShowBiometricSetup(false); loadDevices(); }}
-        />
       </AppLayout>
     </>
   );

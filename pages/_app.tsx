@@ -11,6 +11,7 @@ import Loader from '../components/Loader';
 import RouteProgress from '../components/RouteProgress';
 import ErrorBoundary from '../components/ErrorBoundary';
 import GlobalErrorListener from '../components/GlobalErrorListener';
+import SessionExpiryHandler from '../components/SessionExpiryHandler';
 import NetworkStatusBanner from '../components/NetworkStatusBanner';
 
 const SESSION_FLAG = 'the_circle_active_session';
@@ -59,6 +60,7 @@ export default function App({ Component, pageProps: { session, ...pageProps } }:
             <RBACProvider>
               <ToastProvider>
                 <GlobalErrorListener />
+                <SessionExpiryHandler />
                 <Component {...pageProps} />
               </ToastProvider>
             </RBACProvider>

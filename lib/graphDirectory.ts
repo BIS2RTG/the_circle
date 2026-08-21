@@ -34,6 +34,36 @@ export interface DirectoryUser {
 }
 
 /**
+ * Allowed primary email domain(s) for people who may appear in the picker /
+ * be provisioned as approvers. RTG staff sign in with `@rtg.co.zw`; the tenant
+ * also contains `*.onmicrosoft.com` fallback identities, external guests and
+ * service accounts that must never be selectable. Configurable via
+ * DIRECTORY_ALLOWED_EMAIL_DOMAINS (comma-separated) so other verified domains
+ * can be added without a code change; defaults to `rtg.co.zw`.
+ */
+const ALLOWED_EMAIL_DOMAINS = (process.env.DIRECTORY_ALLOWED_EMAIL_DOMAINS || 'rtg.co.zw')
+  .split(',')
+  .map((d) => d.trim().toLowerCase())
+  .filter(Boolean);
+
+/**
+ * True when an address belongs to one of the allowed corporate domains. A
+ * directory object usually carries several addresses (mail + UPN); pass all of
+ * them — the person is allowed if ANY is on an allowed domain. This keeps a
+ * staff member whose `mail` is `@rtg.co.zw` but whose UPN is
+ * `*.onmicrosoft.com` visible, while excluding accounts with no `@rtg.co.zw`
+ * address at all (guests, service mailboxes, onmicrosoft-only identities).
+ */
+export function isAllowedDirectoryEmail(...addresses: (string | null | undefined)[]): boolean {
+  return addresses.some((addr) => {
+    const at = (addr || '').trim().toLowerCase().lastIndexOf('@');
+    if (at < 0) return false;
+    const domain = (addr as string).trim().toLowerCase().slice(at + 1);
+    return ALLOWED_EMAIL_DOMAINS.includes(domain);
+  });
+}
+
+/**
  * Exchange-generated system / service mailboxes (health-monitoring, eDiscovery,
  * migration, arbitration, the federation account, etc.). These are real,
  * enabled directory objects, so they slip past the `accountEnabled` check and a
@@ -98,6 +128,9 @@ export async function searchDirectoryUsers(
   return (json.value || [])
     .filter((u: any) => u.accountEnabled !== false)
     .filter((u: any) => !isSystemMailbox(u.displayName, u.userPrincipalName, u.mail))
+    // Corporate domain only — drop guests, service accounts and
+    // *.onmicrosoft.com fallback identities that pollute the picker.
+    .filter((u: any) => isAllowedDirectoryEmail(u.mail, u.userPrincipalName))
     .map((u: any) => ({
       azureOid: u.id,
       displayName: u.displayName || u.userPrincipalName || u.mail || 'Unknown',
@@ -144,6 +177,7 @@ export async function getDirectoryUserByEmail(
   const u = (json.value || [])[0];
   if (!u || u.accountEnabled === false) return null;
   if (isSystemMailbox(u.displayName, u.userPrincipalName, u.mail)) return null;
+  if (!isAllowedDirectoryEmail(u.mail, u.userPrincipalName)) return null;
 
   return {
     azureOid: u.id,

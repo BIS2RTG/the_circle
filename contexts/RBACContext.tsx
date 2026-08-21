@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
-import { useRouter } from 'next/router';
 
 // ============================================================
 // Types
@@ -241,21 +240,4 @@ export function useRBAC() {
     throw new Error('useRBAC must be used within an RBACProvider');
   }
   return context;
-}
-
-/**
- * Client-side page gate. Redirects to `redirectTo` once the RBAC profile has
- * loaded and the user has none of `codes`. Uses the cached RBAC profile, so an
- * authorised user never sees a flash — this lets pages skip an expensive
- * server-side permission query in getServerSideProps.
- */
-export function useRequirePermission(codes: string[], redirectTo = '/dashboard') {
-  const { hasAnyPermission, loading, rbac } = useRBAC();
-  const router = useRouter();
-  const key = codes.join(',');
-  useEffect(() => {
-    if (loading || !rbac) return;
-    if (!hasAnyPermission(codes)) router.replace(redirectTo);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, rbac, key, redirectTo]);
 }

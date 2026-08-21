@@ -1,6 +1,6 @@
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/router';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { AppLayout } from '../../../components/layout';
 import { Card, Button, Input, RequestPreviewModal, UnsavedChangesModal, ReferenceCodeBanner, buildDocumentHeaderSection } from '../../../components/ui';
 import type { PreviewSection } from '../../../components/ui';
@@ -13,6 +13,7 @@ import { calculateTollgatesForItinerary, getTollgateRouteInfo, TollgateRouteType
 import { SupportingDocuments, uploadSupportingDocuments, makeSupportingDoc, type SupportingDoc } from '../../../components/requests/SupportingDocuments';
 import { OnBehalfOfField, type OnBehalfOf } from '../../../components/requests/OnBehalfOfField';
 import { isApproverRowLocked } from '../../../lib/approverLocking';
+import { COMP_BOOKING_COO, resolveCompBookingCoo, BOARD_COMP_APPROVERS, resolveBoardApprover } from '../../../lib/fixedApprovers';
 import ApproverSectionLoader from '../../../components/requests/ApproverSectionLoader';
 
 interface SelectedBusinessUnit {
@@ -40,12 +41,14 @@ interface TollgateEntry {
     totalCost: string;
 }
 
-// AA Rate table based on engine capacity and fuel type (USD per km)
+// AA Rate table based on engine capacity and fuel type (USD per km).
+// AA Zimbabwe schedule "JULY 2026 V2" (version V319.1), wet rates — kept in
+// sync with /api/settings/rates DEFAULTS and the other travel/booking forms.
 const AA_RATES: Record<string, { petrol: number; diesel: number }> = {
-    '1.1L-1.5L': { petrol: 0.28, diesel: 0.26 },
-    '1.6L-2.0L': { petrol: 0.35, diesel: 0.32 },
-    '2.1L-3.0L': { petrol: 0.48, diesel: 0.45 },
-    'Above 3.0L': { petrol: 0.59, diesel: 0.56 },
+    '1.1L-1.5L': { petrol: 0.30, diesel: 0.28 },
+    '1.6L-2.0L': { petrol: 0.38, diesel: 0.34 },
+    '2.1L-3.0L': { petrol: 0.52, diesel: 0.48 },
+    'Above 3.0L': { petrol: 0.64, diesel: 0.59 },
 };
 
 interface CostAllocation {
@@ -131,26 +134,85 @@ export default function ExternalCompBookingPage() {
     // Unsaved-changes tracking — flipped true on first real user interaction via form onChange.
     const [isDirty, setIsDirty] = useState(false);
 
-    // Approver selection state - 4 fixed roles
-    const approvalRoles = [
-        { key: 'line_manager', label: 'Line Manager', description: 'Recommendation' },
-        { key: 'functional_head', label: 'Functional Head', description: 'Functional Approval' },
-        { key: 'hrd', label: 'Chief Human Capital Officer', description: 'CHCO Approval' },
-        { key: 'ceo', label: 'CEO', description: 'Authorisation' },
-    ];
+    // Board-member complimentary bookings run a different approval chain
+    // (Company Secretary → CFO → CEO). Toggled by the requester below.
+    const [isBoardMemberBooking, setIsBoardMemberBooking] = useState(false);
+
+    // Approver selection state. Normal comp bookings use a 4-role chain (the COO
+    // occupies the `functional_head` slot as a fixed, locked approver — see
+    // COMP_BOOKING_COO). Board-member bookings swap in the 3-role board chain.
+    const approvalRoles = useMemo(() => (
+        isBoardMemberBooking
+            ? BOARD_COMP_APPROVERS.map(r => ({ key: r.key, label: r.label, description: r.description }))
+            : [
+                { key: 'line_manager', label: 'Line Manager', description: 'Recommendation' },
+                { key: 'functional_head', label: COMP_BOOKING_COO.LABEL, description: 'Operations Approval' },
+                { key: 'hrd', label: 'Chief Human Capital Officer', description: 'CHCO Approval' },
+                { key: 'ceo', label: 'CEO', description: 'Authorisation' },
+            ]
+    ), [isBoardMemberBooking]);
     const [users, setUsers] = useState<Array<{ id: string; display_name: string; email: string; job_title?: string }>>([]);
     const [loadingUsers, setLoadingUsers] = useState(true);
+    // The fixed COO, resolved from the loaded org users by email so it works in
+    // every environment (prod vs the RTG demo/local DB). Null until users load.
+    const coo = useMemo(() => resolveCompBookingCoo(users), [users]);
+    const cooUserId = coo?.id || '';
+    // When the COO themselves files a complimentary booking they can't approve
+    // their own request, so the slot must stay editable/empty for them.
+    const cooIsRequester = !!cooUserId && (session?.user as any)?.id === cooUserId;
     const [selectedApprovers, setSelectedApprovers] = useState<Record<string, string>>({
         line_manager: '',
+        // Locked to the current Chief Operating Officer — pinned once users load.
         functional_head: '',
         hrd: '',
         ceo: '',
+        // Board-member chain slots.
+        company_secretary: '',
+        cfo: '',
     });
+    // Enforce the fixed COO: whatever else tries to set this slot (draft load,
+    // HRIMS auto-resolution, edit), it always resolves back to the current COO —
+    // except when the COO is the requester (see above). No-op until the COO is
+    // resolved from the user list.
+    useEffect(() => {
+        if (isBoardMemberBooking) return;   // board chain doesn't use the COO slot
+        if (!cooUserId) return;
+        if (cooIsRequester) {
+            if (selectedApprovers.functional_head === cooUserId) {
+                setSelectedApprovers(prev => ({ ...prev, functional_head: '' }));
+            }
+            return;
+        }
+        if (selectedApprovers.functional_head !== cooUserId) {
+            setSelectedApprovers(prev => ({ ...prev, functional_head: cooUserId }));
+        }
+    }, [isBoardMemberBooking, cooUserId, cooIsRequester, selectedApprovers.functional_head]);
+
+    // Board-member chain auto-resolution: fill Company Secretary / CFO / CEO by
+    // matching job titles in the loaded user list (works without live HRIMS).
+    // Runs when board mode is on; leaves a slot blank for manual pick if unmatched.
+    useEffect(() => {
+        if (!isBoardMemberBooking || users.length === 0) return;
+        const resolved: Record<string, boolean> = {};
+        const picks: Record<string, string> = {};
+        const currentUserId = (session?.user as any)?.id;
+        for (const role of BOARD_COMP_APPROVERS) {
+            const match = resolveBoardApprover(users, role, currentUserId);
+            if (match) { picks[role.key] = match.id; resolved[role.key] = true; }
+        }
+        if (Object.keys(picks).length > 0) {
+            setSelectedApprovers(prev => ({ ...prev, ...picks }));
+            setAutoResolvedRoles(prev => ({ ...prev, ...resolved }));
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isBoardMemberBooking, users]);
     const [approverSearch, setApproverSearch] = useState<Record<string, string>>({
         line_manager: '',
         functional_head: '',
         hrd: '',
         ceo: '',
+        company_secretary: '',
+        cfo: '',
     });
     const [showApproverDropdown, setShowApproverDropdown] = useState<string | null>(null);
     const [loadingApproverResolution, setLoadingApproverResolution] = useState(!isEditMode);
@@ -245,10 +307,11 @@ export default function ExternalCompBookingPage() {
     useFormAutosave({
         formKey: 'external-comp-booking',
         enabled: !isEditMode,
-        data: { formData, travelData, selectedApprovers, selectedBusinessUnits, aaCalculator, isEmergencyRequest, emergencyReason, tollgateRouteType },
+        data: { formData, travelData, selectedApprovers, selectedBusinessUnits, aaCalculator, isEmergencyRequest, emergencyReason, tollgateRouteType, isBoardMemberBooking },
         onRestore: (saved) => {
             if (saved.formData) setFormData(saved.formData);
             if (saved.travelData) setTravelData(saved.travelData);
+            if (typeof saved.isBoardMemberBooking === 'boolean') setIsBoardMemberBooking(saved.isBoardMemberBooking);
             if (saved.selectedApprovers) setSelectedApprovers(prev => ({ ...prev, ...saved.selectedApprovers }));
             if (Array.isArray(saved.selectedBusinessUnits)) setSelectedBusinessUnits(saved.selectedBusinessUnits);
             if (saved.aaCalculator) setAACalculator(saved.aaCalculator);
@@ -492,6 +555,11 @@ export default function ExternalCompBookingPage() {
                     setOriginalTravelData(metadata.travelDocument);
                 }
 
+                // Restore the board-member flag so the correct chain shows on edit.
+                if (typeof metadata.isBoardMember === 'boolean') {
+                    setIsBoardMemberBooking(metadata.isBoardMember);
+                }
+
                 // Set approvers and store original for change tracking
                 const approverRolesData = metadata.approverRoles || {};
                 if (approverRolesData && typeof approverRolesData === 'object') {
@@ -556,7 +624,9 @@ export default function ExternalCompBookingPage() {
     // Auto-resolve approvers from HRIMS organogram (only on new requests, not edits)
     useEffect(() => {
         const resolveApprovers = async () => {
-            if (!session?.user?.email || isEditMode) { setLoadingApproverResolution(false); return; }
+            // Board-member bookings resolve their own chain (see the board effect
+            // above), so skip the normal HRIMS organogram resolution.
+            if (!session?.user?.email || isEditMode || isBoardMemberBooking) { setLoadingApproverResolution(false); return; }
             setLoadingApproverResolution(true);
             try {
                 const response = await fetch(`/api/hrims/resolve-approvers?email=${encodeURIComponent(session.user.email)}&formType=hotel-booking`);
@@ -584,7 +654,7 @@ export default function ExternalCompBookingPage() {
             }
         };
         if (status === 'authenticated') resolveApprovers();
-    }, [status, session?.user?.email, isEditMode]);
+    }, [status, session?.user?.email, isEditMode, isBoardMemberBooking]);
 
     // Filter users by search for a specific role
     const getFilteredUsersForRole = (roleKey: string) => {
@@ -721,7 +791,10 @@ export default function ExternalCompBookingPage() {
 
         try {
             const fieldChanges = collectFieldChanges();
-            const approversArray = [selectedApprovers.line_manager, selectedApprovers.functional_head, selectedApprovers.hrd, selectedApprovers.ceo].filter(Boolean);
+            const approversArray = (isBoardMemberBooking
+                ? [selectedApprovers.company_secretary, selectedApprovers.cfo, selectedApprovers.ceo]
+                : [selectedApprovers.line_manager, selectedApprovers.functional_head, selectedApprovers.hrd, selectedApprovers.ceo]
+            ).filter(Boolean);
 
             const response = await fetch(`/api/requests/${editRequestId}`, {
                 method: 'PUT',
@@ -747,6 +820,7 @@ export default function ExternalCompBookingPage() {
                         }),
                         approvers: approversArray,
                         approverRoles: selectedApprovers,
+                        isBoardMember: isBoardMemberBooking,
                         useParallelApprovals: false,
                     },
                 }),
@@ -780,7 +854,10 @@ export default function ExternalCompBookingPage() {
         setError(null);
 
         try {
-            const approversArray = [selectedApprovers.line_manager, selectedApprovers.functional_head, selectedApprovers.hrd, selectedApprovers.ceo].filter(Boolean);
+            const approversArray = (isBoardMemberBooking
+                ? [selectedApprovers.company_secretary, selectedApprovers.cfo, selectedApprovers.ceo]
+                : [selectedApprovers.line_manager, selectedApprovers.functional_head, selectedApprovers.hrd, selectedApprovers.ceo]
+            ).filter(Boolean);
 
             const response = await fetch(`/api/requests/${editRequestId}`, {
                 method: 'PUT',
@@ -806,6 +883,7 @@ export default function ExternalCompBookingPage() {
                         }),
                         approvers: approversArray,
                         approverRoles: selectedApprovers,
+                        isBoardMember: isBoardMemberBooking,
                         useParallelApprovals: false,
                     },
                 }),
@@ -828,7 +906,41 @@ export default function ExternalCompBookingPage() {
     const [showConfirm, setShowConfirm] = useState(false);
 
     const buildPreviewSections = (): PreviewSection[] => {
+        // Flag stays whose dates have already passed. Past-dated complimentary
+        // bookings are allowed (they're often captured after the guest has
+        // stayed) but we surface a banner so approvers know it's retrospective.
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+        const hasPastStay = selectedBusinessUnits.some((u) => {
+            const d = u.departureDate || u.arrivalDate;
+            if (!d) return false;
+            const parsed = new Date(d);
+            return !isNaN(parsed.getTime()) && parsed < startOfToday;
+        });
+
         const compSections: PreviewSection[] = [
+            ...(hasPastStay ? [{
+                content: (
+                    <div style={{
+                        border: '1px solid #C8A24A',
+                        background: '#FBF3DD',
+                        color: '#6B4E12',
+                        padding: '8px 12px',
+                        fontSize: 12,
+                        fontWeight: 700,
+                        borderRadius: 4,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                    }}>
+                        <span aria-hidden="true">⚠️</span>
+                        <span>
+                            Retrospective booking — this complimentary stay includes dates that have already passed.
+                            The guest has already stayed / the complimentary has already been provided.
+                        </span>
+                    </div>
+                ),
+            }] : []),
             {
                 title: 'Requestor Information',
                 fields: [
@@ -981,34 +1093,19 @@ export default function ExternalCompBookingPage() {
 
         // Approvers are optional per step — not every role must be filled — but
         // at least one is required so there's an approval chain to route through.
-        const anyApproverSelected = [
-            selectedApprovers.line_manager,
-            selectedApprovers.functional_head,
-            selectedApprovers.hrd,
-            selectedApprovers.ceo,
-        ].some(Boolean);
+        const anyApproverSelected = (isBoardMemberBooking
+            ? [selectedApprovers.company_secretary, selectedApprovers.cfo, selectedApprovers.ceo]
+            : [selectedApprovers.line_manager, selectedApprovers.functional_head, selectedApprovers.hrd, selectedApprovers.ceo]
+        ).some(Boolean);
         if (!anyApproverSelected) {
             errors.push('Please select at least one approver');
         }
 
-        // Validate dates are not in the past
+        // Note: arrival/departure dates are intentionally allowed to be in the
+        // past — complimentary stays are often captured after the guest has
+        // already stayed. A banner on the preview/PDF flags any past-dated stay.
         const todayDate = new Date();
         todayDate.setHours(0, 0, 0, 0);
-        
-        for (const unit of selectedBusinessUnits) {
-            if (unit.arrivalDate) {
-                const arrivalDate = new Date(unit.arrivalDate);
-                if (arrivalDate < todayDate) {
-                    errors.push(`Arrival date for ${unit.name} cannot be in the past`);
-                }
-            }
-            if (unit.departureDate) {
-                const departureDate = new Date(unit.departureDate);
-                if (departureDate < todayDate) {
-                    errors.push(`Departure date for ${unit.name} cannot be in the past`);
-                }
-            }
-        }
 
         // If processTravelDocument is checked, validate travel fields
         if (formData.processTravelDocument) {
@@ -1070,12 +1167,10 @@ export default function ExternalCompBookingPage() {
         try {
             // Convert approvers object to ordered array for sequential approval
             // Order: HOD -> HR Director -> Finance Director -> CEO
-            const approversArray = [
-                selectedApprovers.line_manager,
-                selectedApprovers.functional_head,
-                selectedApprovers.hrd,
-                selectedApprovers.ceo,
-            ].filter(Boolean); // Remove any empty values
+            const approversArray = (isBoardMemberBooking
+                ? [selectedApprovers.company_secretary, selectedApprovers.cfo, selectedApprovers.ceo]
+                : [selectedApprovers.line_manager, selectedApprovers.functional_head, selectedApprovers.hrd, selectedApprovers.ceo]
+            ).filter(Boolean); // Remove any empty values
 
             const response = await fetch('/api/requests', {
                 method: 'POST',
@@ -1108,6 +1203,7 @@ export default function ExternalCompBookingPage() {
                         }),
                         approvers: approversArray,
                         approverRoles: selectedApprovers,
+                        isBoardMember: isBoardMemberBooking,
                         useParallelApprovals: false,
                         onBehalfOf: onBehalfOf || null,
                     },
@@ -1138,12 +1234,10 @@ export default function ExternalCompBookingPage() {
 
         try {
             // Convert approvers object to ordered array for sequential approval
-            const approversArray = [
-                selectedApprovers.line_manager,
-                selectedApprovers.functional_head,
-                selectedApprovers.hrd,
-                selectedApprovers.ceo,
-            ].filter(Boolean);
+            const approversArray = (isBoardMemberBooking
+                ? [selectedApprovers.company_secretary, selectedApprovers.cfo, selectedApprovers.ceo]
+                : [selectedApprovers.line_manager, selectedApprovers.functional_head, selectedApprovers.hrd, selectedApprovers.ceo]
+            ).filter(Boolean);
 
             const response = await fetch('/api/requests', {
                 method: 'POST',
@@ -1176,6 +1270,7 @@ export default function ExternalCompBookingPage() {
                         }),
                         approvers: approversArray,
                         approverRoles: selectedApprovers,
+                        isBoardMember: isBoardMemberBooking,
                         useParallelApprovals: false,
                     },
                 }),
@@ -1379,7 +1474,6 @@ export default function ExternalCompBookingPage() {
                                                     value={selectedUnit.arrivalDate}
                                                     onChange={(e) => handleBusinessUnitFieldChange(selectedUnit.instanceId, 'arrivalDate', e.target.value)}
                                                     required
-                                                    min={todayISO}
                                                 />
                                                 <Input
                                                     type="date"
@@ -1387,7 +1481,7 @@ export default function ExternalCompBookingPage() {
                                                     value={selectedUnit.departureDate}
                                                     onChange={(e) => handleBusinessUnitFieldChange(selectedUnit.instanceId, 'departureDate', e.target.value)}
                                                     required
-                                                    min={selectedUnit.arrivalDate || todayISO}
+                                                    min={selectedUnit.arrivalDate || undefined}
                                                 />
                                                 <Input
                                                     type="number"
@@ -1494,6 +1588,7 @@ export default function ExternalCompBookingPage() {
                             <option value="administration">Administration</option>
                             <option value="promotions">Promotions</option>
                             <option value="personnel">Personnel</option>
+                            <option value="legal">Legal</option>
                         </select>
                     </Card>
 
@@ -1839,23 +1934,23 @@ export default function ExternalCompBookingPage() {
                                                         <tbody>
                                                             <tr className={`border-b border-gray-100 ${aaCalculator.engineCapacity === '1.1L-1.5L' ? 'bg-[#F3EADC]' : ''}`}>
                                                                 <td className="py-1 px-2">1.1L – 1.5L</td>
-                                                                <td className={`text-center py-1 px-2 ${aaCalculator.engineCapacity === '1.1L-1.5L' && aaCalculator.fuelType === 'petrol' ? 'font-bold text-[#5E4426]' : ''}`}>0.28</td>
-                                                                <td className={`text-center py-1 px-2 ${aaCalculator.engineCapacity === '1.1L-1.5L' && aaCalculator.fuelType === 'diesel' ? 'font-bold text-[#5E4426]' : ''}`}>0.26</td>
+                                                                <td className={`text-center py-1 px-2 ${aaCalculator.engineCapacity === '1.1L-1.5L' && aaCalculator.fuelType === 'petrol' ? 'font-bold text-[#5E4426]' : ''}`}>{AA_RATES['1.1L-1.5L'].petrol.toFixed(2)}</td>
+                                                                <td className={`text-center py-1 px-2 ${aaCalculator.engineCapacity === '1.1L-1.5L' && aaCalculator.fuelType === 'diesel' ? 'font-bold text-[#5E4426]' : ''}`}>{AA_RATES['1.1L-1.5L'].diesel.toFixed(2)}</td>
                                                             </tr>
                                                             <tr className={`border-b border-gray-100 ${aaCalculator.engineCapacity === '1.6L-2.0L' ? 'bg-[#F3EADC]' : ''}`}>
                                                                 <td className="py-1 px-2">1.6L – 2.0L</td>
-                                                                <td className={`text-center py-1 px-2 ${aaCalculator.engineCapacity === '1.6L-2.0L' && aaCalculator.fuelType === 'petrol' ? 'font-bold text-[#5E4426]' : ''}`}>0.35</td>
-                                                                <td className={`text-center py-1 px-2 ${aaCalculator.engineCapacity === '1.6L-2.0L' && aaCalculator.fuelType === 'diesel' ? 'font-bold text-[#5E4426]' : ''}`}>0.32</td>
+                                                                <td className={`text-center py-1 px-2 ${aaCalculator.engineCapacity === '1.6L-2.0L' && aaCalculator.fuelType === 'petrol' ? 'font-bold text-[#5E4426]' : ''}`}>{AA_RATES['1.6L-2.0L'].petrol.toFixed(2)}</td>
+                                                                <td className={`text-center py-1 px-2 ${aaCalculator.engineCapacity === '1.6L-2.0L' && aaCalculator.fuelType === 'diesel' ? 'font-bold text-[#5E4426]' : ''}`}>{AA_RATES['1.6L-2.0L'].diesel.toFixed(2)}</td>
                                                             </tr>
                                                             <tr className={`border-b border-gray-100 ${aaCalculator.engineCapacity === '2.1L-3.0L' ? 'bg-[#F3EADC]' : ''}`}>
                                                                 <td className="py-1 px-2">2.1L – 3.0L</td>
-                                                                <td className={`text-center py-1 px-2 ${aaCalculator.engineCapacity === '2.1L-3.0L' && aaCalculator.fuelType === 'petrol' ? 'font-bold text-[#5E4426]' : ''}`}>0.48</td>
-                                                                <td className={`text-center py-1 px-2 ${aaCalculator.engineCapacity === '2.1L-3.0L' && aaCalculator.fuelType === 'diesel' ? 'font-bold text-[#5E4426]' : ''}`}>0.45</td>
+                                                                <td className={`text-center py-1 px-2 ${aaCalculator.engineCapacity === '2.1L-3.0L' && aaCalculator.fuelType === 'petrol' ? 'font-bold text-[#5E4426]' : ''}`}>{AA_RATES['2.1L-3.0L'].petrol.toFixed(2)}</td>
+                                                                <td className={`text-center py-1 px-2 ${aaCalculator.engineCapacity === '2.1L-3.0L' && aaCalculator.fuelType === 'diesel' ? 'font-bold text-[#5E4426]' : ''}`}>{AA_RATES['2.1L-3.0L'].diesel.toFixed(2)}</td>
                                                             </tr>
                                                             <tr className={`${aaCalculator.engineCapacity === 'Above 3.0L' ? 'bg-[#F3EADC]' : ''}`}>
                                                                 <td className="py-1 px-2">Above 3.0L</td>
-                                                                <td className={`text-center py-1 px-2 ${aaCalculator.engineCapacity === 'Above 3.0L' && aaCalculator.fuelType === 'petrol' ? 'font-bold text-[#5E4426]' : ''}`}>0.59</td>
-                                                                <td className={`text-center py-1 px-2 ${aaCalculator.engineCapacity === 'Above 3.0L' && aaCalculator.fuelType === 'diesel' ? 'font-bold text-[#5E4426]' : ''}`}>0.56</td>
+                                                                <td className={`text-center py-1 px-2 ${aaCalculator.engineCapacity === 'Above 3.0L' && aaCalculator.fuelType === 'petrol' ? 'font-bold text-[#5E4426]' : ''}`}>{AA_RATES['Above 3.0L'].petrol.toFixed(2)}</td>
+                                                                <td className={`text-center py-1 px-2 ${aaCalculator.engineCapacity === 'Above 3.0L' && aaCalculator.fuelType === 'diesel' ? 'font-bold text-[#5E4426]' : ''}`}>{AA_RATES['Above 3.0L'].diesel.toFixed(2)}</td>
                                                             </tr>
                                                         </tbody>
                                                     </table>
@@ -2181,8 +2276,28 @@ export default function ExternalCompBookingPage() {
                             </svg>
                             Approval Workflow <span className="text-danger-500">*</span>
                         </h3>
+
+                        {/* Board-member bookings use a dedicated chain
+                            (Company Secretary → CFO → CEO). */}
+                        <label className="flex items-start gap-3 mb-4 p-3 rounded-xl border border-amber-200 bg-amber-50 cursor-pointer">
+                            <input
+                                type="checkbox"
+                                className="mt-0.5 w-4 h-4 rounded border-gray-300 text-amber-600 focus:ring-amber-500"
+                                checked={isBoardMemberBooking}
+                                onChange={(e) => { setIsBoardMemberBooking(e.target.checked); setIsDirty(true); }}
+                            />
+                            <span>
+                                <span className="block text-sm font-medium text-amber-900">This complimentary booking is for a board member</span>
+                                <span className="block text-xs text-amber-700 mt-0.5">
+                                    Routes the approval through the board chain: Company Secretary → Chief Finance Officer → CEO.
+                                </span>
+                            </span>
+                        </label>
+
                         <p className="text-sm text-text-secondary mb-4">
-                            Approvers are automatically assigned from the HRIMS organogram. If a role has no assigned user, you must manually select one.
+                            {isBoardMemberBooking
+                                ? 'This request follows the board-member chain. Approvers are matched by role; if one isn’t found, select them manually.'
+                                : 'Approvers are automatically assigned from the HRIMS organogram. If a role has no assigned user, you must manually select one.'}
                         </p>
 
                         {loadingApproverResolution && <ApproverSectionLoader rows={approvalRoles.length} />}
@@ -2199,10 +2314,13 @@ export default function ExternalCompBookingPage() {
                         <div className={`space-y-4 ${loadingApproverResolution ? 'hidden' : ''}`}>
                             {approvalRoles.map((role, index) => {
                                 const selectedUserId = selectedApprovers[role.key];
+                                // The COO slot is a fixed, locked approver — never editable.
+                                // Exception: when the COO is the requester it stays editable.
+                                const isFixedCoo = role.key === COMP_BOOKING_COO.ROLE_KEY && !!coo && !cooIsRequester;
                                 const selectedUser = selectedUserId ? users.find(u => u.id === selectedUserId) : null;
                                 const filteredUsers = getFilteredUsersForRole(role.key);
                                 const isAutoResolved = autoResolvedRoles[role.key];
-                                const isLocked = isApproverRowLocked(role.key, isAutoResolved);
+                                const isLocked = isFixedCoo || isApproverRowLocked(role.key, isAutoResolved);
 
                                 return (
                                     <div key={role.key} className="relative">
@@ -2230,7 +2348,9 @@ export default function ExternalCompBookingPage() {
                                                         <div className="flex-1 min-w-0">
                                                             <p className="text-sm font-medium text-gray-900 truncate">{selectedUser.display_name}</p>
                                                             <p className="text-xs text-gray-500 truncate">{selectedUser.email}</p>
-                                                            {isAutoResolved && <p className="text-xs text-green-600 mt-0.5">Auto-assigned from HRIMS organogram{isLocked ? ' · locked' : ''}</p>}
+                                                            {isFixedCoo
+                                                                ? <p className="text-xs text-green-600 mt-0.5">Chief Operating Officer · locked</p>
+                                                                : isAutoResolved && <p className="text-xs text-green-600 mt-0.5">Auto-assigned from HRIMS organogram{isLocked ? ' · locked' : ''}</p>}
                                                         </div>
                                                         {/* Senior fixed approvers (CEO, HRD, directors) are locked once
                                                             auto-resolved; departmental/managerial rows stay changeable. */}

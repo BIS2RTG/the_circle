@@ -1,6 +1,6 @@
 import { supabaseAdmin } from './supabaseAdmin';
 import { getRequestTypeLabel } from './requestCode';
-import { fanoutToNotificationAssistants } from './assistantAssignments';
+import { fanoutToNotificationAssistants, getGatekeepersFor } from './assistantAssignments';
 import { sendUserNotificationEmail, escapeHtml, appBaseUrl } from './notificationEmail';
 import { approvalLinkUrl } from './approvalLinkToken';
 
@@ -18,13 +18,29 @@ import { approvalLinkUrl } from './approvalLinkToken';
 /**
  * Normalise `metadata.approvers` (array OR legacy role→id object) into an
  * ordered list of approver user ids.
+ *
+ * The list is always DE-DUPLICATED (first occurrence wins, order preserved): the
+ * same person must never occupy two steps in one approval workflow, or they'd be
+ * asked to sign twice and their signature would appear twice on the document.
+ * This can happen when an auto-resolved role (e.g. Line Manager) resolves to the
+ * same person as a fixed role (e.g. the COO pinned as Functional Head). The
+ * pickers hide already-chosen users, but auto-resolution and pinned approvers
+ * bypass that, so this is the authoritative backstop for every form + entry point.
  */
 export function normalizeApprovers(metadata: any): string[] {
   const approversData = metadata?.approvers;
   if (!approversData) return [];
 
   if (Array.isArray(approversData)) {
-    return approversData.filter((id: any) => typeof id === 'string' && id.length > 0);
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const id of approversData) {
+      if (typeof id === 'string' && id.length > 0 && !seen.has(id)) {
+        seen.add(id);
+        result.push(id);
+      }
+    }
+    return result;
   }
 
   if (typeof approversData === 'object') {
@@ -116,8 +132,11 @@ export async function buildAndNotifySteps(params: BuildStepsParams): Promise<Bui
     };
   });
 
-  const { error: stepsError } = await supabaseAdmin.from('request_steps').insert(requestSteps);
-  if (stepsError) {
+  const { data: insertedSteps, error: stepsError } = await supabaseAdmin
+    .from('request_steps')
+    .insert(requestSteps)
+    .select('id, step_index, approver_user_id, status');
+  if (stepsError || !insertedSteps) {
     console.error('Failed to create request_steps:', stepsError);
     return { success: false, error: 'Failed to create approval steps' };
   }
@@ -132,106 +151,98 @@ export async function buildAndNotifySteps(params: BuildStepsParams): Promise<Bui
   const requestTypeLabel = getRequestTypeLabel(requestType);
 
   const actionUrl = `/requests/${requestId}`;
+  const base = appBaseUrl();
+  const stepWord = useParallelApprovals
+    ? `Parallel approval — ${approverIds.length} approvers`
+    : `Step 1 of ${approverIds.length}`;
 
-  if (useParallelApprovals) {
-    const notifications = approverIds.map((approverId, index) => ({
-      organization_id: organizationId,
-      recipient_id: approverId,
-      sender_id: creatorId,
-      type: 'task',
-      title: 'New Approval Request',
-      message: `${requesterName} has submitted a ${requestTypeLabel} request "${title}" for your approval. (Parallel approval - ${approverIds.length} approvers)`,
-      metadata: {
-        request_id: requestId,
-        request_type: requestType,
-        action_label: 'Review Request',
-        action_url: actionUrl,
-        step_number: index + 1,
-        total_steps: approverIds.length,
-        is_parallel: true,
-      },
-      is_read: false,
-    }));
-    try {
-      await supabaseAdmin.from('notifications').insert(notifications);
-    } catch (notifError) {
-      console.error('Failed to create parallel notifications:', notifError);
-    }
-    // Copy each approval task to that approver's notification-managing assistants.
-    for (let i = 0; i < approverIds.length; i++) {
-      await fanoutToNotificationAssistants(approverIds[i], organizationId, {
-        type: 'task',
-        title: 'New Approval Request',
-        message: notifications[i].message,
+  // Notify the approver(s) whose step is ACTIVE now — derived from the step
+  // status so it can never diverge from who actually needs to act. Sequential
+  // requests notify only the first approver; later approvers are notified by the
+  // ApprovalEngine as their step becomes pending. Parallel requests notify all.
+  //
+  // GATEKEEPING: if an active approver has one or more gatekeeping assistants
+  // (assistant_assignments.can_gatekeep), the request must be SCREENED before it
+  // reaches that approver. We park the step in `pending_screen` and notify the
+  // gatekeeper(s) instead — the approver is not notified until the request is
+  // forwarded. This mirrors ApprovalEngine.announceStepForApproval so both the
+  // workflow-definition path and the form path behave identically.
+  const activeSteps = insertedSteps.filter((s) => s.status === 'pending');
+  for (const step of activeSteps) {
+    const approverId = step.approver_user_id;
+    const stepNumber = step.step_index;
+
+    const gatekeepers = await getGatekeepersFor(approverId, organizationId);
+    if (gatekeepers.length > 0) {
+      // Park the step so it never surfaces on the approver's desk yet.
+      await supabaseAdmin
+        .from('request_steps')
+        .update({ screening_status: 'pending_screen' })
+        .eq('id', step.id);
+      await notifyGatekeepersForStep({
+        gatekeepers,
+        approverId,
+        requestId,
+        organizationId,
         senderId: creatorId,
-        metadata: notifications[i].metadata,
+        requesterName,
+        requestTypeLabel,
+        title,
+        base,
       });
+      continue;
     }
-  } else {
-    // Sequential: only the first approver is notified now; later approvers are
-    // notified by ApprovalEngine as their step becomes pending.
-    const firstApproverId = approverIds[0];
-    const firstMessage = `${requesterName} has submitted a ${requestTypeLabel} request "${title}" for your approval. (Step 1 of ${approverIds.length})`;
-    const firstMetadata = {
+
+    // Normal path — notify the approver directly (in-app task + assistants + email).
+    const message = useParallelApprovals
+      ? `${requesterName} has submitted a ${requestTypeLabel} request "${title}" for your approval. (Parallel approval - ${approverIds.length} approvers)`
+      : `${requesterName} has submitted a ${requestTypeLabel} request "${title}" for your approval. (Step ${stepNumber} of ${approverIds.length})`;
+    const notifMetadata: Record<string, any> = {
       request_id: requestId,
       request_type: requestType,
       action_label: 'Review Request',
       action_url: actionUrl,
-      step_number: 1,
+      step_number: stepNumber,
       total_steps: approverIds.length,
+      ...(useParallelApprovals ? { is_parallel: true } : {}),
     };
+
     try {
       await supabaseAdmin.from('notifications').insert({
         organization_id: organizationId,
-        recipient_id: firstApproverId,
+        recipient_id: approverId,
         sender_id: creatorId,
         type: 'task',
         title: 'New Approval Request',
-        message: firstMessage,
-        metadata: firstMetadata,
+        message,
+        metadata: notifMetadata,
         is_read: false,
       });
     } catch (notifError) {
       console.error('Failed to create notification:', notifError);
     }
     // Copy the approval task to the approver's notification-managing assistants.
-    await fanoutToNotificationAssistants(firstApproverId, organizationId, {
+    await fanoutToNotificationAssistants(approverId, organizationId, {
       type: 'task',
       title: 'New Approval Request',
-      message: firstMessage,
+      message,
       senderId: creatorId,
-      metadata: firstMetadata,
+      metadata: notifMetadata,
+    });
+    // Email the approver — sent as the requester (actorUserId) so it rides the
+    // delegated Graph transport. Preference-gated and non-fatal. Magic link
+    // signs the approver in from the email straight onto the request to sign.
+    await sendUserNotificationEmail({
+      userId: approverId,
+      actorUserId: creatorId,
+      kind: 'approval_tasks',
+      subject: `Approval required: ${title}`,
+      heading: 'A request is waiting for your approval',
+      bodyHtml: `<p>${escapeHtml(`${requesterName} has submitted a ${requestTypeLabel} request "${title}" for your approval. (${stepWord})`)}</p>`,
+      actionUrl: approvalLinkUrl(base, approverId, requestId),
+      actionLabel: 'Review & Sign',
     });
   }
-
-  // Email the approver(s) whose step is ACTIVE now — derived from the step
-  // status so it can never diverge from who actually needs to act. For a
-  // sequential request that is exactly the first approver; only a genuine
-  // parallel request emails everyone. Sent as the requester (actorUserId) so it
-  // rides the delegated Graph transport. Preference-gated and non-fatal.
-  const activeApproverIds = requestSteps
-    .filter((s) => s.status === 'pending')
-    .map((s) => s.approver_user_id);
-  const stepWord = useParallelApprovals
-    ? `Parallel approval — ${approverIds.length} approvers`
-    : `Step 1 of ${approverIds.length}`;
-  const base = appBaseUrl();
-  await Promise.all(
-    activeApproverIds.map((approverId) =>
-      sendUserNotificationEmail({
-        userId: approverId,
-        actorUserId: creatorId,
-        kind: 'approval_tasks',
-        subject: `Approval required: ${title}`,
-        heading: 'A request is waiting for your approval',
-        bodyHtml: `<p>${escapeHtml(`${requesterName} has submitted a ${requestTypeLabel} request "${title}" for your approval. (${stepWord})`)}</p>`,
-        // Magic link — signs the approver in from the email and lands them on
-        // the request to sign, with no separate login.
-        actionUrl: approvalLinkUrl(base, approverId, requestId),
-        actionLabel: 'Review & Sign',
-      })
-    )
-  );
 
   // Stamp step-tracking metadata (merged over whatever is already stored).
   const { data: current } = await supabaseAdmin
@@ -250,4 +261,73 @@ export async function buildAndNotifySteps(params: BuildStepsParams): Promise<Bui
   await supabaseAdmin.from('requests').update({ metadata: mergedMetadata }).eq('id', requestId);
 
   return { success: true, approverCount: approverIds.length, approverIds };
+}
+
+/**
+ * Notify a gatekeeping assistant (or assistants) that an incoming approval for
+ * their principal is waiting to be SCREENED — with an in-app task + email that
+ * deep-links to the Screening tab. The principal (boss) is intentionally NOT
+ * notified; they only hear about it once the request is forwarded.
+ */
+async function notifyGatekeepersForStep(args: {
+  gatekeepers: string[];
+  approverId: string;
+  requestId: string;
+  organizationId: string;
+  senderId: string;
+  requesterName: string;
+  requestTypeLabel: string;
+  title: string;
+  base: string;
+}): Promise<void> {
+  const {
+    gatekeepers, approverId, requestId, organizationId,
+    senderId, requesterName, requestTypeLabel, title, base,
+  } = args;
+
+  const { data: boss } = await supabaseAdmin
+    .from('app_users')
+    .select('display_name, email')
+    .eq('id', approverId)
+    .maybeSingle();
+  const bossName = boss?.display_name || boss?.email || 'the person you assist';
+
+  const message =
+    `${requesterName} submitted a ${requestTypeLabel} request "${title}" that needs ${bossName}'s approval. ` +
+    `Screen it first, then either forward it to ${bossName} or return it to the requester with a comment.`;
+  const metadata = {
+    request_id: requestId,
+    screening: true,
+    principal_id: approverId,
+    action_label: 'Screen Request',
+    action_url: '/approvals?tab=screening',
+  };
+
+  for (const gatekeeperId of gatekeepers) {
+    try {
+      await supabaseAdmin.from('notifications').insert({
+        organization_id: organizationId,
+        recipient_id: gatekeeperId,
+        sender_id: senderId,
+        type: 'task',
+        title: `Screen a request for ${bossName}`,
+        message,
+        metadata,
+        is_read: false,
+      });
+    } catch (error) {
+      console.error('Failed to notify gatekeeper:', error);
+    }
+
+    await sendUserNotificationEmail({
+      userId: gatekeeperId,
+      actorUserId: senderId,
+      kind: 'approval_tasks',
+      subject: `Screen a request for ${bossName} — The Circle`,
+      heading: `A request is waiting to be screened for ${escapeHtml(bossName)}`,
+      bodyHtml: `<p>${escapeHtml(message)}</p>`,
+      actionUrl: `${base}/approvals?tab=screening`,
+      actionLabel: 'Screen the request',
+    });
+  }
 }

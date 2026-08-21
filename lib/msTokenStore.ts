@@ -111,3 +111,70 @@ export async function getValidMsAccessToken(userId: string): Promise<string | nu
     return accessToken;
   }
 }
+
+/**
+ * Find ANY user in the organisation who currently has a usable delegated Graph
+ * token, so a system/workflow email can be relayed through their mailbox when
+ * the more specific senders (the actor who triggered it, the recipient) have no
+ * connected mailbox of their own.
+ *
+ * Most users never connect Microsoft, so relying solely on the actor's or
+ * recipient's delegated token silently drops approval emails once the chain
+ * reaches a token-less approver (e.g. the final CAPEX sign-offs). This picks a
+ * fallback sender — admins preferred, freshest token first — and verifies the
+ * token actually works (refreshing if needed) before returning the id.
+ *
+ * Best-effort: returns null (never throws) when no usable sender exists.
+ */
+export async function getAnyValidDelegatedSenderId(
+  organizationId: string | null,
+  excludeIds: (string | null | undefined)[] = []
+): Promise<string | null> {
+  if (!supabaseAdmin) return null;
+  const exclude = new Set((excludeIds.filter(Boolean) as string[]));
+  try {
+    // Token holders, freshest token first (a recently-refreshed token is the
+    // most likely to still be valid or refreshable).
+    const { data: tokenRows } = await supabaseAdmin
+      .from('ms_oauth_tokens')
+      .select('user_id, expires_at, updated_at')
+      .order('updated_at', { ascending: false })
+      .limit(50);
+    if (!tokenRows?.length) return null;
+
+    const candidateIds = tokenRows
+      .map((r) => r.user_id as string)
+      .filter((id) => id && !exclude.has(id));
+    if (candidateIds.length === 0) return null;
+
+    // Restrict to the recipient's organisation and learn each candidate's role
+    // so we can prefer admins as the "official" relay mailbox.
+    let usersQuery = supabaseAdmin
+      .from('app_users')
+      .select('id, role')
+      .in('id', candidateIds);
+    if (organizationId) usersQuery = usersQuery.eq('organization_id', organizationId);
+    const { data: users } = await usersQuery;
+    if (!users?.length) return null;
+
+    const roleRank = (role: string | null | undefined) =>
+      role === 'superuser' ? 0 : role === 'admin' ? 1 : 2;
+    // Keep the token-freshness order from tokenRows, but float admins to the top.
+    const order = new Map(candidateIds.map((id, i) => [id, i]));
+    const ranked = [...users].sort((a, b) => {
+      const r = roleRank(a.role) - roleRank(b.role);
+      if (r !== 0) return r;
+      return (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0);
+    });
+
+    // Verify tokens lazily; cap attempts so a burst of dead tokens can't stall
+    // the email path.
+    for (const u of ranked.slice(0, 8)) {
+      const token = await getValidMsAccessToken(u.id);
+      if (token) return u.id;
+    }
+  } catch (err) {
+    console.error('getAnyValidDelegatedSenderId failed:', err);
+  }
+  return null;
+}

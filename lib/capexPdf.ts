@@ -38,6 +38,12 @@ export interface CapexPdfData {
   irr: string;
   evaluation: string;
   quotations: CapexQuoteLine[];
+  /**
+   * When true (multiple-suppliers CAPEX), a compact selected-suppliers table
+   * replaces the per-quotation lines and the preferred-quotation line.
+   */
+  multiSupplier?: boolean;
+  selectedSuppliers?: { supplier: string; quoteAmount: string; orderValue: string }[];
   preferredSupplier: string;
   reason: string;
   fundingSource: string;
@@ -166,7 +172,10 @@ export async function buildCapexPdf(
   const spacer = (h: number) => {
     y -= h;
   };
-  const money = (v: string) => `$ ${data.currency} ${v && v.trim() ? v : 'NIL'}`;
+  // Currency symbol/prefix — never a bare "$" for non-dollar currencies
+  // ("$ ZAR …" is financially wrong). ZAR ⇒ R, ZIG ⇒ ZiG, otherwise "$".
+  const currencySymbol = data.currency === 'ZAR' ? 'R' : data.currency === 'ZIG' ? 'ZiG' : '$';
+  const money = (v: string) => `${currencySymbol} ${v && v.trim() ? v : 'NIL'}`;
 
   // ── Header: centred logo + title ──
   if (data.logo) {
@@ -228,28 +237,61 @@ export async function buildCapexPdf(
   });
   spacer(6);
 
-  // ── Quotations (at least the standard 3 slots; more if uploaded) ──
-  const quoteSlots = Math.max(3, data.quotations.length);
-  for (let i = 0; i < quoteSlots; i++) {
-    const q = data.quotations[i];
-    ensure(size * 2 + gapY + 4);
-    let cx = marginX;
-    const lbl = `QUOTATION ${i + 1}: `;
-    draw(lbl, cx, font);
-    cx += w(lbl, font, size);
-    const amt = q && q.amount ? `$ ${q.amount}` : '';
-    if (amt) {
-      draw(amt, cx, bold);
-      cx += w(amt, bold, size);
+  if (data.multiSupplier && data.selectedSuppliers && data.selectedSuppliers.length > 0) {
+    // ── Multiple-suppliers CAPEX: one compact table replaces the per-quotation
+    //    lines and the preferred-quotation line so the form stays on one page. ──
+    const s2 = size - 1;
+    const col2R = 400;                 // right edge of the "Quotation Total" column
+    const col3R = PAGE_W - marginX;    // right edge of the "Order Value" column
+    const drawRight = (t: string, rx: number, f: PDFFont, sz: number, color = black) =>
+      draw(t, rx - w(t, f, sz), f, sz, color);
+
+    ensure(size + 6);
+    draw('SELECTED SUPPLIERS', marginX, bold, size);
+    y -= size + 4;
+
+    ensure(s2 + 4);
+    draw('Supplier', marginX, font, s2, grey);
+    drawRight('Quotation Total', col2R, font, s2, grey);
+    drawRight('Order Value', col3R, font, s2, grey);
+    y -= s2 + 3;
+
+    let ordersTotal = 0;
+    for (const s of data.selectedSuppliers) {
+      ensure(s2 + 3);
+      ordersTotal += parseFloat((s.orderValue || '').replace(/[^0-9.]/g, '')) || 0;
+      draw(s.supplier || '-', marginX, font, s2);
+      drawRight(s.quoteAmount ? `${currencySymbol} ${s.quoteAmount}` : '-', col2R, font, s2, grey);
+      drawRight(s.orderValue ? `${currencySymbol} ${s.orderValue}` : '-', col3R, bold, s2);
+      y -= s2 + 3;
     }
-    if (q?.supplier) draw(q.supplier, cx + 30, bold);
-    y -= size + 2;
-    draw('NAME OF SUPPLIER', marginX + 36, font, size - 1.5, grey);
-    y -= size + gapY;
+    ensure(s2 + 4);
+    draw('Total Project Cost', marginX, bold, s2);
+    drawRight(`${currencySymbol} ${ordersTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, col3R, bold, s2);
+    y -= s2 + gapY;
+    spacer(2);
+  } else {
+    // ── Quotations (at least the standard 3 slots; more if uploaded) ──
+    const quoteSlots = Math.max(3, data.quotations.length);
+    for (let i = 0; i < quoteSlots; i++) {
+      const q = data.quotations[i];
+      ensure(size * 2 + gapY + 4);
+      let cx = marginX;
+      const lbl = `QUOTATION ${i + 1}: `;
+      draw(lbl, cx, font);
+      cx += w(lbl, font, size);
+      const amt = q && q.amount ? `${currencySymbol} ${q.amount}` : '';
+      if (amt) {
+        draw(amt, cx, bold);
+        cx += w(amt, bold, size);
+      }
+      if (q?.supplier) draw(q.supplier, cx + 30, bold);
+      y -= size + gapY;
+    }
+    spacer(2);
+    field('PREFERRED QUOTATION', data.preferredSupplier || '-', { valueBold: true });
+    field('REASON:', data.reason || '-', { valueBold: true });
   }
-  spacer(2);
-  field('PREFERRED QUOTATION', data.preferredSupplier || '-', { valueBold: true });
-  field('REASON:', data.reason || '-', { valueBold: true });
   field('PROJECT FUNDED FROM:', data.fundingSource || '-');
   field('PROJECT REQUESTED BY:', data.requestedBy || '-');
   spacer(10);
@@ -279,6 +321,13 @@ export async function buildCapexPdf(
     y -= 24;
   };
 
+  // For a multi-supplier CAPEX the body fills the first page, so the approval /
+  // signature block starts on its own fresh page instead of being split.
+  if (data.multiSupplier) {
+    newPage();
+    draw('PROJECT REQUESTED BY:', marginX, bold);
+    y -= size + 10;
+  }
   for (const a of data.requestedByApprovers) sigRow(a.label, a.name);
   spacer(4);
   ensure(size + 12);
