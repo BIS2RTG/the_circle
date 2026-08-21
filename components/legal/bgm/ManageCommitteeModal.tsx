@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Modal, Button } from '../../ui';
 import { useToast } from '../../ui/ToastProvider';
 import { Crown, X, UserPlus, Search, Check, Landmark } from 'lucide-react';
+import StaffDirectorySearch from './StaffDirectorySearch';
 
 interface Member { id: string; full_name: string; salutation: string | null; status: string; is_chair: boolean }
 
@@ -60,6 +61,24 @@ export default function ManageCommitteeModal({
   const addMember = async (directorId: string) => { setBusy(directorId); await patch('POST', { director_id: directorId }); setBusy(null); setTerm(''); };
   const removeMember = async (directorId: string) => { setBusy(directorId); await patch('DELETE', undefined, `?director_id=${directorId}`); setBusy(null); };
   const setChair = async (directorId: string, isChair: boolean) => { setBusy('chair' + directorId); await patch('PATCH', { director_id: directorId, is_chair: isChair }); setBusy(null); };
+
+  // Add a staff member picked from the AD directory: reuse them if they're
+  // already a board member (get_or_create), else create the director, then add
+  // them to this committee.
+  const addFromStaff = async (p: { name: string; email: string }) => {
+    setAdding(true);
+    try {
+      const res = await fetch('/api/legal/bgm/directors', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ full_name: p.name, email: p.email || null, is_hrims: true, get_or_create: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not add the staff member.');
+      const ok = await patch('POST', { director_id: data.id });
+      if (ok) addToast({ type: 'success', message: `${p.name} added to committee.` });
+    } catch (e) { addToast({ type: 'error', message: (e as Error).message }); }
+    finally { setAdding(false); }
+  };
 
   const addNewPerson = async () => {
     const name = newPerson.name.trim();
@@ -136,6 +155,12 @@ export default function ManageCommitteeModal({
               ))}
             </div>
           )}
+        </div>
+
+        {/* Add a staff member from the directory (Azure AD) */}
+        <div className="mb-3">
+          <label className="block text-sm font-medium text-gray-700 mb-1.5">…or add a staff member from the directory</label>
+          <StaffDirectorySearch placeholder="Search the staff directory (AD)…" onPick={(p) => addFromStaff({ name: p.name, email: p.email })} />
         </div>
 
         {/* Add a brand-new person */}

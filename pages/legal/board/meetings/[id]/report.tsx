@@ -1,13 +1,10 @@
-import { useEffect, useState } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { GetServerSideProps } from 'next';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '../../../../api/auth/[...nextauth]';
+import { requireBgmSSR, buildMeetingDetail, jsonSafe } from '@/lib/bgmSSR';
 import { useRequirePermission } from '@/contexts/RBACContext';
-import Loader from '@/components/Loader';
-import { CHECK_IN_METHOD_LABELS, AttendanceStatus, defaultQuorum } from '@/lib/bgm';
+import { AttendanceStatus, defaultQuorum } from '@/lib/bgm';
 import { ArrowLeft, Printer } from 'lucide-react';
 
 function fmt(iso: string | null, opts: Intl.DateTimeFormatOptions) {
@@ -23,24 +20,12 @@ const attLabel = (status: AttendanceStatus | null): string => {
   return '—';
 };
 
-export default function AttendanceReport() {
+export default function AttendanceReport({ initial }: { initial: any }) {
   const router = useRouter();
   const { id } = router.query;
   useRequirePermission(['bgm.attendance.view', 'bgm.meetings.view', 'legal.access']);
-  const [data, setData] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
+  const data = initial;
 
-  useEffect(() => {
-    if (!id) return;
-    (async () => {
-      setLoading(true);
-      const r = await fetch(`/api/legal/bgm/meetings/${id}`);
-      if (r.ok) setData(await r.json());
-      setLoading(false);
-    })();
-  }, [id]);
-
-  if (loading) return <div className="py-24 flex justify-center"><Loader /></div>;
   if (!data?.meeting) return <div className="max-w-2xl mx-auto p-8 text-center text-neutral-500">Meeting not found.</div>;
 
   const { meeting, register, guests, quorum } = data;
@@ -72,9 +57,13 @@ export default function AttendanceReport() {
         {/* Document */}
         <div className="max-w-3xl mx-auto bg-white my-6 print:my-0 shadow-sm print:shadow-none p-8 sm:p-10 text-[13px] text-neutral-800">
           <div className="flex items-start justify-between border-b-2 border-neutral-800 pb-4 mb-5">
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500">Rainbow Tourism Group</p>
-              <h1 className="text-xl font-bold text-neutral-900 mt-0.5">Board Attendance Record</h1>
+            <div className="flex items-center gap-3">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/images/RTG_LOGO.png" alt="Rainbow Tourism Group" className="h-12 w-auto object-contain" />
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500">Rainbow Tourism Group</p>
+                <h1 className="text-xl font-bold text-neutral-900 mt-0.5">Board Attendance Record</h1>
+              </div>
             </div>
             <div className="text-right text-[11px] text-neutral-500">
               <p>Generated {fmt(new Date().toISOString(), { dateStyle: 'medium', timeStyle: 'short' })}</p>
@@ -104,26 +93,22 @@ export default function AttendanceReport() {
               <tr className="text-left text-[10px] uppercase tracking-wider text-neutral-500 border-y border-neutral-300">
                 <th className="py-2 pr-2 font-semibold w-6">#</th>
                 <th className="py-2 pr-2 font-semibold">Name</th>
-                <th className="py-2 pr-2 font-semibold">Capacity</th>
                 <th className="py-2 pr-2 font-semibold">Attendance</th>
-                <th className="py-2 pr-2 font-semibold">Checked in</th>
-                <th className="py-2 pr-2 font-semibold">Method</th>
+                <th className="py-2 pr-2 font-semibold">Registered</th>
                 <th className="py-2 font-semibold">Signature</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((r: any, i: number) => (
-                <tr key={`${r.kind}-${r.id || r.director_id || i}`} className="border-b border-neutral-200 align-top">
-                  <td className="py-2 pr-2 text-neutral-400">{i + 1}</td>
-                  <td className="py-2 pr-2 font-medium text-neutral-900">{r.name}</td>
-                  <td className="py-2 pr-2 text-neutral-600">{r.kind}</td>
-                  <td className="py-2 pr-2">{attLabel(r.status)}</td>
-                  <td className="py-2 pr-2 text-neutral-600">{fmtTime(r.checked_in_at)}</td>
-                  <td className="py-2 pr-2 text-neutral-600">{r.check_in_method ? (CHECK_IN_METHOD_LABELS[r.check_in_method] || r.check_in_method) : '—'}</td>
-                  <td className="py-2">
+                <tr key={`${r.kind}-${r.id || r.director_id || i}`} className="border-b border-neutral-200 align-middle">
+                  <td className="py-3 pr-2 text-neutral-400">{i + 1}</td>
+                  <td className="py-3 pr-2 font-medium text-neutral-900">{r.name}</td>
+                  <td className="py-3 pr-2">{attLabel(r.status)}</td>
+                  <td className="py-3 pr-2 text-neutral-600 whitespace-nowrap">{fmtTime(r.checked_in_at) || '—'}</td>
+                  <td className="py-3">
                     {r.check_in_signature
                       /* eslint-disable-next-line @next/next/no-img-element */
-                      ? <img src={r.check_in_signature} alt="signature" className="h-8 max-w-[90px] object-contain" />
+                      ? <img src={r.check_in_signature} alt="signature" className="h-16 max-w-[280px] w-auto object-contain" />
                       : <span className="text-neutral-300">—</span>}
                   </td>
                 </tr>
@@ -173,7 +158,10 @@ function Pill({ label, suffix, tone }: { label: string; suffix?: string; tone: '
 }
 
 export const getServerSideProps: GetServerSideProps = async (context) => {
-  const session = await getServerSession(context.req, context.res, authOptions);
-  if (!session?.user?.id) return { redirect: { destination: '/', permanent: false } };
-  return { props: {} };
+  const gate = await requireBgmSSR(context, ['bgm.attendance.view', 'bgm.meetings.view', 'legal.access']);
+  if ('redirect' in gate) return { redirect: gate.redirect };
+  const id = String(context.params?.id || '');
+  const detail = await buildMeetingDetail(gate.ctx.organizationId, id);
+  if (!detail) return { notFound: true };
+  return { props: { initial: jsonSafe(detail) } };
 };

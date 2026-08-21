@@ -39,8 +39,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(200).json({ ok: true, finalized: false });
   }
 
-  // The finaliser signs off; their signature appears at the bottom of the report.
-  const signature = req.body?.signature;
+  // The finaliser signs off; their signature (saved or freshly drawn — the
+  // client resolves either to a self-contained image) appears at the bottom of
+  // the report.
+  const signature = req.body?.signatureData ?? req.body?.signature; // signature = legacy field
   if (typeof signature !== 'string' || !signature.startsWith('data:image')) {
     return res.status(400).json({ error: 'A signature is required to finalize the register.' });
   }

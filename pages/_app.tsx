@@ -1,5 +1,6 @@
 import type { AppProps } from 'next/app';
 import { SessionProvider, useSession } from "next-auth/react";
+import { useRouter } from 'next/router';
 import Head from 'next/head';
 import '../styles/globals.css';
 
@@ -15,15 +16,23 @@ import NetworkStatusBanner from '../components/NetworkStatusBanner';
 const SESSION_FLAG = 'the_circle_active_session';
 import SessionActivityGuard from '../components/SessionActivityGuard';
 
+// Public, no-login pages (external board members signing via an email link).
+// These render straight from their SSR props and must never wait on the session
+// loader — that gate was the "slow to load" board members complained about.
+const PUBLIC_PATH_PREFIXES = ['/board/'];
+
 function SessionGuard({ children }: { children: React.ReactNode }) {
   const { status, data } = useSession();
+  const router = useRouter();
+  const isPublic = PUBLIC_PATH_PREFIXES.some((p) => router.pathname.startsWith(p));
 
   // Show the loader only on the INITIAL load, before we have any session.
   // We must not blank the app when status is briefly 'loading' during a
   // background session revalidation (we already hold `data`) — doing so would
   // unmount and remount the whole page tree, resetting scroll and DOM state
   // mid-form. This prevents flashing the login UI during OAuth callback too.
-  if (status === 'loading' && !data) {
+  // Public board pages skip the gate entirely (no login required).
+  if (!isPublic && status === 'loading' && !data) {
     return <Loader />;
   }
 

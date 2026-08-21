@@ -101,81 +101,89 @@ export function RBACProvider({ children }: { children: React.ReactNode }) {
   const [rbac, setRbac] = useState<RBACProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
-  const hasFetchedRef = useRef(false);
+  // The user id we have a profile loaded/loading for. Keyed by user (NOT a
+  // one-shot boolean) so we (re)fetch whenever the signed-in user settles or
+  // changes — crucial right after login, where session.user.id can arrive a
+  // tick AFTER status flips to 'authenticated'. A one-shot guard would fetch
+  // once with a not-yet-ready id and never recover without a page refresh.
+  const loadedForUserRef = useRef<string | null>(null);
+  const mountedRef = useRef(true);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const sessionUserId = session?.user?.id;
+  const sessionUserId = session?.user?.id as string | undefined;
 
-  // On mount / user change, immediately restore cached RBAC to prevent flash
   useEffect(() => {
-    if (status === 'loading') return;
-    if (!sessionUserId) {
-      setRbac(null);
-      setLoading(false);
-      clearCachedRBAC();
-      return;
-    }
-    const cached = getCachedRBAC(sessionUserId);
-    if (cached) {
-      setRbac(cached);
-      setLoading(false);
-    }
-  }, [sessionUserId, status]);
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+    };
+  }, []);
 
-  const fetchRBAC = useCallback(async () => {
-    if (status === 'loading') return;
+  const fetchRBAC = useCallback(async (userId: string) => {
+    if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
 
-    if (!sessionUserId) {
-      setRbac(null);
-      setLoading(false);
-      clearCachedRBAC();
-      return;
-    }
+    // Only show the spinner when we have nothing cached for this user.
+    const cached = getCachedRBAC(userId);
+    if (cached) { setRbac(cached); setLoading(false); } else { setLoading(true); }
 
-    // Only show loading spinner if we have no cached data
-    const cached = getCachedRBAC(sessionUserId);
-    if (!cached) {
-      setLoading(true);
-    }
-
-    // The profile fetch hits Supabase server-side, which occasionally drops a
-    // keep-alive socket (UND_ERR_SOCKET) and returns a transient failure. A
-    // single miss here would leave the user apparently role-less ("No roles"),
-    // so retry a few times with a short backoff before giving up. On total
-    // failure we keep any cached profile rather than clobbering it with null.
-    const MAX_ATTEMPTS = 3;
+    // The profile fetch hits Supabase, which occasionally drops a keep-alive
+    // socket (UND_ERR_SOCKET) and returns a transient failure. A single miss
+    // would leave the user apparently role-less ("empty sidenav"), so retry a
+    // few times with backoff, then — if still failing — schedule a background
+    // retry so the app self-heals WITHOUT the user needing to refresh.
+    const MAX_ATTEMPTS = 4;
     let lastErr: unknown = null;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
         const response = await fetch('/api/rbac/profile');
-        if (!response.ok) {
-          throw new Error(`Failed to fetch RBAC profile (${response.status})`);
-        }
+        if (!response.ok) throw new Error(`Failed to fetch RBAC profile (${response.status})`);
         const data = await response.json();
+        if (!mountedRef.current) return;
         setRbac(data);
-        setCachedRBAC(sessionUserId, data);
+        setCachedRBAC(userId, data);
         setError(null);
         setLoading(false);
         return;
       } catch (err) {
         lastErr = err;
-        if (attempt < MAX_ATTEMPTS) {
-          await new Promise((r) => setTimeout(r, attempt * 400));
-        }
+        if (attempt < MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, attempt * 400));
       }
     }
 
+    if (!mountedRef.current) return;
     console.error('Error in RBACContext (after retries):', lastErr);
     setError(lastErr as Error);
     setLoading(false);
-  }, [sessionUserId, status]);
+    // Allow this user to be re-fetched, and self-heal on a timer.
+    loadedForUserRef.current = null;
+    retryTimerRef.current = setTimeout(() => {
+      if (mountedRef.current && sessionUserId) { loadedForUserRef.current = sessionUserId; fetchRBAC(sessionUserId); }
+    }, 5000);
+  }, [sessionUserId]);
 
+  // (Re)load the profile whenever the signed-in user settles or changes.
   useEffect(() => {
-    if (status === 'loading') return;
-    if (hasFetchedRef.current) return;
+    if (status === 'loading') return;                 // wait for the session to resolve
+    if (!sessionUserId) {                              // signed out
+      loadedForUserRef.current = null;
+      if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
+      setRbac(null);
+      setLoading(false);
+      setError(null);
+      clearCachedRBAC();
+      return;
+    }
+    if (loadedForUserRef.current === sessionUserId) return; // already have / fetching this user
+    loadedForUserRef.current = sessionUserId;
+    const cached = getCachedRBAC(sessionUserId);       // restore cache immediately to avoid a flash
+    if (cached) setRbac(cached);
+    fetchRBAC(sessionUserId);
+  }, [sessionUserId, status, fetchRBAC]);
 
-    fetchRBAC();
-    hasFetchedRef.current = true;
-  }, [fetchRBAC, status]);
+  const refetch = useCallback(async () => {
+    if (sessionUserId) { loadedForUserRef.current = sessionUserId; await fetchRBAC(sessionUserId); }
+  }, [sessionUserId, fetchRBAC]);
 
   const hasPermission = useCallback((code: string): boolean => {
     if (!rbac) return false;
@@ -209,7 +217,7 @@ export function RBACProvider({ children }: { children: React.ReactNode }) {
       rbac,
       loading,
       error,
-      refetch: fetchRBAC,
+      refetch,
       hasPermission,
       hasAnyPermission,
       hasAllPermissions,

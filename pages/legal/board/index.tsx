@@ -22,7 +22,7 @@ const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
   { key: 'calendar', label: 'Calendar', icon: <CalendarDays className="w-4 h-4" /> },
   { key: 'meetings', label: 'Meetings', icon: <ListChecks className="w-4 h-4" /> },
   { key: 'attendance', label: 'Attendance', icon: <ClipboardCheck className="w-4 h-4" /> },
-  { key: 'directors', label: 'Directors', icon: <Users className="w-4 h-4" /> },
+  { key: 'directors', label: 'Board Members', icon: <Users className="w-4 h-4" /> },
   { key: 'committees', label: 'Committees', icon: <Building2 className="w-4 h-4" /> },
 ];
 
@@ -70,11 +70,6 @@ export default function BoardGovernanceHub({ initial, initialYear }: HubProps) {
   const loadMeetings = useCallback(async (y: number) => {
     const r = await fetch(`/api/legal/bgm/meetings?year=${y}`);
     if (r.ok) setMeetings((await r.json()).meetings || []);
-  }, []);
-
-  const loadDirectors = useCallback(async () => {
-    const r = await fetch('/api/legal/bgm/directors');
-    if (r.ok) setDirectors((await r.json()).directors || []);
   }, []);
 
   // Refresh committees (with members) + directors after a composition change.
@@ -357,7 +352,7 @@ export default function BoardGovernanceHub({ initial, initialYear }: HubProps) {
                   <span className="text-sm text-neutral-500">{directors.filter((d) => d.status === 'active').length} active · {directors.length} total</span>
                   {canManageDirectors && (
                     <Button variant="primary" onClick={() => setDirectorFormOpen(true)}>
-                      <Plus className="w-4 h-4 mr-1.5" /> Add board member
+                      <Plus className="w-4 h-4 mr-1.5" /> Add member
                     </Button>
                   )}
                 </div>
@@ -445,7 +440,23 @@ export default function BoardGovernanceHub({ initial, initialYear }: HubProps) {
       <DirectorFormModal
         isOpen={directorFormOpen}
         onClose={() => setDirectorFormOpen(false)}
-        onCreated={() => { setDirectorFormOpen(false); loadDirectors(); }}
+        committees={committees}
+        onCreated={(director) => {
+          setDirectorFormOpen(false);
+          // Optimistic insert — avoids a slow full refetch of directors + committees.
+          // Dedupe by id: a staff/AD pick may reuse an existing board member.
+          setDirectors((prev) => [...prev.filter((d) => d.id !== director.id), director].sort((a, b) => a.full_name.localeCompare(b.full_name)));
+          const assigned: any[] = director.committees || [];
+          if (assigned.length) {
+            setCommittees((prev) => prev.map((c) => {
+              const m = assigned.find((a) => a.id === c.id);
+              if (!m) return c;
+              const others = (c.members || []).filter((x: any) => x.id !== director.id);
+              const members = [...others, { id: director.id, full_name: director.full_name, is_chair: m.is_chair }];
+              return { ...c, members, member_count: members.length };
+            }));
+          }
+        }}
       />
 
       <ManageCommitteeModal

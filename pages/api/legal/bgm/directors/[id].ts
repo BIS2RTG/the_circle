@@ -29,6 +29,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (f in b) patch[f] = b[f] === '' ? null : b[f];
     }
     if ('is_independent' in b) patch.is_independent = typeof b.is_independent === 'boolean' ? b.is_independent : null;
+    if ('is_hrims' in b) patch.is_hrims = b.is_hrims === null ? null : !!b.is_hrims;
 
     if (Object.keys(patch).length === 0) return res.status(400).json({ error: 'No fields to update' });
 

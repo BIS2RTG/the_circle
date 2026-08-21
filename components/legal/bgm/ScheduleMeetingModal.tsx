@@ -270,7 +270,7 @@ export default function ScheduleMeetingModal({ isOpen, onClose, committees, dire
 
         {/* Invitees */}
         <div className="border-t border-border pt-4">
-          <label className="block text-sm font-medium text-gray-700 mb-2">Who is invited?</label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">{pastMode ? 'Who was invited?' : 'Who is invited?'}</label>
           <div className="grid grid-cols-2 gap-2 mb-3">
             <button type="button" onClick={() => setInviteMode('all')}
               className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-sm ${inviteMode === 'all' ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
@@ -324,7 +324,11 @@ export default function ScheduleMeetingModal({ isOpen, onClose, committees, dire
           )}
 
           <p className="text-xs text-gray-500 mb-3">
-            <b className="text-gray-700">{inviteeCount}</b> board / committee member{inviteeCount === 1 ? '' : 's'} will be invited{guests.length ? ` · ${guests.length} guest${guests.length === 1 ? '' : 's'}` : ''}.
+            {pastMode ? (
+              <><b className="text-gray-700">{inviteeCount}</b> member{inviteeCount === 1 ? '' : 's'} who {inviteeCount === 1 ? 'was' : 'were'} invited{guests.length ? ` · ${guests.length} guest${guests.length === 1 ? '' : 's'}` : ''}.</>
+            ) : (
+              <><b className="text-gray-700">{inviteeCount}</b> board / committee member{inviteeCount === 1 ? '' : 's'} will be invited{guests.length ? ` · ${guests.length} guest${guests.length === 1 ? '' : 's'}` : ''}.</>
+            )}
           </p>
 
           {/* Guests — AD directory picker + non-RTG free text */}
