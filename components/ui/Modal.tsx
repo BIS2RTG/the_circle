@@ -8,9 +8,13 @@ interface ModalProps {
   title?: string;
   children: ReactNode;
   size?: 'sm' | 'md' | 'lg' | 'full';
+  /** When false, clicking the backdrop does NOT close the modal. Use for modals
+   *  where an accidental outside tap is costly — e.g. a signature pad where a
+   *  stray touch near the edge would otherwise discard the drawing. */
+  closeOnBackdrop?: boolean;
 }
 
-export default function Modal({ isOpen, onClose, title, children, size = 'md' }: ModalProps) {
+export default function Modal({ isOpen, onClose, title, children, size = 'md', closeOnBackdrop = true }: ModalProps) {
   useSuppressToastsWhileOpen(isOpen);
   if (!isOpen) return null;
 
@@ -26,7 +30,7 @@ export default function Modal({ isOpen, onClose, title, children, size = 'md' }:
       {/* Backdrop */}
       <div
         className="fixed inset-0 bg-black/60 backdrop-blur-sm transition-opacity"
-        onClick={onClose}
+        onClick={closeOnBackdrop ? onClose : undefined}
         aria-hidden="true"
       />
 

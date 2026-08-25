@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { requireBgm } from '@/lib/bgmApi';
+import { notifyAttendanceSigned } from '@/lib/bgmNotify';
 
 /**
  * POST /api/legal/bgm/meetings/[id]/sign
@@ -37,6 +38,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   const now = new Date().toISOString();
+  let signerName = kind === 'guest' ? 'A guest' : 'A board member';
 
   if (kind === 'guest') {
     const { error, count } = await supabaseAdmin
@@ -44,13 +46,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       .update({ status: 'present', checked_in_at: now, check_in_signature: signature, recorded_by: ctx.userId, recorded_at: now }, { count: 'exact' })
       .eq('id', id).eq('meeting_id', meetingId);
     if (error || !count) return res.status(500).json({ error: 'Could not record the signature.' });
+    const { data: g } = await supabaseAdmin.from('meeting_guests').select('full_name').eq('id', id).maybeSingle();
+    if (g?.full_name) signerName = g.full_name;
   } else {
     const { error, count } = await supabaseAdmin
       .from('meeting_attendance')
       .update({ status: 'present', checked_in_at: now, check_in_method: 'in_person', check_in_signature: signature, recorded_by: ctx.userId, recorded_at: now }, { count: 'exact' })
       .eq('director_id', id).eq('meeting_id', meetingId);
     if (error || !count) return res.status(500).json({ error: 'Could not record the signature.' });
+    const { data: d } = await supabaseAdmin.from('directors').select('full_name').eq('id', id).maybeSingle();
+    if (d?.full_name) signerName = d.full_name;
   }
+
+  // Notify the meeting initiator (and flag "ready to finalize" when all signed).
+  await notifyAttendanceSigned(meetingId, signerName);
 
   return res.status(200).json({ ok: true });
 }

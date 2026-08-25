@@ -5,10 +5,10 @@ import { defaultQuorum } from '@/lib/bgm';
 
 /**
  * POST /api/legal/bgm/meetings/[id]/finalize
- * Body: { finalize: boolean }
+ * Body: { signature }
  * Finalize locks the attendance register into an immutable record for the
- * minute book and marks the meeting completed; re-opening clears the lock.
- * Returns quorum status (attended vs required).
+ * minute book and marks the meeting completed. This is PERMANENT — a finalized
+ * register can no longer be re-opened or edited. Returns quorum status.
  */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
@@ -24,19 +24,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const { data: meeting } = await supabaseAdmin
     .from('board_meetings')
-    .select('id, status, quorum')
+    .select('id, status, quorum, finalized_at')
     .eq('id', id)
     .eq('organization_id', ctx.organizationId)
     .single();
   if (!meeting) return res.status(404).json({ error: 'Meeting not found' });
 
+  // Finalizing is permanent — a finalized register can never be re-opened.
   if (!finalize) {
-    const { error } = await supabaseAdmin
-      .from('board_meetings')
-      .update({ finalized_at: null, finalized_by: null, finalized_signature: null })
-      .eq('id', id);
-    if (error) return res.status(500).json({ error: error.message });
-    return res.status(200).json({ ok: true, finalized: false });
+    return res.status(409).json({ error: 'A finalized register cannot be re-opened. Finalizing is permanent.' });
+  }
+  if (meeting.finalized_at) {
+    return res.status(409).json({ error: 'This register is already finalized.' });
   }
 
   // The finaliser signs off; their signature (saved or freshly drawn — the

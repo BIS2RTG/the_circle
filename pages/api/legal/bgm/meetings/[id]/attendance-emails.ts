@@ -28,7 +28,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const { data: meeting } = await supabaseAdmin
     .from('board_meetings')
-    .select('id, title, scheduled_start, time_zone, finalized_at, status, created_by')
+    .select('id, title, scheduled_start, scheduled_end, time_zone, finalized_at, status, created_by')
     .eq('id', meetingId)
     .eq('organization_id', ctx.organizationId)
     .single();
@@ -77,6 +77,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     catch { return new Date(meeting.scheduled_start).toUTCString(); }
   })();
 
+  // The no-login link expires: valid for at least 14 days, and always through to
+  // a couple of days after the meeting itself.
+  const meetingEndMs = meeting.scheduled_end ? new Date(meeting.scheduled_end).getTime() : new Date(meeting.scheduled_start).getTime() + 3 * 3600_000;
+  const expiryMs = Math.max(Date.now() + 14 * 24 * 3600_000, meetingEndMs + 2 * 24 * 3600_000);
+  const expiryIso = new Date(expiryMs).toISOString();
+  const expiryLabel = (() => {
+    try { return new Intl.DateTimeFormat('en-GB', { dateStyle: 'long', timeZone: meeting.time_zone }).format(new Date(expiryMs)); }
+    catch { return new Date(expiryMs).toDateString(); }
+  })();
+
   let sent = 0;
   let missing = 0;
   let failed = 0;
@@ -84,8 +94,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   for (const t of rows) {
     // Record the status the legal team set (so it's on the register regardless of
-    // whether the member signs), and stamp when their link was last sent.
-    const update: Record<string, any> = { status: t.status, checkin_link_sent_at: nowIso };
+    // whether the member signs), stamp when their link was last sent, and set the
+    // link expiry.
+    const update: Record<string, any> = { status: t.status, checkin_link_sent_at: nowIso, checkin_token_expires_at: expiryIso };
     if (!t.token) update.checkin_token = crypto.randomBytes(18).toString('base64url');
     await supabaseAdmin.from(t.table).update(update).match(t.match);
     const token = t.token || update.checkin_token;
@@ -100,6 +111,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         <p style="margin:0 0 12px">Good day, ${escapeHtml(t.name)},</p>
         <p style="margin:0 0 12px">Please sign to confirm the attendance record for <strong>${escapeHtml(meeting.title)}</strong> (${escapeHtml(when)}).</p>
         <p style="margin:0 0 12px">By signing, you acknowledge <strong>${escapeHtml(ack)}</strong>. No login is needed — you'll simply confirm with your signature.</p>
+        <p style="margin:0 0 12px;color:#8a8279;font-size:13px">This secure link expires on <strong>${escapeHtml(expiryLabel)}</strong>.</p>
       `,
       actionUrl: url,
       actionLabel: 'Sign for attendance',

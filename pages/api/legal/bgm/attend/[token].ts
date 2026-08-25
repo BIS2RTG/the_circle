@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { buildAttendView } from '@/lib/bgmSSR';
+import { notifyAttendanceSigned } from '@/lib/bgmNotify';
 
 /**
  * PUBLIC (token-gated, no login) PERSONAL sign / self check-in.
@@ -34,24 +35,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // ---- POST: record the signature ----
   const { data: dir } = await supabaseAdmin
     .from('meeting_attendance')
-    .select('id, meeting_id, status, check_in_signature, director:directors(id, saved_signature, terms_accepted_at, is_hrims, email)')
+    .select('id, meeting_id, status, check_in_signature, checkin_token_expires_at, director:directors(id, full_name, saved_signature, terms_accepted_at, is_hrims, email)')
     .eq('checkin_token', token).maybeSingle();
 
   let kind: 'director' | 'guest' = 'director';
   let director: any = null;
-  let row: { meeting_id: string; status: string | null; rowId: string; signed: boolean } | null = null;
+  let row: { meeting_id: string; status: string | null; rowId: string; signed: boolean; expiresAt: string | null; name: string } | null = null;
 
   if (dir) {
     director = (dir as any).director;
-    row = { meeting_id: (dir as any).meeting_id, status: (dir as any).status, rowId: (dir as any).id, signed: !!(dir as any).check_in_signature };
+    row = { meeting_id: (dir as any).meeting_id, status: (dir as any).status, rowId: (dir as any).id, signed: !!(dir as any).check_in_signature, expiresAt: (dir as any).checkin_token_expires_at || null, name: director?.full_name || 'A board member' };
   } else {
     const { data: guest } = await supabaseAdmin
       .from('meeting_guests')
-      .select('id, meeting_id, status, check_in_signature')
+      .select('id, meeting_id, status, full_name, check_in_signature, checkin_token_expires_at')
       .eq('checkin_token', token).maybeSingle();
-    if (guest) { kind = 'guest'; row = { meeting_id: (guest as any).meeting_id, status: (guest as any).status, rowId: (guest as any).id, signed: !!(guest as any).check_in_signature }; }
+    if (guest) { kind = 'guest'; row = { meeting_id: (guest as any).meeting_id, status: (guest as any).status, rowId: (guest as any).id, signed: !!(guest as any).check_in_signature, expiresAt: (guest as any).checkin_token_expires_at || null, name: (guest as any).full_name || 'A guest' }; }
   }
   if (!row) return res.status(404).json({ error: 'This attendance link is not valid.' });
+  if (row.expiresAt && Date.now() > new Date(row.expiresAt).getTime()) {
+    return res.status(410).json({ error: 'This signing link has expired. Please ask the board secretary to resend it.' });
+  }
 
   const { data: meeting } = await supabaseAdmin
     .from('board_meetings')
@@ -59,8 +63,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     .eq('id', row.meeting_id).maybeSingle();
   if (!meeting) return res.status(404).json({ error: 'Meeting not found.' });
 
+  // An emailed personal link (has an expiry) can be signed any time until it
+  // expires / the register is finalized; live self check-in keeps the 3h window.
   const start = new Date(meeting.scheduled_start).getTime();
-  const open = Date.now() >= start - 3 * 3600_000 && meeting.status !== 'cancelled' && !meeting.finalized_at;
+  const withinLiveWindow = Date.now() >= start - 3 * 3600_000;
+  const open = meeting.status !== 'cancelled' && !meeting.finalized_at && (!!row.expiresAt || withinLiveWindow);
 
   // Terms are required for external (non-HRIMS) directors who haven't accepted yet.
   const isHrims = kind === 'director'
@@ -103,6 +110,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (Object.keys(patch).length > 0) await supabaseAdmin.from('directors').update(patch).eq('id', director.id);
     }
   }
+
+  // Notify the meeting initiator that this member signed (and, if everyone has
+  // now signed, that the register is ready to finalize). Best-effort.
+  await notifyAttendanceSigned(row.meeting_id, row.name);
 
   return res.status(200).json({ ok: true });
 }

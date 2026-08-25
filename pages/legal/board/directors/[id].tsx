@@ -10,7 +10,15 @@ import { useToast } from '../../../../components/ui/ToastProvider';
 import { useRBAC, useRequirePermission } from '../../../../contexts/RBACContext';
 import AttendanceBadge from '../../../../components/legal/bgm/AttendanceBadge';
 import { ATTENDANCE_LABELS, ATTENDANCE_STATUSES } from '@/lib/bgm';
-import { ArrowLeft, Crown, Mail, Phone, Pencil, Ban, RotateCcw } from 'lucide-react';
+import { ArrowLeft, Crown, Mail, Phone, Pencil, Ban, RotateCcw, ChevronDown } from 'lucide-react';
+
+// Disable reasons a board member can be set to (all count as "not active").
+const DISABLE_REASONS: { value: string; label: string }[] = [
+  { value: 'suspended', label: 'Suspended' },
+  { value: 'inactive', label: 'Inactive' },
+  { value: 'resigned', label: 'Resigned' },
+  { value: 'retired', label: 'Retired' },
+];
 
 const formFromDirector = (d: any) => ({
   email: d?.email || '', phone: d?.phone || '', appointed_date: d?.appointed_date || '', term_end_date: d?.term_end_date || '',
@@ -34,6 +42,7 @@ export default function DirectorDetail({ initial, initialCommittees }: DirectorP
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<any>(() => formFromDirector(initial?.director));
   const [saving, setSaving] = useState(false);
+  const [disableMenuOpen, setDisableMenuOpen] = useState(false);
 
   // Client refetch after a mutation (edit, status change, committee change).
   const load = async () => {
@@ -58,6 +67,7 @@ export default function DirectorDetail({ initial, initialCommittees }: DirectorP
   }, [initial, initialCommittees]);
 
   const setStatus = async (status: string) => {
+    setDisableMenuOpen(false);
     const res = await fetch(`/api/legal/bgm/directors/${id}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }),
     });
@@ -135,7 +145,25 @@ export default function DirectorDetail({ initial, initialCommittees }: DirectorP
             {canManage && !editing && (
               <div className="flex items-center gap-2">
                 {director.status === 'active' ? (
-                  <Button variant="outline" onClick={() => setStatus('suspended')}><Ban className="w-4 h-4 mr-1.5" /> Disable</Button>
+                  <div className="relative">
+                    <Button variant="outline" onClick={() => setDisableMenuOpen((o) => !o)}>
+                      <Ban className="w-4 h-4 mr-1.5" /> Disable <ChevronDown className="w-3.5 h-3.5 ml-1.5" />
+                    </Button>
+                    {disableMenuOpen && (
+                      <>
+                        <div className="fixed inset-0 z-10" onClick={() => setDisableMenuOpen(false)} />
+                        <div className="absolute right-0 mt-1 w-44 z-20 rounded-xl border border-gray-200 bg-white shadow-lg py-1">
+                          <p className="px-3 py-1.5 text-[11px] uppercase tracking-wider text-neutral-400">Disable as…</p>
+                          {DISABLE_REASONS.map((r) => (
+                            <button key={r.value} onClick={() => setStatus(r.value)}
+                              className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-neutral-50">
+                              {r.label}
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
                 ) : (
                   <Button variant="outline" onClick={() => setStatus('active')}><RotateCcw className="w-4 h-4 mr-1.5" /> Re-activate</Button>
                 )}

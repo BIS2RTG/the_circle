@@ -32,22 +32,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(409).json({ error: 'This meeting has already started or taken place — invitations can only be sent beforehand.' });
   }
 
-  // Gather invitees (directors + guests) with emails.
+  // Gather invitees (directors + guests) with emails. Disabled directors
+  // (suspended / inactive / resigned / retired) are NEVER emailed an invitation.
   const { data: register } = await supabaseAdmin
     .from('meeting_attendance')
-    .select('director:directors(full_name, email)')
+    .select('director:directors(full_name, email, status)')
     .eq('meeting_id', id);
   const { data: guests } = await supabaseAdmin
     .from('meeting_guests')
     .select('full_name, email')
     .eq('meeting_id', id);
 
+  const activeRegister = (register || []).filter((r: any) => r.director && r.director.status === 'active');
+
   const attendees = [
-    ...(register || []).map((r: any) => r.director).filter((d: any) => d && d.email).map((d: any) => ({ email: d.email as string, name: d.full_name as string })),
+    ...activeRegister.filter((r: any) => r.director.email).map((r: any) => ({ email: r.director.email as string, name: r.director.full_name as string })),
     ...(guests || []).filter((g: any) => g.email).map((g: any) => ({ email: g.email as string, name: g.full_name as string })),
   ];
 
-  const missing = (register || []).filter((r: any) => !r.director?.email).length
+  const missing = activeRegister.filter((r: any) => !r.director?.email).length
     + (guests || []).filter((g: any) => !g.email).length;
 
   if (attendees.length === 0) {
@@ -58,21 +61,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   const end = meeting.scheduled_end || new Date(new Date(meeting.scheduled_start).getTime() + 2 * 60 * 60 * 1000).toISOString();
-  const committeeName = (meeting.committee as any)?.name;
 
-  // Only Teams meetings are auto-provisioned by Graph; Zoom / Google Meet /
-  // Other use the link the organiser pasted (created manually by IT).
+  // Resolve the committee label — a meeting can span several committees.
+  let committeeLabel: string | null = (meeting.committee as any)?.name || null;
+  const committeeIds: string[] = Array.isArray((meeting as any).committee_ids) ? (meeting as any).committee_ids : [];
+  if (committeeIds.length > 0) {
+    const { data: cs } = await supabaseAdmin.from('committees').select('id, name').in('id', committeeIds);
+    const names = committeeIds.map((cid) => (cs || []).find((c: any) => c.id === cid)?.name).filter(Boolean) as string[];
+    if (names.length > 0) committeeLabel = names.join(' + ');
+  }
+
   const platform = meeting.virtual_platform as string | null;
-  const teamsAuto = meeting.is_virtual && platform === 'teams' && !meeting.virtual_link;
   const platformLabel = platform ? ({ zoom: 'Zoom', teams: 'Microsoft Teams', google_meet: 'Google Meet', other: 'Online' } as Record<string, string>)[platform] : 'Online';
-  const joinBlock = meeting.is_virtual && meeting.virtual_link
-    ? `<p><strong>Join (${escapeHtml(platformLabel)}):</strong> <a href="${escapeHtml(meeting.virtual_link)}">${escapeHtml(meeting.virtual_link)}</a></p>`
-    : '';
-  const bodyHtml = [
-    meeting.agenda ? `<p><strong>Agenda</strong></p><p>${escapeHtml(meeting.agenda)}</p>` : '',
-    committeeName ? `<p>Committee: ${escapeHtml(committeeName)}</p>` : '',
-    joinBlock,
-  ].join('');
 
   const outcome = await distributeMeetingInvitation({
     organiserUserId: [ctx.userId, meeting.created_by],
@@ -84,10 +84,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       end,
       timeZone: meeting.time_zone || 'Africa/Harare',
       location: meeting.is_virtual ? (meeting.virtual_link || platformLabel) : meeting.location,
-      isOnline: teamsAuto,
+      isOnline: meeting.is_virtual,
       onlineLink: meeting.virtual_link,
-      bodyHtml,
       attendees,
+      meetingId: meeting.id,
+      organiserName: ctx.displayName,
+      committeeLabel,
+      platformLabel: meeting.is_virtual ? platformLabel : null,
+      agenda: meeting.agenda || null,
     },
   });
 
@@ -114,8 +118,4 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     invited: attendees.length,
     missing_emails: missing,
   });
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }

@@ -57,7 +57,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       if (error) throw error;
 
-      return res.status(200).json({ vouchers: data || [] });
+      // Voucher numbers are derived from the request id (no org-wide counter):
+      // base `VCH-<first 8 of request id>`, with a range suffix when the request
+      // generates several. This mirrors what the downloaded voucher shows.
+      const vouchers = (data || []).map((v: any) => {
+        const reqObj = Array.isArray(v.request) ? v.request[0] : v.request;
+        const reqId = reqObj?.id || '';
+        const units = Array.isArray(v.business_units) ? v.business_units : [];
+        const counts = units
+          .map((u: any) => parseInt(String(u?.numberOfVouchers ?? ''), 10))
+          .filter((n: number) => Number.isFinite(n) && n > 0);
+        const count = counts.length ? Math.min(100, Math.max(...counts)) : 1;
+        // The number only exists once the request is approved (matches the
+        // downloadable voucher). Pending requests stay "pending" on the register.
+        const base = reqId ? `VCH-${String(reqId).substring(0, 8).toUpperCase()}` : null;
+        const display = reqObj?.status === 'approved' && base
+          ? (count > 1 ? `${base}-01…-${String(count).padStart(2, '0')}` : base)
+          : null;
+        return { ...v, voucher_number: display, voucher_count: count };
+      });
+
+      return res.status(200).json({ vouchers });
     }
 
     return res.status(405).json({ error: 'Method not allowed' });

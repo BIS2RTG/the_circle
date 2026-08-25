@@ -39,7 +39,10 @@ export default function AttendanceEmailModal({
   const [picked, setPicked] = useState<Set<string>>(() => new Set(emailable.map((r) => r.key)));
   const [statuses, setStatuses] = useState<Record<string, string>>(() => {
     const init: Record<string, string> = {};
-    for (const r of rows) { const n = norm(r.status); if (n) init[r.key] = n; }
+    // Before the meeting (scheduled) everyone is expected present, so default to
+    // 'present' — the secretary can just send. After the meeting they set the
+    // real recorded status explicitly.
+    for (const r of rows) { const n = norm(r.status) || (!happened ? 'present' : ''); if (n) init[r.key] = n; }
     return init;
   });
 

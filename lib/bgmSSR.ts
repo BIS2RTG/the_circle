@@ -33,6 +33,20 @@ export function jsonSafe<T>(v: T): T {
 }
 
 /**
+ * Human label for a meeting's committee(s). A committee meeting can span several
+ * committees (committee_ids); this joins their names, falling back to the single
+ * committee join for older single-committee records.
+ */
+export function committeeLabel(meeting: any, nameById: Map<string, string>): string | null {
+  const ids: string[] = Array.isArray(meeting?.committee_ids) ? meeting.committee_ids : [];
+  if (ids.length > 0) {
+    const names = ids.map((id) => nameById.get(id)).filter(Boolean) as string[];
+    if (names.length > 0) return names.join(' + ');
+  }
+  return meeting?.committee?.name || null;
+}
+
+/**
  * The Board Governance hub payload — committees(+members), directors(+committees),
  * meetings(+attendance tally) for the year, and the cumulative attendance summary.
  * Shared by /api/legal/bgm/overview and the /legal/board SSR.
@@ -95,7 +109,12 @@ export async function buildBoardOverview(organizationId: string, year: number) {
       tally.set(r.meeting_id, t);
     }
   }
-  const meetingsOut = meetings.map((m) => ({ ...m, attendance_tally: tally.get(m.id) || { invited: 0, recorded: 0, present: 0 } }));
+  const committeeNameById = new Map(committees.map((c) => [c.id, c.name] as [string, string]));
+  const meetingsOut = meetings.map((m) => ({
+    ...m,
+    attendance_tally: tally.get(m.id) || { invited: 0, recorded: 0, present: 0 },
+    committee_label: committeeLabel(m, committeeNameById),
+  }));
 
   const byDirector = new Map<string, { status: AttendanceStatus | null }[]>();
   for (const r of attendanceRes.data || []) {
@@ -175,24 +194,27 @@ export async function buildAttendView(token: string) {
 
   const { data: dir } = await supabaseAdmin
     .from('meeting_attendance')
-    .select('id, meeting_id, status, check_in_signature, director:directors(id, full_name, salutation, email, is_hrims, saved_signature, terms_accepted_at)')
+    .select('id, meeting_id, status, check_in_signature, checkin_token_expires_at, director:directors(id, full_name, salutation, email, is_hrims, saved_signature, terms_accepted_at)')
     .eq('checkin_token', token).maybeSingle();
 
   let kind: 'director' | 'guest' = 'director';
   let director: any = null;
-  let row: { meeting_id: string; status: string | null; name: string; signed: boolean } | null = null;
+  let row: { meeting_id: string; status: string | null; name: string; signed: boolean; expiresAt: string | null } | null = null;
 
   if (dir) {
     director = (dir as any).director;
-    row = { meeting_id: (dir as any).meeting_id, status: (dir as any).status, name: director?.full_name || 'Director', signed: !!(dir as any).check_in_signature };
+    row = { meeting_id: (dir as any).meeting_id, status: (dir as any).status, name: director?.full_name || 'Director', signed: !!(dir as any).check_in_signature, expiresAt: (dir as any).checkin_token_expires_at || null };
   } else {
     const { data: guest } = await supabaseAdmin
       .from('meeting_guests')
-      .select('id, meeting_id, status, full_name, check_in_signature')
+      .select('id, meeting_id, status, full_name, check_in_signature, checkin_token_expires_at')
       .eq('checkin_token', token).maybeSingle();
-    if (guest) { kind = 'guest'; row = { meeting_id: (guest as any).meeting_id, status: (guest as any).status, name: (guest as any).full_name, signed: !!(guest as any).check_in_signature }; }
+    if (guest) { kind = 'guest'; row = { meeting_id: (guest as any).meeting_id, status: (guest as any).status, name: (guest as any).full_name, signed: !!(guest as any).check_in_signature, expiresAt: (guest as any).checkin_token_expires_at || null }; }
   }
   if (!row) return { valid: false as const, error: 'This attendance link is not valid.' };
+  if (row.expiresAt && Date.now() > new Date(row.expiresAt).getTime()) {
+    return { valid: false as const, error: 'This signing link has expired. Please ask the board secretary to resend it.' };
+  }
 
   const { data: meeting } = await supabaseAdmin
     .from('board_meetings')
@@ -200,9 +222,15 @@ export async function buildAttendView(token: string) {
     .eq('id', row.meeting_id).maybeSingle();
   if (!meeting) return { valid: false as const, error: 'Meeting not found.' };
 
+  // An emailed personal signing link (with an expiry) can be signed any time
+  // until it expires or the register is finalized — including well before the
+  // meeting, so members can confirm ahead of a scheduled meeting. Only the older
+  // live self-check-in (no expiry set) keeps the "from 3h before" window.
   const start = new Date(meeting.scheduled_start).getTime();
   const now = Date.now();
-  const open = now >= start - 3 * 3600_000 && meeting.status !== 'cancelled' && !meeting.finalized_at;
+  const hasExpiry = !!row.expiresAt;
+  const withinLiveWindow = now >= start - 3 * 3600_000;
+  const open = meeting.status !== 'cancelled' && !meeting.finalized_at && (hasExpiry || withinLiveWindow);
   const isHrims = kind === 'director' ? await isDirectorHrims(director || {}) : true;
   const termsAccepted = kind === 'director' ? !!director?.terms_accepted_at : true;
 
@@ -270,7 +298,16 @@ export async function buildMeetingDetail(organizationId: string, id: string) {
     finalized_by_name = fu?.display_name || null;
   }
 
-  return { meeting: { ...meeting, finalized_by_name }, register: rows, guests: guests || [], quorum };
+  // Resolve all committee names for a (possibly multi-committee) meeting.
+  let committee_label: string | null = (meeting as any).committee?.name || null;
+  const cIds: string[] = Array.isArray((meeting as any).committee_ids) ? (meeting as any).committee_ids : [];
+  if (cIds.length > 0) {
+    const { data: cs } = await supabaseAdmin.from('committees').select('id, name').in('id', cIds);
+    const nameById = new Map((cs || []).map((c: any) => [c.id, c.name] as [string, string]));
+    committee_label = committeeLabel(meeting, nameById);
+  }
+
+  return { meeting: { ...meeting, finalized_by_name, committee_label }, register: rows, guests: guests || [], quorum };
 }
 
 /** A single director's profile, committees and cumulative attendance history. */
