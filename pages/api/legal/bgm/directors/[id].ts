@@ -24,6 +24,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!ctx) return;
 
     const b = req.body || {};
+    const DIRECTOR_STATUSES = ['active', 'inactive', 'suspended', 'resigned', 'retired'];
+    if ('status' in b && !DIRECTOR_STATUSES.includes(b.status)) {
+      return res.status(400).json({ error: `status must be one of: ${DIRECTOR_STATUSES.join(', ')}` });
+    }
     const patch: Record<string, any> = {};
     for (const f of ['full_name', 'salutation', 'email', 'phone', 'appointed_date', 'term_end_date', 'notes', 'status']) {
       if (f in b) patch[f] = b[f] === '' ? null : b[f];

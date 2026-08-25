@@ -14,7 +14,7 @@ import QrCheckInModal from '../../../../components/legal/bgm/QrCheckInModal';
 import SignatureCaptureModal from '../../../../components/legal/bgm/SignatureCaptureModal';
 import SignOffModal from '../../../../components/legal/bgm/SignOffModal';
 import AttendanceEmailModal from '../../../../components/legal/bgm/AttendanceEmailModal';
-import { ArrowLeft, MapPin, Video, CalendarClock, Send, Ban, Save, Lock, LockOpen, UserPlus, X, ShieldCheck, QrCode, FileText, PenLine, Mail } from 'lucide-react';
+import { ArrowLeft, MapPin, Video, CalendarClock, Send, Ban, Save, Lock, UserPlus, X, ShieldCheck, QrCode, FileText, PenLine, Mail } from 'lucide-react';
 
 function fmtRange(start: string, end: string | null, tz?: string) {
   try {
@@ -158,14 +158,6 @@ export default function MeetingDetail({ initial }: { initial: any }) {
     finally { setFinalizing(false); }
   };
 
-  const reopenRegister = async () => {
-    const res = await fetch(`/api/legal/bgm/meetings/${id}/finalize`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ finalize: false }),
-    });
-    if (res.ok) { addToast({ type: 'success', message: 'Register re-opened for editing.' }); load(); }
-    else addToast({ type: 'error', message: 'Failed to re-open the register.' });
-  };
-
   const openQr = async () => {
     const res = await fetch(`/api/legal/bgm/meetings/${id}/checkin-token`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     const data = await res.json();
@@ -231,7 +223,7 @@ export default function MeetingDetail({ initial }: { initial: any }) {
                 ) : meeting.location ? (
                   <p className="flex items-center gap-2"><MapPin className="w-4 h-4 text-neutral-400" /> {meeting.location}</p>
                 ) : null}
-                <p className="text-neutral-500">{meeting.meeting_type === 'committee' && meeting.committee?.name ? meeting.committee.name : 'Full Board'} · {register.length} directors{guests.length ? ` · ${guests.length} guests` : ''}</p>
+                <p className="text-neutral-500">{meeting.meeting_type === 'committee' && (meeting.committee_label || meeting.committee?.name) ? (meeting.committee_label || meeting.committee.name) : 'Full Board'} · {register.length} directors{guests.length ? ` · ${guests.length} guests` : ''}</p>
               </div>
               {meeting.agenda && <div className="mt-3 text-sm text-neutral-600"><p className="font-medium text-neutral-700">Agenda</p><p className="whitespace-pre-wrap">{meeting.agenda}</p></div>}
             </div>
@@ -248,9 +240,15 @@ export default function MeetingDetail({ initial }: { initial: any }) {
                   </span>
                 ) : null}
                 {canManageAttendance && (
-                  <Button variant={finalized ? 'outline' : 'secondary'} onClick={() => (finalized ? reopenRegister() : setFinalizeOpen(true))}>
-                    {finalized ? <><LockOpen className="w-4 h-4 mr-1.5" /> Re-open register</> : <><Lock className="w-4 h-4 mr-1.5" /> Finalize register</>}
-                  </Button>
+                  finalized ? (
+                    <span className="inline-flex items-center gap-1.5 text-xs text-indigo-700 bg-indigo-50 rounded-lg px-3 py-2">
+                      <Lock className="w-3.5 h-3.5" /> Register finalized — permanently locked
+                    </span>
+                  ) : (
+                    <Button variant="secondary" onClick={() => setFinalizeOpen(true)}>
+                      <Lock className="w-4 h-4 mr-1.5" /> Finalize register
+                    </Button>
+                  )
                 )}
                 {!finalized && <Button variant="outline" onClick={() => setCancelOpen(true)}><Ban className="w-4 h-4 mr-1.5" /> Cancel meeting</Button>}
               </div>
@@ -278,7 +276,7 @@ export default function MeetingDetail({ initial }: { initial: any }) {
             {/* QR check-in is hidden for past meetings for now — sign-off there is
                 done via emailed links, not an in-room QR. */}
             {editable && signOpen && !happened && <Button variant="outline" onClick={openQr}><QrCode className="w-4 h-4 mr-1.5" /> QR check-in</Button>}
-            {editable && signOpen && <Button variant="outline" onClick={() => setEmailOpen(true)}><Mail className="w-4 h-4 mr-1.5" /> {happened ? 'Email sign-off links' : 'Email check-in links'}</Button>}
+            {editable && <Button variant="outline" onClick={() => setEmailOpen(true)}><Mail className="w-4 h-4 mr-1.5" /> {happened ? 'Email sign-off links' : 'Email signing links'}</Button>}
             {editable && <Button variant="outline" onClick={() => setAddOpen(true)}><UserPlus className="w-4 h-4 mr-1.5" /> Add attendees</Button>}
             {editable && <Button variant="primary" onClick={save} isLoading={saving} disabled={!dirty}><Save className="w-4 h-4 mr-1.5" /> Save</Button>}
           </div>

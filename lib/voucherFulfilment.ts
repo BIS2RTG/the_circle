@@ -51,24 +51,43 @@ export async function onVoucherFullyApproved(
 
     if (existing?.seq != null) return;
 
-    // 1. Issue the next sequential number atomically.
-    const { data: seqValue, error: seqError } = await supabaseAdmin.rpc('issue_voucher_number', {
-      p_org: orgId,
-    });
-    if (seqError) {
-      console.error('Failed to issue voucher number:', seqError);
-      return;
-    }
-    const seq = typeof seqValue === 'number' ? seqValue : Number(seqValue);
-    const voucherNumber = Number.isFinite(seq) ? String(seq).padStart(3, '0') : null;
-    if (!voucherNumber) {
-      console.error('issue_voucher_number returned a non-numeric value:', seqValue);
-      return;
-    }
-
-    const selectedUnits: Array<{ id: string; name: string }> = Array.isArray(metadata.selectedBusinessUnits)
+    const selectedUnits: Array<{ id: string; name: string; numberOfVouchers?: string }> = Array.isArray(metadata.selectedBusinessUnits)
       ? metadata.selectedBusinessUnits
       : [];
+
+    // How many vouchers to issue — the "number of vouchers" set on a meal voucher
+    // (max across units), at least 1. Capped to a sane maximum.
+    const requestedCount = Math.max(
+      1,
+      ...selectedUnits.map((u) => {
+        const n = parseInt(String(u.numberOfVouchers ?? ''), 10);
+        return Number.isFinite(n) && n > 0 ? n : 0;
+      })
+    );
+    const count = Math.min(requestedCount, 100);
+
+    // 1. Issue `count` sequential numbers atomically (one RPC call each — the
+    // counter is gap-free per org, so the numbers are consecutive).
+    const seqs: number[] = [];
+    for (let i = 0; i < count; i++) {
+      const { data: seqValue, error: seqError } = await supabaseAdmin.rpc('issue_voucher_number', { p_org: orgId });
+      if (seqError) {
+        console.error('Failed to issue voucher number:', seqError);
+        if (seqs.length === 0) return; // couldn't issue any — bail
+        break;
+      }
+      const s = typeof seqValue === 'number' ? seqValue : Number(seqValue);
+      if (!Number.isFinite(s)) {
+        console.error('issue_voucher_number returned a non-numeric value:', seqValue);
+        break;
+      }
+      seqs.push(s);
+    }
+    if (seqs.length === 0) return;
+
+    const seq = seqs[0];
+    const voucherNumbers = seqs.map((s) => String(s).padStart(3, '0'));
+    const voucherNumber = voucherNumbers[0];
 
     // 2. Resolve the target hotels. "Any RTG Hotel of Choice" (id === 'any')
     // expands to every hotel so all of them are listed and emailed.
@@ -107,18 +126,22 @@ export async function onVoucherFullyApproved(
     const recipientList = Array.from(recipients).filter(Boolean);
 
     // 3. Send the voucher email to each mailbox (best-effort).
+    const numbersLabel = voucherNumbers.length === 1
+      ? voucherNumber
+      : `${voucherNumbers[0]}–${voucherNumbers[voucherNumbers.length - 1]} (${voucherNumbers.length} vouchers)`;
+
     let emailSent = false;
     if (recipientList.length > 0) {
       const hotelListHtml = targetUnits.map((u) => `<li>${esc(u.name)}</li>`).join('');
-      const subject = `Complimentary Voucher ${voucherNumber} — ${request.title}`;
+      const subject = `Complimentary Voucher ${numbersLabel} — ${request.title || 'Voucher Request'}`;
       const html = `
         <div style="font-family: 'Segoe UI', Tahoma, sans-serif; color:#374151;">
-          <h2 style="margin:0 0 16px;">Complimentary Voucher ${esc(voucherNumber)}</h2>
-          <p>A complimentary accommodation voucher has been fully approved${
+          <h2 style="margin:0 0 16px;">Complimentary Voucher${voucherNumbers.length > 1 ? 's' : ''} ${esc(numbersLabel)}</h2>
+          <p>${voucherNumbers.length > 1 ? `${voucherNumbers.length} complimentary accommodation vouchers have` : 'A complimentary accommodation voucher has'} been fully approved${
             anySelected ? ' and is redeemable at any RTG hotel below' : ''
           }.</p>
           <table style="border-collapse:collapse; margin:12px 0;">
-            <tr><td style="padding:4px 12px 4px 0; font-weight:600;">Voucher Number</td><td>${esc(voucherNumber)}</td></tr>
+            <tr><td style="padding:4px 12px 4px 0; font-weight:600;">Voucher Number${voucherNumbers.length > 1 ? 's' : ''}</td><td>${esc(voucherNumbers.join(', '))}</td></tr>
             <tr><td style="padding:4px 12px 4px 0; font-weight:600;">Guest(s)</td><td>${esc(metadata.guestNames || '—')}</td></tr>
             <tr><td style="padding:4px 12px 4px 0; font-weight:600;">Reason</td><td>${esc(metadata.reason || '—')}</td></tr>
           </table>
@@ -147,6 +170,7 @@ export async function onVoucherFullyApproved(
           request_id: requestId,
           seq,
           voucher_number: voucherNumber,
+          voucher_numbers: voucherNumbers,
           guest_names: metadata.guestNames || null,
           business_units: selectedUnits,
           reason: metadata.reason || null,
@@ -158,6 +182,13 @@ export async function onVoucherFullyApproved(
         },
         { onConflict: 'request_id' }
       );
+
+    // 5. Stamp the number(s) onto the request metadata so the UI + voucher
+    // document show the real sequential number (not the VCH-<id> fallback).
+    await supabaseAdmin
+      .from('requests')
+      .update({ metadata: { ...metadata, voucherNumber, voucherNumbers } })
+      .eq('id', requestId);
   } catch (err) {
     console.error('onVoucherFullyApproved failed:', err);
   }

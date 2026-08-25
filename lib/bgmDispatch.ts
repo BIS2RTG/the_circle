@@ -49,7 +49,7 @@ export async function dispatchDueInvitations(
     try {
       const { data: register } = await supabaseAdmin
         .from('meeting_attendance')
-        .select('director:directors(full_name, email)')
+        .select('director:directors(full_name, email, status)')
         .eq('meeting_id', m.id);
 
       const { data: guests } = await supabaseAdmin
@@ -57,10 +57,11 @@ export async function dispatchDueInvitations(
         .select('full_name, email')
         .eq('meeting_id', m.id);
 
+      // Disabled directors are never emailed an invitation.
       const attendees = [
         ...(register || [])
           .map((r: any) => r.director)
-          .filter((d: any) => d && d.email)
+          .filter((d: any) => d && d.email && d.status === 'active')
           .map((d: any) => ({ email: d.email as string, name: d.full_name as string })),
         ...(guests || [])
           .filter((g: any) => g.email)
@@ -73,9 +74,17 @@ export async function dispatchDueInvitations(
       }
 
       const end = m.scheduled_end || new Date(new Date(m.scheduled_start).getTime() + 2 * 60 * 60 * 1000).toISOString();
-      const committeeName = (m.committee as any)?.name;
+
+      // Committee label — a meeting can span several committees.
+      let committeeLabel: string | null = (m.committee as any)?.name || null;
+      const committeeIds: string[] = Array.isArray((m as any).committee_ids) ? (m as any).committee_ids : [];
+      if (committeeIds.length > 0) {
+        const { data: cs } = await supabaseAdmin.from('committees').select('id, name').in('id', committeeIds);
+        const names = committeeIds.map((cid) => (cs || []).find((c: any) => c.id === cid)?.name).filter(Boolean) as string[];
+        if (names.length > 0) committeeLabel = names.join(' + ');
+      }
+
       const platform = m.virtual_platform as string | null;
-      const teamsAuto = m.is_virtual && platform === 'teams' && !m.virtual_link;
       const platformLabel = platform
         ? ({ zoom: 'Zoom', teams: 'Microsoft Teams', google_meet: 'Google Meet', other: 'Online' } as Record<string, string>)[platform]
         : 'Online';
@@ -89,10 +98,13 @@ export async function dispatchDueInvitations(
           end,
           timeZone: m.time_zone || 'Africa/Harare',
           location: m.is_virtual ? (m.virtual_link || platformLabel) : m.location,
-          isOnline: teamsAuto,
+          isOnline: m.is_virtual,
           onlineLink: m.virtual_link,
-          bodyHtml: m.agenda ? `<p><strong>Agenda:</strong> ${m.agenda}</p>` : undefined,
           attendees,
+          meetingId: m.id,
+          committeeLabel,
+          platformLabel: m.is_virtual ? platformLabel : null,
+          agenda: m.agenda || null,
         },
       });
 

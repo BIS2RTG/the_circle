@@ -311,6 +311,7 @@ export default function BoardGovernanceHub({ initial, initialYear }: HubProps) {
                     <thead>
                       <tr className="text-left text-xs uppercase tracking-wider text-neutral-400 border-b border-border">
                         <th className="px-4 py-3 font-semibold">Director</th>
+                        <th className="px-3 py-3 font-semibold text-center">Meetings invited</th>
                         {ATTENDANCE_STATUSES.map((s) => (
                           <th key={s} className="px-3 py-3 font-semibold text-center">{ATTENDANCE_LABELS[s]}</th>
                         ))}
@@ -325,6 +326,7 @@ export default function BoardGovernanceHub({ initial, initialYear }: HubProps) {
                               {row.director.full_name}
                             </Link>
                           </td>
+                          <td className="px-3 py-3 text-center font-medium text-text-primary">{row.invited || 0}</td>
                           {ATTENDANCE_STATUSES.map((s) => (
                             <td key={s} className="px-3 py-3 text-center text-neutral-600">{row.counts[s] || 0}</td>
                           ))}
@@ -486,7 +488,7 @@ function CalMeeting({ m }: { m: any }) {
         </div>
         <div className="min-w-0 flex-1">
           <p className={`text-sm font-medium truncate ${m.status === 'cancelled' ? 'text-neutral-400 line-through' : 'text-text-primary'}`}>{m.title}</p>
-          <p className="text-[11px] text-neutral-500 truncate">{time}{time ? ' · ' : ''}{isCommittee ? (m.committee?.name || 'Committee') : 'Board'}</p>
+          <p className="text-[11px] text-neutral-500 truncate">{time}{time ? ' · ' : ''}{isCommittee ? (m.committee_label || m.committee?.name || 'Committee') : 'Board'}</p>
         </div>
         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusColor}`} title={m.status} />
       </div>
@@ -495,7 +497,7 @@ function CalMeeting({ m }: { m: any }) {
 }
 
 function MeetingRow({ m, expanded }: { m: any; expanded?: boolean }) {
-  const committeeName = m.committee?.name;
+  const committeeName = m.committee_label || m.committee?.name;
   return (
     <Link href={`/legal/board/meetings/${m.id}`}>
       <div className={`group rounded-xl border border-border hover:border-primary-300 hover:bg-primary-50/30 transition-colors ${expanded ? 'p-4' : 'p-2.5'}`}>
@@ -525,7 +527,12 @@ function MeetingRow({ m, expanded }: { m: any; expanded?: boolean }) {
               </div>
             )}
           </div>
-          <StatusPill status={m.status} />
+          <div className="flex flex-col items-end gap-1.5 shrink-0">
+            <StatusPill status={m.status} />
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-primary-50 text-primary-700" title="Board members invited to this meeting">
+              <Users className="w-3 h-3" /> {m.attendance_tally?.invited || 0} invited
+            </span>
+          </div>
         </div>
       </div>
     </Link>

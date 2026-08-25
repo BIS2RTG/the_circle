@@ -26,6 +26,7 @@ interface SelectedBusinessUnit {
     specialArrangements: string;
     numberOfMeals: string;
     mealPeopleCount: string;
+    numberOfVouchers: string;
 }
 
 interface SupportingDocument {
@@ -293,6 +294,7 @@ export default function VoucherRequestPage() {
                     const normalisedUnits = metadata.selectedBusinessUnits.map((u: any) => ({
                         numberOfNights: '',
                         numberOfRooms: '',
+                        numberOfVouchers: '1',
                         ...u,
                     }));
                     setSelectedBusinessUnits(normalisedUnits);
@@ -501,6 +503,7 @@ export default function VoucherRequestPage() {
                     specialArrangements: 'N/A',
                     numberOfMeals: '',
                     mealPeopleCount: '',
+                    numberOfVouchers: '1',
                 }];
             }
             return [...prev, {
@@ -516,6 +519,7 @@ export default function VoucherRequestPage() {
                 specialArrangements: 'N/A',
                 numberOfMeals: '',
                 mealPeopleCount: '',
+                numberOfVouchers: '1',
             }];
         });
     };
@@ -913,6 +917,8 @@ export default function VoucherRequestPage() {
             const isMealOnly = [
                 'meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only', 'packed_breakfast', 'packed_lunch'
             ].includes(unit.accommodationType);
+            // Any voucher type that includes meals shows the Meal Details block.
+            const isMealInclusive = isMealOnly || ['accommodation_and_meals', 'accommodation_meals_drink'].includes(unit.accommodationType);
 
             if (!isMealOnly) {
                 if (!unit.voucherValidityPeriod) {
@@ -930,6 +936,25 @@ export default function VoucherRequestPage() {
                 if (!unit.roomType) {
                     errors.push(`Room type is required for ${unit.name}`);
                 }
+            } else {
+                // Meal-only vouchers still need a validity period (captured in the
+                // meal section rather than the accommodation section).
+                if (!unit.voucherValidityPeriod) {
+                    errors.push(`Voucher validity period is required for ${unit.name}`);
+                }
+            }
+            // Meal fields — required for any meal-inclusive voucher type.
+            if (isMealInclusive) {
+                if (!unit.numberOfMeals) {
+                    errors.push(`Number of meals is required for ${unit.name}`);
+                }
+                if (!unit.mealPeopleCount) {
+                    errors.push(`Number of people for meals is required for ${unit.name}`);
+                }
+            }
+            // Number of vouchers — required for every voucher type.
+            if (!unit.numberOfVouchers || parseInt(String(unit.numberOfVouchers), 10) < 1) {
+                errors.push(`Number of vouchers is required for ${unit.name}`);
             }
             if (!unit.accommodationType) {
                 errors.push(`Accommodation type is required for ${unit.name}`);
@@ -1636,12 +1661,52 @@ export default function VoucherRequestPage() {
                                                                         required
                                                                     />
                                                                 </div>
+                                                                {/* Validity period for meal-only vouchers (accommodation types
+                                                                    capture it in the accommodation section above). */}
+                                                                {isMealOnly && (
+                                                                    <div>
+                                                                        <label className="block text-sm font-semibold text-gray-700 mb-1 uppercase">Validity Period <span className="text-danger-500">*</span></label>
+                                                                        <div className="relative">
+                                                                            <select
+                                                                                className="w-full px-4 py-3 rounded-xl border border-gray-300 bg-white focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition-all appearance-none pr-10"
+                                                                                value={selectedUnit.voucherValidityPeriod}
+                                                                                onChange={(e) => handleBusinessUnitFieldChange(unit.id, 'voucherValidityPeriod', e.target.value)}
+                                                                                required
+                                                                            >
+                                                                                <option value="" disabled>Select Period</option>
+                                                                                <option value="1 month">1 month</option>
+                                                                                <option value="3 months">3 months</option>
+                                                                                <option value="6 months">6 months</option>
+                                                                                <option value="9 months">9 months</option>
+                                                                                <option value="12 months">12 months</option>
+                                                                            </select>
+                                                                            <div className="absolute inset-y-0 right-0 flex items-center px-4 pointer-events-none text-gray-500">
+                                                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                )}
                                                             </div>
                                                             <p className="text-xs text-gray-500 mt-3 italic">
-                                                                This voucher will entitle {selectedUnit.mealPeopleCount || '[X]'} person(s) to {selectedUnit.numberOfMeals || '[X]'} meal(s) at {unit.name}.
+                                                                This voucher will entitle {selectedUnit.mealPeopleCount || '[X]'} person(s) to {selectedUnit.numberOfMeals || '[X]'} meal(s) at {unit.name}{isMealOnly && selectedUnit.voucherValidityPeriod ? ` · valid for ${selectedUnit.voucherValidityPeriod}` : ''}.
                                                             </p>
                                                         </div>
                                                     )}
+
+                                                    {/* Number of vouchers to generate — applies to every voucher type. */}
+                                                    <div>
+                                                        <label className="block text-sm font-semibold text-gray-700 mb-1 uppercase">Number of Vouchers <span className="text-danger-500">*</span></label>
+                                                        <input
+                                                            type="number"
+                                                            className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition-all"
+                                                            placeholder="e.g. 1"
+                                                            value={selectedUnit.numberOfVouchers}
+                                                            onChange={(e) => handleBusinessUnitFieldChange(unit.id, 'numberOfVouchers', e.target.value)}
+                                                            min="1"
+                                                            required
+                                                        />
+                                                        <p className="text-xs text-gray-400 mt-1">How many separate vouchers to generate. Each gets its own unique voucher number.</p>
+                                                    </div>
 
                                                     <div>
                                                         <label className="block text-sm font-semibold text-gray-700 mb-1 uppercase">Special Arrangements</label>

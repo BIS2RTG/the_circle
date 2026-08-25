@@ -180,5 +180,6 @@ export function summariseAttendance(rows: { status: AttendanceStatus | null }[])
   }
   const attended = counts.present + counts.virtual;
   const rate = recorded > 0 ? Math.round((attended / recorded) * 100) : null;
-  return { counts, recorded, attended, rate };
+  // `invited` = total meetings this member has a register row for (attended or not).
+  return { counts, invited: rows.length, recorded, attended, rate };
 }

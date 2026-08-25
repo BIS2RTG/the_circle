@@ -714,13 +714,17 @@ function buildCompSections(request: any, metadata: any): PreviewSection[] {
                                     <td style={cellStyle}>
                                         {COMP_ACCOMMODATION_LABELS[unit.accommodationType] || unit.accommodationType || '—'}
                                     </td>
-                                    <td style={cellStyle}>{mealOnly ? '—' : (unit.voucherValidityPeriod || '—')}</td>
+                                    <td style={cellStyle}>{unit.voucherValidityPeriod || '—'}</td>
                                     <td style={{ ...cellStyle, textAlign: 'right' }}>
                                         {mealOnly ? (unit.mealPeopleCount || '—') : (unit.numberOfPeople || '—')}
                                     </td>
                                     <td style={{ ...cellStyle, textAlign: 'right' }}>{mealOnly ? '—' : (unit.numberOfRooms || '—')}</td>
                                     <td style={cellStyle}>{mealOnly ? '—' : (unit.roomType || '—')}</td>
-                                    <td style={cellStyle}>{unit.specialArrangements || '—'}</td>
+                                    <td style={cellStyle}>{[
+                                        unit.numberOfMeals ? `${unit.numberOfMeals} meal(s)` : '',
+                                        parseInt(String(unit.numberOfVouchers), 10) > 1 ? `${unit.numberOfVouchers} vouchers` : '',
+                                        unit.specialArrangements && unit.specialArrangements !== 'N/A' ? unit.specialArrangements : '',
+                                    ].filter(Boolean).join(' · ') || '—'}</td>
                                 </tr>
                             );
                         })}

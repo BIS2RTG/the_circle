@@ -68,7 +68,7 @@ export default function SignOffModal({
   };
 
   return (
-    <Modal isOpen onClose={onClose} title={title} size="md">
+    <Modal isOpen onClose={onClose} title={title} size="lg" closeOnBackdrop={false}>
       <div>
         {subtitle && <p className="text-sm text-neutral-500 mb-3">{subtitle}</p>}
         <SignatureSelector savedSignatureUrl={savedUrl} value={sel} onChange={(s) => { setSel(s); setError(null); }} />

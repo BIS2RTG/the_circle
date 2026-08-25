@@ -1071,6 +1071,19 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
         }
     };
 
+    // Number of vouchers to generate = the "number of vouchers" set on the form
+    // (max across selected units), at least 1.
+    const voucherCopyCount = (() => {
+        const units = Array.isArray(request?.metadata?.selectedBusinessUnits) ? request.metadata.selectedBusinessUnits : [];
+        const counts = units
+            .map((u: any) => parseInt(String(u?.numberOfVouchers ?? ''), 10))
+            .filter((n: number) => Number.isFinite(n) && n > 0);
+        return counts.length ? Math.min(100, Math.max(...counts)) : 1;
+    })();
+    const hasMultipleVouchers = voucherCopyCount > 1;
+
+    // Open all vouchers as separate print-pages in one document (save as one PDF,
+    // or a chosen page range).
     const handleDownloadVoucher = () => {
         if (!id) return;
         window.open(`/api/requests/${id}/voucher-pdf`, '_blank');
@@ -1377,7 +1390,7 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
                                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z" />
                                         </svg>
-                                        Generate Voucher
+                                        {hasMultipleVouchers ? `Generate ${voucherCopyCount} Vouchers` : 'Generate Voucher'}
                                     </Button>
                                 )}
                             </>
@@ -1496,9 +1509,9 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
                                                 <div className="text-right">
                                                     {request.metadata?.type === 'voucher_request' && (
                                                         <div className="mb-3">
-                                                            <span className="text-xs font-semibold text-text-secondary uppercase tracking-wider">Voucher Number</span>
+                                                            <span className="text-xs font-semibold text-text-secondary uppercase tracking-wider">Voucher Number{hasMultipleVouchers ? 's' : ''}</span>
                                                             <div className="text-lg font-bold font-mono tracking-wider text-primary-600 mt-1">
-                                                                {metadata.voucherNumber || 'N/A'}
+                                                                {`VCH-${String(request.id).substring(0, 8).toUpperCase()}`}{hasMultipleVouchers ? `-01…-${String(voucherCopyCount).padStart(2, '0')}` : ''}
                                                             </div>
                                                         </div>
                                                     )}
@@ -1841,8 +1854,9 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
                                         </Card>
                                     )}
 
-                                    {/* Administration Section - Only shows when request is fully approved */}
-                                    {actualStatus === 'approved' && (
+                                    {/* Administration Section - Only shows when request is fully approved.
+                                        Not applicable to complimentary vouchers. */}
+                                    {actualStatus === 'approved' && request.metadata?.type !== 'voucher_request' && (
                                         <Card className="!p-0 overflow-hidden border-emerald-200 shadow-sm">
                                             <div className="bg-emerald-50 px-6 py-4 border-b border-emerald-100">
                                                 <h3 className="font-semibold text-emerald-800 flex items-center gap-2">

@@ -41,7 +41,7 @@ export default function SignatureCaptureModal({
   };
 
   return (
-    <Modal isOpen onClose={onClose} title="Sign for attendance" size="md">
+    <Modal isOpen onClose={onClose} title="Sign for attendance" size="lg" closeOnBackdrop={false}>
       <div>
         <p className="text-sm text-neutral-500">Hand the device to</p>
         <p className="text-lg font-bold text-neutral-900 mb-3">{attendee.name}</p>

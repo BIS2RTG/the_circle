@@ -50,9 +50,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
+    // Resolve committee names for multi-committee labels in one query.
+    const allCommitteeIds = Array.from(new Set(
+      (meetings || []).flatMap((m: any) => Array.isArray(m.committee_ids) ? m.committee_ids : []).filter(Boolean)
+    ));
+    const nameById = new Map<string, string>();
+    if (allCommitteeIds.length > 0) {
+      const { data: cs } = await supabaseAdmin.from('committees').select('id, name').in('id', allCommitteeIds);
+      for (const c of cs || []) nameById.set((c as any).id, (c as any).name);
+    }
+    const committeeLabelFor = (m: any): string | null => {
+      const ids: string[] = Array.isArray(m.committee_ids) ? m.committee_ids : [];
+      const names = ids.map((id) => nameById.get(id)).filter(Boolean) as string[];
+      if (names.length > 0) return names.join(' + ');
+      return m.committee?.name || null;
+    };
+
     const result = (meetings || []).map((m) => ({
       ...m,
       attendance_tally: tally.get(m.id) || { invited: 0, recorded: 0, present: 0 },
+      committee_label: committeeLabelFor(m),
     }));
 
     return res.status(200).json({ meetings: result });
@@ -70,9 +87,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!b.title || !b.scheduled_start) {
       return res.status(400).json({ error: 'title and scheduled_start are required' });
     }
-    if (type === 'committee' && !b.committee_id) {
-      return res.status(400).json({ error: 'committee_id is required for committee meetings' });
+    // A committee meeting can span one or several committees. Accept either the
+    // new `committee_ids` array or the legacy single `committee_id`.
+    const committeeIds: string[] = Array.from(new Set(
+      (Array.isArray(b.committee_ids) ? b.committee_ids : [b.committee_id])
+        .filter((x: any) => typeof x === 'string' && x.length > 0)
+    ));
+    if (type === 'committee' && committeeIds.length === 0) {
+      return res.status(400).json({ error: 'At least one committee is required for committee meetings' });
     }
+    const primaryCommitteeId = committeeIds[0] || null;
 
     const start = new Date(b.scheduled_start);
     if (isNaN(start.getTime())) return res.status(400).json({ error: 'Invalid scheduled_start' });
@@ -82,17 +106,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const recordOnly = !!b.record_only || isPast;
 
     // Resolve invited directors.
+    // A `director_ids` array (even an empty one) means the caller chose a
+    // specific subset — honour it exactly and NEVER fall back to inviting the
+    // whole board. Only when the field is absent do we apply the scope default.
     const customIds = Array.isArray(b.director_ids) ? b.director_ids.filter((x: any) => typeof x === 'string') : null;
     let inviteeIds: string[] = [];
     let scope: InviteScope;
-    if (customIds && customIds.length > 0) {
-      // Validate the custom subset belongs to this org.
-      const { data: valid } = await supabaseAdmin
-        .from('directors')
-        .select('id')
-        .eq('organization_id', ctx.organizationId)
-        .in('id', customIds);
-      inviteeIds = (valid || []).map((d) => d.id);
+    if (customIds) {
+      if (customIds.length > 0) {
+        // Validate the custom subset belongs to this org.
+        const { data: valid } = await supabaseAdmin
+          .from('directors')
+          .select('id')
+          .eq('organization_id', ctx.organizationId)
+          .in('id', customIds);
+        inviteeIds = (valid || []).map((d) => d.id);
+      }
       scope = 'custom';
     } else if (type === 'board') {
       const { data: dirs } = await supabaseAdmin
@@ -103,11 +132,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       inviteeIds = (dirs || []).map((d) => d.id);
       scope = 'all_board';
     } else {
+      // Union of every selected committee's ACTIVE members (disabled directors
+      // are never auto-invited).
       const { data: mem } = await supabaseAdmin
         .from('committee_memberships')
-        .select('director_id')
-        .eq('committee_id', b.committee_id);
-      inviteeIds = (mem || []).map((m) => m.director_id);
+        .select('director_id, director:directors(status)')
+        .in('committee_id', committeeIds);
+      inviteeIds = Array.from(new Set(
+        (mem || []).filter((m: any) => m.director?.status === 'active').map((m: any) => m.director_id)
+      ));
       scope = 'committee';
     }
 
@@ -123,7 +156,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         organization_id: ctx.organizationId,
         title: String(b.title).trim(),
         meeting_type: type,
-        committee_id: type === 'committee' ? b.committee_id : null,
+        committee_id: type === 'committee' ? primaryCommitteeId : null,
+        committee_ids: type === 'committee' ? committeeIds : null,
         scheduled_start: start.toISOString(),
         scheduled_end: end.toISOString(),
         time_zone: b.time_zone || 'Africa/Harare',
