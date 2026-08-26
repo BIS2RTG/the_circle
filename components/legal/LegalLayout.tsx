@@ -58,7 +58,7 @@ export default function LegalLayout({
         </main>
       </div>
 
-      <style jsx global>{`
+      <style dangerouslySetInnerHTML={{ __html: `
         .legal-prose h2 {
           font-size: 1.125rem;
           font-weight: 700;
@@ -70,7 +70,7 @@ export default function LegalLayout({
         .legal-prose ul { list-style: disc; padding-left: 1.25rem; margin: 0.25rem 0 0.75rem; }
         .legal-prose li { margin-bottom: 0.35rem; }
         .legal-prose strong { color: #33312c; font-weight: 600; }
-      `}</style>
+      ` }} />
     </>
   );
 }

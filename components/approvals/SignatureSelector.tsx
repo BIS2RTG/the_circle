@@ -40,6 +40,9 @@ interface Props {
   value: SignatureSelection;
   onChange: (selection: SignatureSelection) => void;
   disabled?: boolean;
+  /** Draw only — hide the saved/draw tabs and always show the drawing pad
+   *  (e.g. capturing someone else's signature on a shared device). */
+  drawOnly?: boolean;
 }
 
 export default function SignatureSelector({
@@ -47,6 +50,7 @@ export default function SignatureSelector({
   value,
   onChange,
   disabled,
+  drawOnly,
 }: Props) {
   const canvasRef = useRef<ReactSignatureCanvas | null>(null);
   const [SigCanvas, setSigCanvas] = useState<typeof ReactSignatureCanvas | null>(null);
@@ -62,13 +66,13 @@ export default function SignatureSelector({
   // exactly under the pen/finger (no right-edge drift on wide containers).
   useSignatureCanvasAutosize(() => canvasRef.current, [SigCanvas, value.type]);
 
-  // If the user has no saved signature, auto-switch to manual the first time.
+  // If the user has no saved signature (or we're draw-only), stay on manual.
   useEffect(() => {
-    if (!savedSignatureUrl && value.type === 'saved') {
+    if ((drawOnly || !savedSignatureUrl) && value.type === 'saved') {
       onChange({ type: 'manual' });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [savedSignatureUrl]);
+  }, [savedSignatureUrl, drawOnly]);
 
   const handleTabChange = (choice: SignatureChoice) => {
     if (disabled) return;
@@ -119,14 +123,16 @@ export default function SignatureSelector({
 
   return (
     <div className="space-y-3">
-      <div className="flex gap-2">
-        <TabButton
-          choice="saved"
-          label="Use saved"
-          hint={savedSignatureUrl ? 'Use your registered signature' : 'No saved signature on file'}
-        />
-        <TabButton choice="manual" label="Draw" hint="Draw a new signature" />
-      </div>
+      {!drawOnly && (
+        <div className="flex gap-2">
+          <TabButton
+            choice="saved"
+            label="Use saved"
+            hint={savedSignatureUrl ? 'Use your registered signature' : 'No saved signature on file'}
+          />
+          <TabButton choice="manual" label="Draw" hint="Draw a new signature" />
+        </div>
+      )}
 
       <div className="border border-gray-200 rounded-lg p-3 bg-gray-50 min-h-[220px]">
         {value.type === 'saved' && savedSignatureUrl && (

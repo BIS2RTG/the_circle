@@ -1,7 +1,7 @@
 import { NextApiRequest, NextApiResponse } from 'next';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '../auth/[...nextauth]';
-import { fetchHrimsDepartments } from '@/lib/hrimsClient';
+import { getDepartments } from '@/lib/orgStructure';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') {
@@ -16,8 +16,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     const { business_unit_id } = req.query;
+    const orgId = (session.user as any).org_id;
 
-    const departments = await fetchHrimsDepartments(
+    const departments = await getDepartments(
+      orgId,
       business_unit_id as string | undefined
     );
 

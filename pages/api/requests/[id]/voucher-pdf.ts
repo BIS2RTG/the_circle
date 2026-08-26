@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '../../auth/[...nextauth]';
 import { supabaseAdmin } from '../../../../lib/supabaseAdmin';
 import { signatureExists, userSignaturePath, userSignatureProxyUrl } from '../../../../lib/signatureStorage';
+import { getUserRBACProfile, hasPermission, PERMISSIONS } from '@/lib/rbac';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') {
@@ -70,6 +71,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             decision,
             comment,
             signed_at,
+            signature_url,
             approver:app_users!approvals_approver_id_fkey (
               id,
               display_name,
@@ -110,8 +112,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       (step: any) => step.approver_user_id === userId
     );
     const canApproverView = userStep && userStep.status !== 'waiting';
-    
+
+    // Elevated viewers — super admins and anyone granted requests.view_all
+    // (e.g. auditors, like Geraldine Ndoro) — can view any voucher. Mirrors the
+    // visibility rule on GET /api/requests/[id]. Resolved only when the cheaper
+    // involvement checks haven't already cleared the caller.
+    let isElevatedViewer = false;
     if (!isCreator && !isWatcher && !canApproverView) {
+      const rbacProfile = await getUserRBACProfile(userId);
+      isElevatedViewer =
+        rbacProfile.is_super_admin || hasPermission(rbacProfile, PERMISSIONS.REQUESTS_VIEW_ALL);
+    }
+
+    if (!isCreator && !isWatcher && !canApproverView && !isElevatedViewer) {
       return res.status(403).json({ error: 'You do not have permission to view this request' });
     }
 
@@ -125,8 +138,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    // Generate HTML for voucher PDF
-    const html = generateVoucherHtml(request);
+    // How many vouchers to produce = the "number of vouchers" set on the form
+    // (max across the selected units), at least 1. Each copy gets a unique id
+    // derived from the request's own voucher id (no global sequential counter).
+    const units = Array.isArray(request.metadata?.selectedBusinessUnits) ? request.metadata.selectedBusinessUnits : [];
+    const requestedCounts = units
+      .map((u: any) => parseInt(String(u?.numberOfVouchers ?? ''), 10))
+      .filter((n: number) => Number.isFinite(n) && n > 0);
+    const count = Math.min(100, Math.max(1, ...(requestedCounts.length ? requestedCounts : [1])));
+
+    const baseNumber = `VCH-${String(id).substring(0, 8).toUpperCase()}`;
+    const numbers = count > 1
+      ? Array.from({ length: count }, (_, i) => `${baseNumber}-${String(i + 1).padStart(2, '0')}`)
+      : [baseNumber];
+
+    // A single document; when there are several vouchers they render as separate
+    // print-pages so the browser can save them merged (one PDF) or a chosen page
+    // range.
+    const html = numbers.length > 1
+      ? generateCombinedVouchersHtml(request, numbers)
+      : generateVoucherHtml(request, numbers[0]);
 
     // Return HTML that can be printed/saved as PDF
     res.setHeader('Content-Type', 'text/html');
@@ -138,7 +169,40 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 }
 
-export function generateVoucherHtml(request: any): string {
+/**
+ * Render several vouchers into ONE document — each on its own print page — so the
+ * browser's Print / Save-as-PDF can produce them merged (one PDF) or a chosen
+ * page range. Each voucher keeps its own unique number. Built by slicing the
+ * per-voucher container out of the single-voucher HTML (which we fully control),
+ * so it stays byte-identical to the single voucher's design.
+ */
+export function generateCombinedVouchersHtml(request: any, numbers: string[]): string {
+  if (!numbers || numbers.length <= 1) return generateVoucherHtml(request, numbers?.[0]);
+
+  const first = generateVoucherHtml(request, numbers[0]);
+  const bodyIdx = first.indexOf('<body>');
+  const headPart = first.slice(0, bodyIdx); // doctype + <html> + <head> (styles)
+
+  const extractContainer = (fullHtml: string): string => {
+    const s = fullHtml.indexOf('<div class="voucher-container">');
+    const e = fullHtml.indexOf('</body>');
+    return s >= 0 && e > s ? fullHtml.slice(s, e) : '';
+  };
+
+  const containers = numbers.map((num, i) => {
+    const html = i === 0 ? first : generateVoucherHtml(request, num);
+    const container = extractContainer(html);
+    // Force each voucher onto its own printed page.
+    return i === 0
+      ? container
+      : `<div style="page-break-before: always; break-before: page;"></div>\n${container}`;
+  });
+
+  const printBtn = `<button class="print-btn no-print" onclick="window.print()">Print / Save as PDF (${numbers.length} vouchers)</button>`;
+  return `${headPart}<body>\n${printBtn}\n${containers.join('\n')}\n</body>\n</html>`;
+}
+
+export function generateVoucherHtml(request: any, voucherNumberOverride?: string, autoPrint?: boolean): string {
   const metadata = request.metadata || {};
   
   // Get the final approval date (when the request was fully approved)
@@ -150,12 +214,9 @@ export function generateVoucherHtml(request: any): string {
     return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
   };
 
-  // Calculate expiry date (3 months from approval)
-  const expiryDate = new Date(approvalDate);
-  expiryDate.setMonth(expiryDate.getMonth() + 3);
-
-  // Generate voucher number
-  const voucherNumber = metadata.voucherNumber || `VCH-${request.id.substring(0, 8).toUpperCase()}`;
+  // Generate voucher number. An explicit override (used when generating a batch
+  // of uniquely-numbered copies into a zip) wins over the request metadata.
+  const voucherNumber = voucherNumberOverride || metadata.voucherNumber || `VCH-${request.id.substring(0, 8).toUpperCase()}`;
 
   // Get guest name if the checkbox was selected
   const showNameOnVoucher = metadata.showNameOnVoucher !== false;
@@ -202,6 +263,23 @@ export function generateVoucherHtml(request: any): string {
   // Meal-specific details
   const numberOfMeals = firstUnit.numberOfMeals || '1';
   const mealPeopleCount = firstUnit.mealPeopleCount || '1';
+
+  // Validity period is requester-selected (e.g. "6 months"); it drives the
+  // "Valid Until" date and the terms text. Falls back to 3 months for older
+  // records that never captured a period.
+  const validityPeriodLabel = selectedBusinessUnits
+    .map((u: any) => u.voucherValidityPeriod)
+    .filter(Boolean)[0] || '';
+  const validityMonths = (() => {
+    const m = /(\d+)\s*month/i.exec(validityPeriodLabel);
+    const n = m ? parseInt(m[1], 10) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : 3;
+  })();
+  const validityText = validityMonths === 1 ? '1 month' : `${validityMonths} months`;
+
+  // Calculate expiry date from the selected validity period (from approval).
+  const expiryDate = new Date(approvalDate);
+  expiryDate.setMonth(expiryDate.getMonth() + validityMonths);
 
   const specialArrangements = selectedBusinessUnits.length > 0
     ? selectedBusinessUnits.map((u:any) => u.specialArrangements).filter(Boolean).join(', ')
@@ -304,9 +382,47 @@ Kind regards`;
   const commercialDirectorTitle = getApproverField(commercialDirectorStep, 'job_title') || "Approver";
   const ceoName = getApproverField(ceoStep, 'display_name') || "CEO";
   
-  // Get signatures - first try resolved_signature_url (from storage), then fallback to signature_url (from user record)
-  const commercialDirectorSignature = commercialDirectorStep?.resolved_signature_url || getApproverField(commercialDirectorStep, 'signature_url');
-  const ceoSignature = ceoStep?.resolved_signature_url || getApproverField(ceoStep, 'signature_url');
+  // Signature actually applied AT APPROVAL (the drawn/manual one, or the saved
+  // one if that's what the approver chose) — read from the approval row, NOT the
+  // approver's profile signature. Falls back to the profile only if the approval
+  // recorded none.
+  const stepSignature = (step: any): string | null => {
+    if (!step) return null;
+    const approvals = Array.isArray(step.approvals) ? step.approvals : [];
+    const appr = approvals.find((a: any) => a.decision === 'approved') || approvals[0];
+    return appr?.signature_url || step.resolved_signature_url || getApproverField(step, 'signature_url') || null;
+  };
+  const commercialDirectorSignature = stepSignature(commercialDirectorStep);
+  const ceoSignature = stepSignature(ceoStep);
+
+  // Distinct people who actually approved — a single-approver voucher shows ONE
+  // signature (centred) rather than two blocks.
+  const seenApprovers = new Set<string>();
+  const distinctApprovedSteps = approvedSteps.filter((s: any) => {
+    const uid = s.approver_user_id;
+    if (!uid || seenApprovers.has(uid)) return false;
+    seenApprovers.add(uid);
+    return true;
+  });
+  const singleApprover = distinctApprovedSteps.length <= 1;
+  const soleStep = distinctApprovedSteps[0] || ceoStep || commercialDirectorStep;
+  const soleName = getApproverField(soleStep, 'display_name') || 'Approver';
+  const soleTitle = getApproverField(soleStep, 'job_title') || 'Approver';
+  const soleSignature = stepSignature(soleStep);
+
+  const signatureBlock = (sig: string | null, name: string, title: string) => `
+      <div class="signature-block">
+        <div class="signature-image-container">
+          ${sig ? `<img src="${sig}" alt="${name} Signature" />` : `<div class="signature-placeholder">Awaiting Signature</div>`}
+        </div>
+        <div class="signature-line"></div>
+        <div class="signature-name">${name}</div>
+        <div class="signature-title">${title}</div>
+      </div>`;
+
+  const signaturesHtml = singleApprover
+    ? `<div class="signatures-container" style="justify-content:center;">${signatureBlock(soleSignature, soleName, soleTitle)}</div>`
+    : `<div class="signatures-container">${signatureBlock(commercialDirectorSignature, commercialDirectorName, commercialDirectorTitle)}${signatureBlock(ceoSignature, ceoName, 'Chief Executive Officer')}</div>`;
   
   // Generate grammatically correct entitlement text with all necessary details
   const generateEntitlementText = () => {
@@ -396,9 +512,34 @@ Kind regards`;
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=Lato:wght@300;400;700&display=swap" rel="stylesheet">
   <style>
     @media print {
-      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      body {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+        background: #ffffff;
+        /* Compact the page so the whole voucher — signatures included — fits on
+           a single A4 sheet instead of the signature block spilling onto page 2. */
+        padding: 0 !important;
+        max-width: none !important;
+      }
       .no-print { display: none !important; }
-      @page { margin: 15mm; }
+      @page { size: A4 portrait; margin: 10mm; }
+      .voucher-container {
+        box-shadow: none !important;
+        padding: 24px 34px !important;
+        /* Keep the whole voucher together on one page. */
+        page-break-inside: avoid;
+        break-inside: avoid;
+      }
+      /* Trim the generous on-screen vertical rhythm for print. */
+      .header { margin-bottom: 20px !important; }
+      .main-title { margin-bottom: 14px !important; }
+      .guest-section { margin-bottom: 18px !important; }
+      .congratulations { margin-bottom: 12px !important; }
+      .entitlement-box { margin-bottom: 18px !important; padding: 16px 24px !important; }
+      .terms-section { margin-bottom: 18px !important; }
+      .terms-list li { margin-bottom: 7px !important; }
+      .signatures-container { margin-top: 26px !important; margin-bottom: 22px !important; }
+      .footer { margin-top: 18px !important; padding-top: 12px !important; }
     }
     * {
       margin: 0;
@@ -583,10 +724,15 @@ Kind regards`;
       position: relative;
       z-index: 10;
       gap: 40px;
+      /* Never split the signatures across a page boundary. */
+      page-break-inside: avoid;
+      break-inside: avoid;
     }
     .signature-block {
       width: 45%;
       text-align: center;
+      page-break-inside: avoid;
+      break-inside: avoid;
     }
     .signature-image-container {
       height: 80px;
@@ -735,13 +881,14 @@ Kind regards`;
 
     <div class="entitlement-box">
       ${generateEntitlementText()}
+      <br><span style="font-size: 14px; color: #666; margin-top: 8px; display: inline-block;">Validity Period: <strong>${validityText}</strong> from date of issue</span>
       ${specialArrangements !== 'N/A' && specialArrangements !== '' ? `<br><span style="font-size: 14px; color: #666; margin-top: 8px; display: inline-block;">Special Arrangements: ${specialArrangements}</span>` : ''}
     </div>
 
     <div class="terms-section">
       <div class="terms-title">Terms & Conditions</div>
       <ul class="terms-list">
-        <li>This voucher is valid for 3 months from the date of issue.</li>
+        <li>This voucher is valid for ${validityText} from the date of issue.</li>
         <li class="expired-warning">· It cannot be extended once expired.</li>
         <li>This voucher cannot be redeemed for cash and is not transferrable.</li>
         <li>It can only be redeemed during off-peak periods, subject to availability.</li>
@@ -750,28 +897,7 @@ Kind regards`;
       </ul>
     </div>
 
-    <div class="signatures-container">
-      <div class="signature-block">
-        <div class="signature-image-container">
-          ${commercialDirectorSignature 
-            ? `<img src="${commercialDirectorSignature}" alt="${commercialDirectorName} Signature" />` 
-            : `<div class="signature-placeholder">Awaiting Signature</div>`}
-        </div>
-        <div class="signature-line"></div>
-        <div class="signature-name">${commercialDirectorName}</div>
-        <div class="signature-title">${commercialDirectorTitle}</div>
-      </div>
-      <div class="signature-block">
-        <div class="signature-image-container">
-          ${ceoSignature 
-            ? `<img src="${ceoSignature}" alt="${ceoName} Signature" />` 
-            : `<div class="signature-placeholder">Awaiting Signature</div>`}
-        </div>
-        <div class="signature-line"></div>
-        <div class="signature-name">${ceoName}</div>
-        <div class="signature-title">Chief Executive Officer</div>
-      </div>
-    </div>
+    ${signaturesHtml}
 
     <div class="charge-to">
       CHARGE TO: ${allocationType}
@@ -783,6 +909,7 @@ Kind regards`;
       <em>We look forward to hosting you soon.</em>
     </div>
   </div>
+  ${autoPrint ? `<script>window.addEventListener('load',function(){setTimeout(function(){window.print();},400);});</script>` : ''}
 </body>
 </html>
   `;

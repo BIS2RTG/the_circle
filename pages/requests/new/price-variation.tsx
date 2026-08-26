@@ -78,8 +78,8 @@ export default function PriceVariationPage() {
 
   // Prefill requester name once the user is known.
   useEffect(() => {
-    if (user?.display_name && !formData.requestedBy) {
-      setFormData((prev) => ({ ...prev, requestedBy: user.display_name || '' }));
+    if (user?.display_name) {
+      setFormData((prev) => (prev.requestedBy ? prev : { ...prev, requestedBy: user.display_name || '' }));
     }
   }, [user?.display_name]);
 

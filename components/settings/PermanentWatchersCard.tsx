@@ -112,8 +112,8 @@ export default function PermanentWatchersCard({ currentUserId }: { currentUserId
     <Card>
       <h3 className="font-semibold text-gray-900 mb-1">Permanent watchers</h3>
       <p className="text-sm text-gray-500 mb-4">
-        People you add here can view every request you post and every request you're an approver on.
-        They have read-only access — they can't approve, edit, or upload.
+        People you add here can view every request you post and every request you&apos;re an approver on.
+        They have read-only access — they can&apos;t approve, edit, or upload.
       </p>
 
       {error && <p className="text-sm text-danger-600 mb-3">{error}</p>}
@@ -150,7 +150,7 @@ export default function PermanentWatchersCard({ currentUserId }: { currentUserId
           </div>
 
           {watchers.length === 0 ? (
-            <p className="text-sm text-gray-400 italic">You haven't added any permanent watchers.</p>
+            <p className="text-sm text-gray-400 italic">You haven&apos;t added any permanent watchers.</p>
           ) : (
             <ul className="space-y-2">
               {watchers.map((row) => (

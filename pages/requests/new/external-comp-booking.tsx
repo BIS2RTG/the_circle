@@ -13,7 +13,7 @@ import { calculateTollgatesForItinerary, getTollgateRouteInfo, TollgateRouteType
 import { SupportingDocuments, uploadSupportingDocuments, makeSupportingDoc, type SupportingDoc } from '../../../components/requests/SupportingDocuments';
 import { OnBehalfOfField, type OnBehalfOf } from '../../../components/requests/OnBehalfOfField';
 import { isApproverRowLocked } from '../../../lib/approverLocking';
-import { COMP_BOOKING_COO, resolveCompBookingCoo } from '../../../lib/fixedApprovers';
+import { COMP_BOOKING_COO, resolveCompBookingCoo, BOARD_COMP_APPROVERS, resolveBoardApprover } from '../../../lib/fixedApprovers';
 import ApproverSectionLoader from '../../../components/requests/ApproverSectionLoader';
 
 interface SelectedBusinessUnit {
@@ -134,14 +134,23 @@ export default function ExternalCompBookingPage() {
     // Unsaved-changes tracking — flipped true on first real user interaction via form onChange.
     const [isDirty, setIsDirty] = useState(false);
 
-    // Approver selection state - 4 fixed roles. The COO occupies the
-    // `functional_head` slot and is a fixed, locked approver (see COMP_BOOKING_COO).
-    const approvalRoles = [
-        { key: 'line_manager', label: 'Line Manager', description: 'Recommendation' },
-        { key: 'functional_head', label: COMP_BOOKING_COO.LABEL, description: 'Operations Approval' },
-        { key: 'hrd', label: 'Chief Human Capital Officer', description: 'CHCO Approval' },
-        { key: 'ceo', label: 'CEO', description: 'Authorisation' },
-    ];
+    // Board-member complimentary bookings run a different approval chain
+    // (Company Secretary → CFO → CEO). Toggled by the requester below.
+    const [isBoardMemberBooking, setIsBoardMemberBooking] = useState(false);
+
+    // Approver selection state. Normal comp bookings use a 4-role chain (the COO
+    // occupies the `functional_head` slot as a fixed, locked approver — see
+    // COMP_BOOKING_COO). Board-member bookings swap in the 3-role board chain.
+    const approvalRoles = useMemo(() => (
+        isBoardMemberBooking
+            ? BOARD_COMP_APPROVERS.map(r => ({ key: r.key, label: r.label, description: r.description }))
+            : [
+                { key: 'line_manager', label: 'Line Manager', description: 'Recommendation' },
+                { key: 'functional_head', label: COMP_BOOKING_COO.LABEL, description: 'Operations Approval' },
+                { key: 'hrd', label: 'Chief Human Capital Officer', description: 'CHCO Approval' },
+                { key: 'ceo', label: 'CEO', description: 'Authorisation' },
+            ]
+    ), [isBoardMemberBooking]);
     const [users, setUsers] = useState<Array<{ id: string; display_name: string; email: string; job_title?: string }>>([]);
     const [loadingUsers, setLoadingUsers] = useState(true);
     // The fixed COO, resolved from the loaded org users by email so it works in
@@ -157,12 +166,16 @@ export default function ExternalCompBookingPage() {
         functional_head: '',
         hrd: '',
         ceo: '',
+        // Board-member chain slots.
+        company_secretary: '',
+        cfo: '',
     });
     // Enforce the fixed COO: whatever else tries to set this slot (draft load,
     // HRIMS auto-resolution, edit), it always resolves back to the current COO —
     // except when the COO is the requester (see above). No-op until the COO is
     // resolved from the user list.
     useEffect(() => {
+        if (isBoardMemberBooking) return;   // board chain doesn't use the COO slot
         if (!cooUserId) return;
         if (cooIsRequester) {
             if (selectedApprovers.functional_head === cooUserId) {
@@ -173,12 +186,33 @@ export default function ExternalCompBookingPage() {
         if (selectedApprovers.functional_head !== cooUserId) {
             setSelectedApprovers(prev => ({ ...prev, functional_head: cooUserId }));
         }
-    }, [cooUserId, cooIsRequester, selectedApprovers.functional_head]);
+    }, [isBoardMemberBooking, cooUserId, cooIsRequester, selectedApprovers.functional_head]);
+
+    // Board-member chain auto-resolution: fill Company Secretary / CFO / CEO by
+    // matching job titles in the loaded user list (works without live HRIMS).
+    // Runs when board mode is on; leaves a slot blank for manual pick if unmatched.
+    useEffect(() => {
+        if (!isBoardMemberBooking || users.length === 0) return;
+        const resolved: Record<string, boolean> = {};
+        const picks: Record<string, string> = {};
+        const currentUserId = (session?.user as any)?.id;
+        for (const role of BOARD_COMP_APPROVERS) {
+            const match = resolveBoardApprover(users, role, currentUserId);
+            if (match) { picks[role.key] = match.id; resolved[role.key] = true; }
+        }
+        if (Object.keys(picks).length > 0) {
+            setSelectedApprovers(prev => ({ ...prev, ...picks }));
+            setAutoResolvedRoles(prev => ({ ...prev, ...resolved }));
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isBoardMemberBooking, users]);
     const [approverSearch, setApproverSearch] = useState<Record<string, string>>({
         line_manager: '',
         functional_head: '',
         hrd: '',
         ceo: '',
+        company_secretary: '',
+        cfo: '',
     });
     const [showApproverDropdown, setShowApproverDropdown] = useState<string | null>(null);
     const [loadingApproverResolution, setLoadingApproverResolution] = useState(!isEditMode);
@@ -273,10 +307,11 @@ export default function ExternalCompBookingPage() {
     useFormAutosave({
         formKey: 'external-comp-booking',
         enabled: !isEditMode,
-        data: { formData, travelData, selectedApprovers, selectedBusinessUnits, aaCalculator, isEmergencyRequest, emergencyReason, tollgateRouteType },
+        data: { formData, travelData, selectedApprovers, selectedBusinessUnits, aaCalculator, isEmergencyRequest, emergencyReason, tollgateRouteType, isBoardMemberBooking },
         onRestore: (saved) => {
             if (saved.formData) setFormData(saved.formData);
             if (saved.travelData) setTravelData(saved.travelData);
+            if (typeof saved.isBoardMemberBooking === 'boolean') setIsBoardMemberBooking(saved.isBoardMemberBooking);
             if (saved.selectedApprovers) setSelectedApprovers(prev => ({ ...prev, ...saved.selectedApprovers }));
             if (Array.isArray(saved.selectedBusinessUnits)) setSelectedBusinessUnits(saved.selectedBusinessUnits);
             if (saved.aaCalculator) setAACalculator(saved.aaCalculator);
@@ -520,6 +555,11 @@ export default function ExternalCompBookingPage() {
                     setOriginalTravelData(metadata.travelDocument);
                 }
 
+                // Restore the board-member flag so the correct chain shows on edit.
+                if (typeof metadata.isBoardMember === 'boolean') {
+                    setIsBoardMemberBooking(metadata.isBoardMember);
+                }
+
                 // Set approvers and store original for change tracking
                 const approverRolesData = metadata.approverRoles || {};
                 if (approverRolesData && typeof approverRolesData === 'object') {
@@ -584,7 +624,9 @@ export default function ExternalCompBookingPage() {
     // Auto-resolve approvers from HRIMS organogram (only on new requests, not edits)
     useEffect(() => {
         const resolveApprovers = async () => {
-            if (!session?.user?.email || isEditMode) { setLoadingApproverResolution(false); return; }
+            // Board-member bookings resolve their own chain (see the board effect
+            // above), so skip the normal HRIMS organogram resolution.
+            if (!session?.user?.email || isEditMode || isBoardMemberBooking) { setLoadingApproverResolution(false); return; }
             setLoadingApproverResolution(true);
             try {
                 const response = await fetch(`/api/hrims/resolve-approvers?email=${encodeURIComponent(session.user.email)}&formType=hotel-booking`);
@@ -612,7 +654,7 @@ export default function ExternalCompBookingPage() {
             }
         };
         if (status === 'authenticated') resolveApprovers();
-    }, [status, session?.user?.email, isEditMode]);
+    }, [status, session?.user?.email, isEditMode, isBoardMemberBooking]);
 
     // Filter users by search for a specific role
     const getFilteredUsersForRole = (roleKey: string) => {
@@ -749,7 +791,10 @@ export default function ExternalCompBookingPage() {
 
         try {
             const fieldChanges = collectFieldChanges();
-            const approversArray = [selectedApprovers.line_manager, selectedApprovers.functional_head, selectedApprovers.hrd, selectedApprovers.ceo].filter(Boolean);
+            const approversArray = (isBoardMemberBooking
+                ? [selectedApprovers.company_secretary, selectedApprovers.cfo, selectedApprovers.ceo]
+                : [selectedApprovers.line_manager, selectedApprovers.functional_head, selectedApprovers.hrd, selectedApprovers.ceo]
+            ).filter(Boolean);
 
             const response = await fetch(`/api/requests/${editRequestId}`, {
                 method: 'PUT',
@@ -775,6 +820,7 @@ export default function ExternalCompBookingPage() {
                         }),
                         approvers: approversArray,
                         approverRoles: selectedApprovers,
+                        isBoardMember: isBoardMemberBooking,
                         useParallelApprovals: false,
                     },
                 }),
@@ -808,7 +854,10 @@ export default function ExternalCompBookingPage() {
         setError(null);
 
         try {
-            const approversArray = [selectedApprovers.line_manager, selectedApprovers.functional_head, selectedApprovers.hrd, selectedApprovers.ceo].filter(Boolean);
+            const approversArray = (isBoardMemberBooking
+                ? [selectedApprovers.company_secretary, selectedApprovers.cfo, selectedApprovers.ceo]
+                : [selectedApprovers.line_manager, selectedApprovers.functional_head, selectedApprovers.hrd, selectedApprovers.ceo]
+            ).filter(Boolean);
 
             const response = await fetch(`/api/requests/${editRequestId}`, {
                 method: 'PUT',
@@ -834,6 +883,7 @@ export default function ExternalCompBookingPage() {
                         }),
                         approvers: approversArray,
                         approverRoles: selectedApprovers,
+                        isBoardMember: isBoardMemberBooking,
                         useParallelApprovals: false,
                     },
                 }),
@@ -1043,12 +1093,10 @@ export default function ExternalCompBookingPage() {
 
         // Approvers are optional per step — not every role must be filled — but
         // at least one is required so there's an approval chain to route through.
-        const anyApproverSelected = [
-            selectedApprovers.line_manager,
-            selectedApprovers.functional_head,
-            selectedApprovers.hrd,
-            selectedApprovers.ceo,
-        ].some(Boolean);
+        const anyApproverSelected = (isBoardMemberBooking
+            ? [selectedApprovers.company_secretary, selectedApprovers.cfo, selectedApprovers.ceo]
+            : [selectedApprovers.line_manager, selectedApprovers.functional_head, selectedApprovers.hrd, selectedApprovers.ceo]
+        ).some(Boolean);
         if (!anyApproverSelected) {
             errors.push('Please select at least one approver');
         }
@@ -1119,12 +1167,10 @@ export default function ExternalCompBookingPage() {
         try {
             // Convert approvers object to ordered array for sequential approval
             // Order: HOD -> HR Director -> Finance Director -> CEO
-            const approversArray = [
-                selectedApprovers.line_manager,
-                selectedApprovers.functional_head,
-                selectedApprovers.hrd,
-                selectedApprovers.ceo,
-            ].filter(Boolean); // Remove any empty values
+            const approversArray = (isBoardMemberBooking
+                ? [selectedApprovers.company_secretary, selectedApprovers.cfo, selectedApprovers.ceo]
+                : [selectedApprovers.line_manager, selectedApprovers.functional_head, selectedApprovers.hrd, selectedApprovers.ceo]
+            ).filter(Boolean); // Remove any empty values
 
             const response = await fetch('/api/requests', {
                 method: 'POST',
@@ -1157,6 +1203,7 @@ export default function ExternalCompBookingPage() {
                         }),
                         approvers: approversArray,
                         approverRoles: selectedApprovers,
+                        isBoardMember: isBoardMemberBooking,
                         useParallelApprovals: false,
                         onBehalfOf: onBehalfOf || null,
                     },
@@ -1187,12 +1234,10 @@ export default function ExternalCompBookingPage() {
 
         try {
             // Convert approvers object to ordered array for sequential approval
-            const approversArray = [
-                selectedApprovers.line_manager,
-                selectedApprovers.functional_head,
-                selectedApprovers.hrd,
-                selectedApprovers.ceo,
-            ].filter(Boolean);
+            const approversArray = (isBoardMemberBooking
+                ? [selectedApprovers.company_secretary, selectedApprovers.cfo, selectedApprovers.ceo]
+                : [selectedApprovers.line_manager, selectedApprovers.functional_head, selectedApprovers.hrd, selectedApprovers.ceo]
+            ).filter(Boolean);
 
             const response = await fetch('/api/requests', {
                 method: 'POST',
@@ -1225,6 +1270,7 @@ export default function ExternalCompBookingPage() {
                         }),
                         approvers: approversArray,
                         approverRoles: selectedApprovers,
+                        isBoardMember: isBoardMemberBooking,
                         useParallelApprovals: false,
                     },
                 }),
@@ -1542,6 +1588,7 @@ export default function ExternalCompBookingPage() {
                             <option value="administration">Administration</option>
                             <option value="promotions">Promotions</option>
                             <option value="personnel">Personnel</option>
+                            <option value="legal">Legal</option>
                         </select>
                     </Card>
 
@@ -2229,8 +2276,28 @@ export default function ExternalCompBookingPage() {
                             </svg>
                             Approval Workflow <span className="text-danger-500">*</span>
                         </h3>
+
+                        {/* Board-member bookings use a dedicated chain
+                            (Company Secretary → CFO → CEO). */}
+                        <label className="flex items-start gap-3 mb-4 p-3 rounded-xl border border-amber-200 bg-amber-50 cursor-pointer">
+                            <input
+                                type="checkbox"
+                                className="mt-0.5 w-4 h-4 rounded border-gray-300 text-amber-600 focus:ring-amber-500"
+                                checked={isBoardMemberBooking}
+                                onChange={(e) => { setIsBoardMemberBooking(e.target.checked); setIsDirty(true); }}
+                            />
+                            <span>
+                                <span className="block text-sm font-medium text-amber-900">This complimentary booking is for a board member</span>
+                                <span className="block text-xs text-amber-700 mt-0.5">
+                                    Routes the approval through the board chain: Company Secretary → Chief Finance Officer → CEO.
+                                </span>
+                            </span>
+                        </label>
+
                         <p className="text-sm text-text-secondary mb-4">
-                            Approvers are automatically assigned from the HRIMS organogram. If a role has no assigned user, you must manually select one.
+                            {isBoardMemberBooking
+                                ? 'This request follows the board-member chain. Approvers are matched by role; if one isn’t found, select them manually.'
+                                : 'Approvers are automatically assigned from the HRIMS organogram. If a role has no assigned user, you must manually select one.'}
                         </p>
 
                         {loadingApproverResolution && <ApproverSectionLoader rows={approvalRoles.length} />}

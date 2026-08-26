@@ -48,6 +48,12 @@ export function brandedEmailShell(params: {
           <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #e7e2d8">
             <!-- Slim brand accent bar -->
             <tr><td style="height:6px;background:#9A7545;font-size:0;line-height:0">&nbsp;</td></tr>
+            <!-- Brand header: RTG logo. alt="" so a client that blocks remote
+                 images shows nothing ugly (the footer still names the org);
+                 when images load the logo renders. -->
+            <tr><td style="padding:22px 32px 0;font-family:'Segoe UI',Arial,sans-serif">
+              <img src="${emailLogoUrl()}" alt="" height="40" style="display:block;height:40px;width:auto;max-width:220px;border:0;outline:none;text-decoration:none" />
+            </td></tr>
             <!-- Body -->
             <tr><td style="padding:32px;font-family:'Segoe UI',Arial,sans-serif;color:#1f2937">
               <h1 style="margin:0 0 14px;font-size:19px;line-height:1.35;color:#111827;font-weight:700">${params.heading}</h1>

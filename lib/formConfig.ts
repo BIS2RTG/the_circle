@@ -102,6 +102,7 @@ export const formConfigs: Record<string, FormTypeConfig> = {
                 administration: 'Administration',
                 promotions: 'Promotions',
                 personnel: 'Personnel',
+                legal: 'Legal',
             }},
             { key: 'percentageDiscount', label: 'Percentage Discount', type: 'number', section: 'booking', formatter: 'percentage' },
             { key: 'reason', label: 'Reason for Complimentary', type: 'textarea', section: 'booking', colSpan: 2 },

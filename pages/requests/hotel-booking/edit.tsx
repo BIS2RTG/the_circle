@@ -626,6 +626,7 @@ export default function HotelBookingEditPage() {
                                     <option value="administration">Administration</option>
                                     <option value="promotions">Promotions</option>
                                     <option value="personnel">Personnel</option>
+                                    <option value="legal">Legal</option>
                                 </select>
                             </div>
                             <div>

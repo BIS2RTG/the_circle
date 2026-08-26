@@ -1,7 +1,7 @@
 import { NextApiRequest, NextApiResponse } from 'next';
 import { getServerSession } from 'next-auth/next';
 import { authOptions } from '../auth/[...nextauth]';
-import { fetchHrimsBusinessUnits } from '../../../lib/hrimsClient';
+import { getBusinessUnits } from '../../../lib/orgStructure';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
@@ -20,8 +20,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         'RTG Head Office'
       ];
 
-      // Fetch business units from HRIMS database
-      const businessUnits = await fetchHrimsBusinessUnits();
+      // Fetch business units from HRIMS, falling back to the Circle DB's local
+      // table when HRIMS isn't configured (e.g. the legal/staging environment).
+      const orgId = (session.user as any).org_id;
+      const businessUnits = await getBusinessUnits(orgId);
 
       // Filter out excluded business units. We pass `code` through too so
       // the client can match a HRIMS unit to the corresponding travel-auth
