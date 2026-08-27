@@ -100,15 +100,22 @@ const allocationLabels: Record<string, string> = {
 
 const accommodationLabels: Record<string, string> = {
     accommodation_only: 'Accommodation Only (Bed only)',
-    accommodation_and_breakfast: 'Bed & Breakfast',
-    accommodation_and_meals: 'Accommodation & Meals',
-    accommodation_meals_drink: 'Accommodation, Meals & Soft Drink',
-    meals_all: 'Meals (Breakfast, Lunch and Dinner)',
-    rainbow_delights: 'Rainbow Delights Meal',
-    breakfast_only: 'Breakfast only',
-    lunch_only: 'Lunch only',
-    dinner_only: 'Dinner only',
+    accommodation_and_breakfast: 'Bed & Breakfast Only',
+    dinner_bed_breakfast: 'DBB (Dinner, Bed and Breakfast)',
+    accommodation_and_meals: 'Accommodation & Meals (Breakfast, Lunch, and Dinner)',
+    accommodation_meals_drink: 'Accommodation, Meals plus a Soft Drink / Juice',
+    meals_all: 'Meals (Breakfast, Lunch and Dinner Only)',
+    rainbow_delights: 'Rainbow Delights Meal(s) Only',
+    breakfast_only: 'Breakfast meal(s) only',
+    lunch_only: 'Lunch meal(s) only',
+    dinner_only: 'Dinner meal(s) only',
+    packed_breakfast: 'Packed breakfast',
+    packed_lunch: 'Packed lunch',
 };
+
+// Accommodation types that are meal-only (no accommodation component) — these
+// render the voucher-style validity/people fields instead of stay dates.
+const MEAL_ONLY_ACCOMMODATION_TYPES = ['meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only', 'packed_breakfast', 'packed_lunch'];
 
 interface ApproverInfo {
     id: string;
@@ -1582,7 +1589,7 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
                                                             nights; voucher requests store a validity period, people and
                                                             room type. Rendering the wrong shape used to show N/A for
                                                             everything the user had filled in. */}
-                                                        {!['meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only'].includes(unit.accommodationType) && (
+                                                        {!(MEAL_ONLY_ACCOMMODATION_TYPES.includes(unit.accommodationType) && !unit.arrivalDate && !unit.departureDate) && (
                                                             (unit.arrivalDate || unit.departureDate) ? (
                                                                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                                                                     <div>
@@ -1625,9 +1632,9 @@ export default function CompHotelBookingDetailsPage({ initialRequest, initialErr
                                                         )}
 
                                                         {/* Meal Details — only when this unit carries meal fields */}
-                                                        {(['meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only'].includes(unit.accommodationType)
+                                                        {(MEAL_ONLY_ACCOMMODATION_TYPES.includes(unit.accommodationType)
                                                             || unit.numberOfMeals || unit.mealPeopleCount) && (
-                                                            <div className={`grid grid-cols-2 gap-4 text-sm ${!['meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only'].includes(unit.accommodationType) ? 'mt-4 pt-4 border-t border-gray-100' : ''}`}>
+                                                            <div className={`grid grid-cols-2 gap-4 text-sm ${!MEAL_ONLY_ACCOMMODATION_TYPES.includes(unit.accommodationType) ? 'mt-4 pt-4 border-t border-gray-100' : ''}`}>
                                                                 <div>
                                                                     <span className="text-gray-500 block">Number of Meals</span>
                                                                     <span className="font-medium text-gray-900">{unit.numberOfMeals || 'N/A'}</span>
