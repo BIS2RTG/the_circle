@@ -534,14 +534,17 @@ const COMP_ALLOCATION_LABELS: Record<string, string> = {
 
 const COMP_ACCOMMODATION_LABELS: Record<string, string> = {
     accommodation_only: 'Accommodation Only (Bed only)',
-    accommodation_and_breakfast: 'Bed & Breakfast',
-    accommodation_and_meals: 'Accommodation & Meals',
-    accommodation_meals_drink: 'Accommodation, Meals & Soft Drink',
-    meals_all: 'Meals (Breakfast, Lunch and Dinner)',
-    rainbow_delights: 'Rainbow Delights Meal',
-    breakfast_only: 'Breakfast only',
-    lunch_only: 'Lunch only',
-    dinner_only: 'Dinner only',
+    accommodation_and_breakfast: 'Bed & Breakfast Only',
+    dinner_bed_breakfast: 'DBB (Dinner, Bed and Breakfast)',
+    accommodation_and_meals: 'Accommodation & Meals (Breakfast, Lunch, and Dinner)',
+    accommodation_meals_drink: 'Accommodation, Meals plus a Soft Drink / Juice',
+    meals_all: 'Meals (Breakfast, Lunch and Dinner Only)',
+    rainbow_delights: 'Rainbow Delights Meal(s) Only',
+    breakfast_only: 'Breakfast meal(s) only',
+    lunch_only: 'Lunch meal(s) only',
+    dinner_only: 'Dinner meal(s) only',
+    packed_breakfast: 'Packed breakfast',
+    packed_lunch: 'Packed lunch',
 };
 
 function buildCompSections(request: any, metadata: any): PreviewSection[] {
@@ -572,7 +575,7 @@ function buildCompSections(request: any, metadata: any): PreviewSection[] {
         return [];
     })();
 
-    const isMealOnly = (t?: string) => ['meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only'].includes(t || '');
+    const isMealOnly = (t?: string) => ['meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only', 'packed_breakfast', 'packed_lunch'].includes(t || '');
 
     // A comp requester is usually the guest themselves — fall back to the
     // requestor's name when no explicit guest was entered.
@@ -687,7 +690,12 @@ function buildCompSections(request: any, metadata: any): PreviewSection[] {
                                 <td style={cellStyle}>{unit.departureDate ? formatDate(unit.departureDate) : '—'}</td>
                                 <td style={{ ...cellStyle, textAlign: 'right' }}>{unit.numberOfNights || '—'}</td>
                                 <td style={{ ...cellStyle, textAlign: 'right' }}>{unit.numberOfRooms || '—'}</td>
-                                <td style={cellStyle}>{unit.specialArrangements || '—'}</td>
+                                <td style={cellStyle}>{[
+                                    (unit.numberOfMeals || unit.mealPeopleCount)
+                                        ? `${unit.numberOfMeals || '?'} meal(s) for ${unit.mealPeopleCount || '?'} people`
+                                        : '',
+                                    unit.specialArrangements && unit.specialArrangements !== 'N/A' ? unit.specialArrangements : '',
+                                ].filter(Boolean).join(' · ') || '—'}</td>
                             </tr>
                         ))}
                     </tbody>
