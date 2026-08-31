@@ -3,6 +3,8 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '../auth/[...nextauth]';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { computeViewerStatus } from '@/lib/recentActivityStatus';
+import { getUserRBACProfile, hasRole, ROLE_SLUGS } from '@/lib/rbac';
+import { getApproverStats } from '@/lib/approverStats';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') {
@@ -55,16 +57,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const completed = approved + rejected;
     const completionRate = completed > 0 ? Math.round((approved / completed) * 100) : 0;
 
-    // Fetch pending approvals for the current user
+    // Fetch pending approvals for the current user, and their approver stats
+    // if they're tagged with the Approver role (see lib/approverStats.ts).
     let pendingForUser = 0;
+    let isApprover = false;
+    let approverStats = { pending: 0, approved: 0, rejected: 0, total: 0, completionRate: 0 };
     if (userId) {
       const { data: pendingSteps } = await supabaseAdmin
         .from('request_steps')
         .select('id')
         .eq('approver_user_id', userId)
         .eq('status', 'pending');
-      
+
       pendingForUser = pendingSteps?.length || 0;
+
+      const rbacProfile = await getUserRBACProfile(userId);
+      isApprover = hasRole(rbacProfile, ROLE_SLUGS.APPROVER);
+      if (isApprover) {
+        approverStats = await getApproverStats(userId);
+      }
     }
 
     // Fetch recent activity with request_steps for visibility filtering
@@ -143,6 +154,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       recentActivity: filteredRecentRequests || [],
       teamMembers: members || [],
       pendingForUser,
+      isApprover,
+      approverStats,
     });
   } catch (error) {
     console.error('Dashboard stats error:', error);
