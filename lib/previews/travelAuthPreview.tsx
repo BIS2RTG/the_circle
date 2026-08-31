@@ -182,6 +182,7 @@ export interface TravelAuthPreviewInput {
     approvers?: {
         [roleKey: string]: {
             name?: string;
+            jobTitle?: string;
             signatureUrl?: string | null;
             signedAt?: string | null;
             decision?: 'approved' | 'rejected' | null;
@@ -498,7 +499,8 @@ export function buildTravelAuthPreviewSections(input: TravelAuthPreviewInput): P
                                 return (
                                     <td key={r.key} style={{ ...cellStyle, width: '25%' }}>
                                         <div style={{ fontSize: 9, fontWeight: 700, color: '#555', textTransform: 'uppercase' }}>Name</div>
-                                        <div style={{ fontSize: 11, marginBottom: 8 }}>{a?.name || '—'}</div>
+                                        <div style={{ fontSize: 11 }}>{a?.name || '—'}</div>
+                                        <div style={{ fontSize: 9, color: '#7C5A33', marginBottom: 8 }}>{a?.jobTitle || ''}</div>
                                         <div style={{ fontSize: 9, fontWeight: 700, color: '#555', textTransform: 'uppercase' }}>Signature</div>
                                         <div style={{ borderBottom: '1px solid #666', minHeight: 56, marginTop: 4, marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                                             {a?.signatureUrl ? (
@@ -594,10 +596,20 @@ export function travelAuthInputFromRequest(request: any, travelMeta?: any): Trav
             ROLE_ORDER[idx] ||
             '';
         if (!role) return;
+        // Delegation: the step's approver_user_id is swapped to the delegate so
+        // they can actually act on it (see lib/delegations.ts), but the printed
+        // document's Name/Job Title must still show whoever formally HOLDS the
+        // role (original_approver_id) — same rule the request-detail workflow
+        // timeline already applies. Only the signature/decision belong to the
+        // person who actually signed, i.e. the current step approver.
+        const isDelegated = !!(step.is_redirected && step.original_approver_id);
+        const roleHolder = isDelegated ? step.original_approver : step.approver;
         const approverName =
-            step.approver?.display_name || approval?.approver?.display_name || null;
+            roleHolder?.display_name || (!isDelegated ? approval?.approver?.display_name : null) || null;
+        const approverJobTitle = roleHolder?.job_title || null;
         approvers[role] = {
             name: approverName || undefined,
+            jobTitle: approverJobTitle || undefined,
             signatureUrl: approval?.signed_at ? sigUrlFor(approverId) : null,
             signedAt: approval?.signed_at || null,
             decision: approval?.decision || null,
