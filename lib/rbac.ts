@@ -120,6 +120,7 @@ export const ROLE_SLUGS = {
   SYSTEM_ADMIN: 'system_admin',
   AUDITOR: 'auditor',
   EMPLOYEE: 'employee',
+  APPROVER: 'approver',
 } as const;
 
 // ============================================================
