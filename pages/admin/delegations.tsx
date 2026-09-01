@@ -4,7 +4,10 @@ import { AppLayout } from '../../components/layout';
 import { Card, Button } from '../../components/ui';
 import { useRBAC } from '../../contexts/RBACContext';
 import { useToast } from '../../components/ui/ToastProvider';
-import { UserCog, Plus, X, Search, CalendarClock, Paperclip, ImagePlus } from 'lucide-react';
+import {
+  UserCog, Plus, X, Search, CalendarClock, Paperclip, ImagePlus,
+  ExternalLink, AlertTriangle, ShieldCheck, Loader2, Inbox,
+} from 'lucide-react';
 
 interface OrgUser {
   id: string;
@@ -20,10 +23,28 @@ interface Delegation {
   ends_at: string;
   status: string;
   created_at: string;
+  scope?: string;
+  request_ids?: string[] | null;
   delegator: { id: string; display_name: string; email: string; job_title?: string } | null;
   delegate: { id: string; display_name: string; email: string; job_title?: string } | null;
   created_by_user: { id: string; display_name: string } | null;
   documents?: { name: string; download_url: string | null }[];
+}
+
+/** A request the delegation could cover, as returned by requests-search. */
+interface CandidateRequest {
+  requestId: string;
+  title: string;
+  description: string | null;
+  referenceCode: string | null;
+  requestType: string | null;
+  amount: number | string | null;
+  currency: string | null;
+  requesterName: string | null;
+  requesterTitle: string | null;
+  createdAt: string;
+  awaitingNow: boolean;
+  delegateConflict: boolean;
 }
 
 const fmtDate = (iso: string) =>
@@ -120,6 +141,165 @@ function UserSelect({
   );
 }
 
+// ---- Request picker -------------------------------------------------------
+/**
+ * Searchable list of the delegator's live approvals. Search covers request id,
+ * reference code, title, wording, type and requester, and every row can be
+ * opened in a new tab so the admin can read the request before handing it over.
+ */
+function RequestPicker({
+  delegatorId,
+  delegatorName,
+  delegateId,
+  selected,
+  onToggle,
+}: {
+  delegatorId: string;
+  delegatorName: string;
+  delegateId?: string;
+  selected: Set<string>;
+  onToggle: (id: string, row: CandidateRequest) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [debounced, setDebounced] = useState('');
+  const [rows, setRows] = useState<CandidateRequest[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(query.trim()), 250);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    const params = new URLSearchParams({ delegatorId });
+    if (delegateId) params.set('delegateId', delegateId);
+    if (debounced) params.set('q', debounced);
+    fetch(`/api/admin/delegations/requests-search?${params.toString()}`)
+      .then((r) => (r.ok ? r.json() : { requests: [], total: 0 }))
+      .then((d) => {
+        if (cancelled) return;
+        setRows(d.requests || []);
+        setTotal(d.total || 0);
+      })
+      .catch(() => { if (!cancelled) { setRows([]); setTotal(0); } })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [delegatorId, delegateId, debounced]);
+
+  return (
+    <div className="rounded-xl border border-gray-200 overflow-hidden">
+      <div className="relative border-b border-gray-200 bg-gray-50">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search by request ID, reference, title, details or requester…"
+          className="w-full pl-9 pr-9 py-2.5 bg-transparent text-sm focus:outline-none"
+        />
+        {query && (
+          <button
+            type="button"
+            onClick={() => setQuery('')}
+            className="absolute right-3 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-gray-200 text-gray-400"
+            aria-label="Clear search"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
+      </div>
+
+      <div className="max-h-72 overflow-y-auto divide-y divide-gray-100">
+        {loading ? (
+          <div className="flex items-center justify-center gap-2 py-8 text-sm text-gray-500">
+            <Loader2 className="w-4 h-4 animate-spin" /> Searching…
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="flex flex-col items-center gap-2 py-8 px-4 text-center">
+            <Inbox className="w-6 h-6 text-gray-300" />
+            <p className="text-sm text-gray-500">
+              {debounced
+                ? `No requests match “${debounced}”.`
+                : `${delegatorName} has no approvals waiting.`}
+            </p>
+          </div>
+        ) : (
+          rows.map((r) => {
+            const isSelected = selected.has(r.requestId);
+            const blocked = r.delegateConflict;
+            return (
+              <div
+                key={r.requestId}
+                className={`flex items-start gap-3 p-3 ${blocked ? 'bg-amber-50/50' : isSelected ? 'bg-primary-50' : 'hover:bg-gray-50'}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={isSelected}
+                  disabled={blocked}
+                  onChange={() => onToggle(r.requestId, r)}
+                  className="mt-1 rounded border-gray-300 text-primary-600 focus:ring-primary-500 disabled:opacity-40"
+                  aria-label={`Delegate ${r.title}`}
+                />
+                <button
+                  type="button"
+                  disabled={blocked}
+                  onClick={() => onToggle(r.requestId, r)}
+                  className="flex-1 min-w-0 text-left disabled:cursor-not-allowed"
+                >
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-medium text-gray-900 line-clamp-1">{r.title}</span>
+                    {r.awaitingNow && (
+                      <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-primary-100 text-primary-700 shrink-0">
+                        On their desk
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500 mt-0.5 truncate">
+                    {[
+                      r.referenceCode,
+                      r.requestType,
+                      r.requesterName ? `by ${r.requesterName}` : null,
+                      r.amount != null ? `${r.currency || ''} ${r.amount}`.trim() : null,
+                      fmtDate(r.createdAt),
+                    ].filter(Boolean).join(' • ')}
+                  </p>
+                  <p className="text-[11px] text-gray-400 mt-0.5 font-mono truncate">{r.requestId}</p>
+                  {blocked && (
+                    <p className="flex items-start gap-1 text-[11px] text-amber-700 mt-1">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
+                      The delegate is already an approver on this request — one person cannot sign it twice.
+                    </p>
+                  )}
+                </button>
+                <a
+                  href={`/requests/${r.requestId}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="shrink-0 p-1.5 rounded-lg text-gray-400 hover:text-primary-600 hover:bg-white"
+                  title="Open request in a new tab"
+                  aria-label={`Open ${r.title} in a new tab`}
+                >
+                  <ExternalLink className="w-4 h-4" />
+                </a>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {!loading && total > rows.length && (
+        <div className="px-3 py-2 border-t border-gray-100 bg-gray-50 text-xs text-gray-500">
+          Showing {rows.length} of {total} — narrow the search to see the rest.
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- New delegation modal -------------------------------------------------
 function NewDelegationModal({
   users,
@@ -138,29 +318,20 @@ function NewDelegationModal({
   const [attachments, setAttachments] = useState<File[]>([]);
   const [startDate, setStartDate] = useState(today);
   const [endDate, setEndDate] = useState('');
-  const [pending, setPending] = useState<{ requestId: string; title: string; referenceCode: string | null }[]>([]);
-  const [loadingPending, setLoadingPending] = useState(false);
-  const [selectedRequests, setSelectedRequests] = useState<Set<string>>(new Set());
+  const [scope, setScope] = useState<'specific' | 'all'>('specific');
+  const [selectedRequests, setSelectedRequests] = useState<Map<string, CandidateRequest>>(new Map());
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Load the delegator's in-flight requests whenever they change.
-  useEffect(() => {
-    setPending([]);
-    setSelectedRequests(new Set());
-    if (!delegator) return;
-    setLoadingPending(true);
-    fetch(`/api/admin/delegations/pending?delegatorId=${delegator.id}`)
-      .then((r) => (r.ok ? r.json() : { requests: [] }))
-      .then((d) => setPending(d.requests || []))
-      .catch(() => setPending([]))
-      .finally(() => setLoadingPending(false));
-  }, [delegator]);
+  // Changing either party invalidates the picked requests — the candidate list
+  // and the conflict checks are both specific to that pair.
+  useEffect(() => { setSelectedRequests(new Map()); }, [delegator?.id, delegate?.id]);
 
-  const toggleRequest = (id: string) => {
+  const toggleRequest = (id: string, row: CandidateRequest) => {
     setSelectedRequests((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      const next = new Map(prev);
+      if (next.has(id)) next.delete(id);
+      else next.set(id, row);
       return next;
     });
   };
@@ -169,8 +340,13 @@ function NewDelegationModal({
     setError(null);
     if (!delegator || !delegate) { setError('Choose who is away and who will cover for them.'); return; }
     if (!reason.trim()) { setError('A reason is required.'); return; }
+    if (attachments.length === 0) { setError('Attach at least one supporting image for the reason.'); return; }
     if (!endDate) { setError('Choose an end date.'); return; }
     if (endDate < startDate) { setError('The end date must be on or after the start date.'); return; }
+    if (scope === 'specific' && selectedRequests.size === 0) {
+      setError('Pick the requests to delegate, or switch to “every approval” below.');
+      return;
+    }
 
     setSubmitting(true);
     try {
@@ -183,28 +359,37 @@ function NewDelegationModal({
           reason: reason.trim(),
           startsAt: new Date(`${startDate}T00:00:00`).toISOString(),
           endsAt: new Date(`${endDate}T23:59:59`).toISOString(),
-          redirectRequestIds: Array.from(selectedRequests),
+          scope,
+          requestIds: scope === 'specific' ? Array.from(selectedRequests.keys()) : [],
+          attachmentCount: attachments.length,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to create delegation');
 
-      // Upload any supporting images against the freshly-created delegation.
-      if (attachments.length > 0 && data.id) {
-        let failed = 0;
-        for (const file of attachments) {
-          try {
-            const fd = new FormData();
-            fd.append('file', file);
-            const up = await fetch(`/api/admin/delegations/${data.id}/documents`, { method: 'POST', body: fd });
-            if (!up.ok) failed++;
-          } catch {
-            failed++;
-          }
+      // Upload the supporting images against the freshly-created delegation.
+      // Evidence is mandatory, so a delegation that ends up with none is
+      // revoked rather than left standing unsupported.
+      let uploaded = 0;
+      for (const file of attachments) {
+        try {
+          const fd = new FormData();
+          fd.append('file', file);
+          const up = await fetch(`/api/admin/delegations/${data.id}/documents`, { method: 'POST', body: fd });
+          if (up.ok) uploaded++;
+        } catch {
+          /* counted as a failure below */
         }
-        if (failed > 0) {
-          toast.addToast({ type: 'warning', message: `Delegation created, but ${failed} attachment(s) failed to upload.` });
-        }
+      }
+      if (uploaded === 0) {
+        await fetch(`/api/admin/delegations/${data.id}`, { method: 'DELETE' }).catch(() => {});
+        throw new Error('The supporting image could not be uploaded, so the delegation was not created. Please try again.');
+      }
+      if (uploaded < attachments.length) {
+        toast.addToast({
+          type: 'warning',
+          message: `Delegation created, but ${attachments.length - uploaded} image(s) failed to upload.`,
+        });
       }
 
       toast.addToast({ type: 'success', message: 'Delegation created' });
@@ -220,7 +405,7 @@ function NewDelegationModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 max-h-[92vh] overflow-hidden flex flex-col">
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl mx-4 max-h-[92vh] overflow-hidden flex flex-col">
         <div className="p-6 border-b border-gray-100 flex items-center justify-between">
           <div>
             <h2 className="text-xl font-bold text-gray-900">New delegation</h2>
@@ -261,9 +446,12 @@ function NewDelegationModal({
 
           {/* Supporting images for the reason (e.g. a photo/scan of a leave approval). */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Supporting images <span className="text-gray-400 font-normal">(optional)</span>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Supporting images <span className="text-red-500">*</span>
             </label>
+            <p className="text-xs text-gray-500 mb-2">
+              Attach the evidence behind the reason — a leave approval, an email, a signed memo. At least one image is required.
+            </p>
             <label className="flex items-center gap-2 cursor-pointer w-fit px-3 py-2 rounded-xl border border-dashed border-gray-300 text-sm text-gray-600 hover:bg-gray-50">
               <ImagePlus className="w-4 h-4 text-primary-600" />
               <span>Add images</span>
@@ -300,26 +488,84 @@ function NewDelegationModal({
           </div>
 
           {delegator && (
-            <div className="rounded-xl border border-gray-200 p-4 bg-gray-50">
-              <p className="text-sm font-medium text-gray-800">Also redirect current requests?</p>
-              <p className="text-xs text-gray-500 mt-0.5 mb-3">
-                New approvals auto-route for the whole window. Tick any in-flight requests already waiting on {delegator.display_name} to move them now.
-              </p>
-              {loadingPending ? (
-                <p className="text-xs text-gray-500">Loading…</p>
-              ) : pending.length === 0 ? (
-                <p className="text-xs text-gray-500">No requests are currently waiting on this person.</p>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                What does this delegation cover? <span className="text-red-500">*</span>
+              </label>
+              <div className="grid sm:grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setScope('specific')}
+                  className={`text-left p-3 rounded-xl border-2 transition-colors ${
+                    scope === 'specific' ? 'border-primary-500 bg-primary-50' : 'border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  <span className="flex items-center gap-2 text-sm font-semibold text-gray-900">
+                    <ShieldCheck className="w-4 h-4 text-primary-600" /> Only the requests I pick
+                  </span>
+                  <span className="block text-xs text-gray-500 mt-1">
+                    Nothing else that reaches {delegator.display_name} is delegated.
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setScope('all')}
+                  className={`text-left p-3 rounded-xl border-2 transition-colors ${
+                    scope === 'all' ? 'border-amber-500 bg-amber-50' : 'border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  <span className="flex items-center gap-2 text-sm font-semibold text-gray-900">
+                    <AlertTriangle className="w-4 h-4 text-amber-600" /> Every approval in the window
+                  </span>
+                  <span className="block text-xs text-gray-500 mt-1">
+                    All of {delegator.display_name}&apos;s approvals route to the delegate until the end date.
+                  </span>
+                </button>
+              </div>
+
+              {scope === 'all' ? (
+                <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                  Every request that reaches {delegator.display_name} between the start and end dates will be signed by the
+                  delegate — including requests raised after today. Only choose this for a genuine full handover.
+                </div>
               ) : (
-                <div className="space-y-2 max-h-40 overflow-y-auto">
-                  {pending.map((r) => (
-                    <label key={r.requestId} className="flex items-center gap-2.5 text-sm cursor-pointer">
-                      <input type="checkbox" checked={selectedRequests.has(r.requestId)} onChange={() => toggleRequest(r.requestId)} className="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
-                      <span className="truncate">
-                        {r.title}
-                        {r.referenceCode && <span className="text-gray-400"> ({r.referenceCode})</span>}
-                      </span>
-                    </label>
-                  ))}
+                <div className="mt-3">
+                  <p className="text-xs text-gray-500 mb-2">
+                    Search {delegator.display_name}&apos;s live approvals and tick the ones to hand over. Open any request in a
+                    new tab to check it first.
+                  </p>
+                  <RequestPicker
+                    delegatorId={delegator.id}
+                    delegatorName={delegator.display_name}
+                    delegateId={delegate?.id}
+                    selected={new Set(selectedRequests.keys())}
+                    onToggle={toggleRequest}
+                  />
+                  {selectedRequests.size > 0 && (
+                    <div className="mt-3">
+                      <p className="text-xs font-medium text-gray-700 mb-1.5">
+                        Delegating {selectedRequests.size} request{selectedRequests.size === 1 ? '' : 's'}
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {Array.from(selectedRequests.values()).map((r) => (
+                          <span
+                            key={r.requestId}
+                            className="inline-flex items-center gap-1.5 max-w-full px-2 py-1 rounded-lg bg-primary-50 border border-primary-200 text-xs text-primary-800"
+                          >
+                            <span className="truncate">{r.referenceCode || r.title}</span>
+                            <button
+                              type="button"
+                              onClick={() => toggleRequest(r.requestId, r)}
+                              className="shrink-0 text-primary-500 hover:text-red-500"
+                              aria-label={`Remove ${r.title}`}
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -405,6 +651,15 @@ export default function AdminDelegationsPage() {
           <span className="text-text-muted text-sm">→</span>
           <span className="text-sm font-semibold text-text-primary">{d.delegate?.display_name || '—'}</span>
           <span className={`text-[11px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full border ${statusStyles[d.status] || statusStyles.revoked}`}>{d.status}</span>
+          {d.scope === 'specific' ? (
+            <span className="inline-flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full border bg-primary-50 text-primary-700 border-primary-100">
+              <ShieldCheck className="w-3 h-3" /> {d.request_ids?.length || 0} request{(d.request_ids?.length || 0) === 1 ? '' : 's'}
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200">
+              <AlertTriangle className="w-3 h-3" /> All approvals
+            </span>
+          )}
         </div>
         <p className="text-sm text-text-secondary mt-1 line-clamp-2">{d.reason}</p>
         <div className="flex items-center gap-1.5 text-xs text-text-muted mt-1.5">

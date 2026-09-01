@@ -37,7 +37,7 @@ const TRAVEL_LOCATIONS: Record<string, string> = {
     MRC: 'Montclair Resort and Conferencing (MRC)',
     NAH: 'New Ambassador Hotel (NAH)',
     RTH: 'Rainbow Towers Hotel (RTH)',
-    KHCC: 'KHCC Conference Centre',
+    KHCC: 'Kadoma Hotel and Conference Centre',
     BRH: 'Bulawayo Rainbow Hotel (BRH)',
     VFRH: 'Victoria Falls Rainbow Hotel (VFRH)',
     AZAM: "A'Zambezi River Lodge (AZAM)",

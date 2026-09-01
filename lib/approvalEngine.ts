@@ -24,7 +24,7 @@ import { sendUserNotificationEmail, escapeHtml, appBaseUrl } from './notificatio
 import { approvalLinkUrl } from './approvalLinkToken';
 import { runInBackground } from './backgroundTask';
 import { getUserPreferences } from './userPreferences';
-import { getActiveDelegateFor } from './delegations';
+import { getActiveDelegateFor, delegateWouldSignTwice } from './delegations';
 import {
   assistantCanActOn,
   fanoutToNotificationAssistants,
@@ -269,13 +269,17 @@ export class ApprovalEngine {
     
     const approvalSteps = workflow.steps.filter(s => s.type === 'approval');
     const stepsToCreate: any[] = [];
-    
+
     // Check if parallel approvals mode is enabled
     const useParallelApprovals = formData?.useParallelApprovals === true;
-    
+
+    // Pass 1: resolve every step's real approver first. Delegation is applied
+    // in pass 2 so it can see the whole approver chain and refuse to hand two
+    // steps of the same request to one person.
+    const resolvedSteps: { stepDef: WorkflowStepDefinition; approverId: string | null }[] = [];
     for (let i = 0; i < approvalSteps.length; i++) {
       const stepDef = approvalSteps[i];
-      
+
       // Check if step conditions are met
       if (stepDef.conditions && stepDef.conditions.length > 0) {
         const shouldInclude = this.evaluateConditions(stepDef.conditions, formData);
@@ -283,7 +287,7 @@ export class ApprovalEngine {
           continue; // Skip this step
         }
       }
-      
+
       // Resolve the approver
       const approverId = await this.resolveApprover(
         stepDef,
@@ -291,7 +295,7 @@ export class ApprovalEngine {
         organizationId,
         creatorId
       );
-      
+
       if (!approverId && stepDef.type === 'approval') {
         return {
           success: false,
@@ -299,15 +303,36 @@ export class ApprovalEngine {
         };
       }
 
-      // Delegation: if an active delegation covers this approver, route the
-      // step to the delegate and stamp the redirect columns so the workflow
-      // timeline shows it as delegated (and links back to the delegation).
+      resolvedSteps.push({ stepDef, approverId });
+    }
+
+    // Everyone who will sign this request, as routing decisions are made.
+    // Seeded with the real approvers so a delegation can never slot a person
+    // into a second step alongside one they already own.
+    const approversOnRequest = new Set<string>(
+      resolvedSteps.map((s) => s.approverId).filter((id): id is string => !!id)
+    );
+
+    // Pass 2: apply delegation and build the rows to insert.
+    for (const { stepDef, approverId } of resolvedSteps) {
+      // Delegation: if an active delegation covers this approver AND its scope
+      // names this request, route the step to the delegate and stamp the
+      // redirect columns so the workflow timeline shows it as delegated (and
+      // links back to the delegation).
       let effectiveApproverId = approverId;
       let delegationFields: Record<string, any> = {};
       if (approverId) {
-        const delegation = await getActiveDelegateFor(approverId, organizationId);
-        if (delegation) {
+        const delegation = await getActiveDelegateFor(approverId, organizationId, requestId);
+        if (delegation && approversOnRequest.has(delegation.delegate_id)) {
+          // The delegate already signs another step of this request. Routing
+          // here would let one person approve the same request twice, so the
+          // step stays with its real approver.
+          console.warn(
+            `delegations: skipped routing step "${stepDef.name}" of request ${requestId} to ${delegation.delegate_id} — they already approve another step.`
+          );
+        } else if (delegation) {
           effectiveApproverId = delegation.delegate_id;
+          approversOnRequest.add(delegation.delegate_id);
           delegationFields = {
             is_redirected: true,
             original_approver_id: approverId,
@@ -619,7 +644,32 @@ export class ApprovalEngine {
     if (step.status !== 'pending' && step.status !== 'waiting') {
       return { success: false, error: 'This approval step is no longer pending' };
     }
-    
+
+    // Segregation of duties backstop. A DELEGATED step must never be signed by
+    // someone who already signed another step of this request — one person
+    // cannot stand in for two approvers. Only delegated/redirected steps are
+    // checked, so workflows that deliberately place the same person on two
+    // steps keep working.
+    if (action === 'approve' && (step.delegation_id || step.is_redirected)) {
+      const { data: alreadySigned } = await supabaseAdmin
+        .from('request_steps')
+        .select('id')
+        .eq('request_id', requestId)
+        .eq('approver_user_id', userId)
+        .eq('status', 'approved')
+        .neq('id', stepId)
+        .limit(1);
+
+      if (alreadySigned && alreadySigned.length > 0) {
+        return {
+          success: false,
+          error:
+            'You have already approved another step on this request, so you cannot also approve it on behalf of a different approver. This step must go back to its original approver — please ask an administrator to revoke or re-point the delegation.',
+        };
+      }
+    }
+
+
     // Check if previous steps are completed (for waiting status)
     if (step.status === 'waiting') {
       const { data: previousSteps } = await supabaseAdmin
@@ -825,16 +875,31 @@ export class ApprovalEngine {
       // approver's desk (from now), not from when the request was first created.
       const activation: Record<string, any> = { status: 'pending', activated_at: new Date().toISOString() };
       if (nextApproverId && !nextStep.delegation_id) {
-        const delegation = await getActiveDelegateFor(nextApproverId, request?.organization_id);
+        const delegation = await getActiveDelegateFor(nextApproverId, request?.organization_id, requestId);
         if (delegation && delegation.delegate_id !== nextApproverId) {
-          activation.approver_user_id = delegation.delegate_id;
-          activation.is_redirected = true;
-          activation.original_approver_id = nextApproverId;
-          activation.redirected_by_id = delegation.created_by;
-          activation.redirected_at = new Date().toISOString();
-          activation.redirect_reason = delegation.reason;
-          activation.delegation_id = delegation.id;
-          nextApproverId = delegation.delegate_id;
+          // Segregation of duties: never hand this step to someone who already
+          // owns or has signed another step of the same request — that would
+          // let one person approve the request twice (e.g. a CFO signing their
+          // own step and then the CEO's). The step stays with its real approver.
+          const wouldSignTwice = await delegateWouldSignTwice(
+            requestId,
+            delegation.delegate_id,
+            nextStep.id
+          );
+          if (wouldSignTwice) {
+            console.warn(
+              `delegations: kept step ${nextStep.id} of request ${requestId} with ${nextApproverId} — delegate ${delegation.delegate_id} already approves another step.`
+            );
+          } else {
+            activation.approver_user_id = delegation.delegate_id;
+            activation.is_redirected = true;
+            activation.original_approver_id = nextApproverId;
+            activation.redirected_by_id = delegation.created_by;
+            activation.redirected_at = new Date().toISOString();
+            activation.redirect_reason = delegation.reason;
+            activation.delegation_id = delegation.id;
+            nextApproverId = delegation.delegate_id;
+          }
         }
       }
 

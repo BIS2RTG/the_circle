@@ -11,8 +11,10 @@ import { sendUserNotificationEmail, escapeHtml } from '@/lib/notificationEmail';
  *
  *   GET  — list this org's delegations (active + past), newest first.
  *   POST — create a delegation (delegatorId, delegateId, reason, startsAt,
- *          endsAt, redirectRequestIds?). Optionally redirects the delegator's
- *          currently-pending steps on the named requests straight away.
+ *          endsAt, scope, requestIds?, attachmentCount). A 'specific' scope
+ *          delegation covers ONLY the named requests — nothing else that lands
+ *          on the delegator during the window is routed away. Steps already
+ *          waiting on the delegator for those requests are moved immediately.
  *
  * Gated by admin.system_config OR users.manage_access. Every delegation
  * action is sealed into the immutable audit log.
@@ -50,7 +52,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const { data, error } = await supabaseAdmin
       .from('approval_delegations')
       .select(`
-        id, reason, starts_at, ends_at, status, created_at, revoked_at, documents,
+        id, reason, starts_at, ends_at, status, created_at, revoked_at, documents, scope, request_ids,
         delegator:app_users!delegator_id ( id, display_name, email, job_title ),
         delegate:app_users!delegate_id ( id, display_name, email, job_title ),
         created_by_user:app_users!created_by ( id, display_name )
@@ -88,7 +90,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   // ---- POST: create --------------------------------------------------------
   if (req.method === 'POST') {
-    const { delegatorId, delegateId, reason, startsAt, endsAt, redirectRequestIds } = req.body || {};
+    const {
+      delegatorId,
+      delegateId,
+      reason,
+      startsAt,
+      endsAt,
+      scope,
+      requestIds,
+      attachmentCount,
+      // Legacy body shape (pre-scope clients): treated as a 'specific' delegation.
+      redirectRequestIds,
+    } = req.body || {};
 
     const trimmedReason = (reason || '').trim();
     if (!delegatorId || !delegateId || !trimmedReason || !endsAt) {
@@ -96,6 +109,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
     if (delegatorId === delegateId) {
       return res.status(400).json({ error: 'The delegate must be a different person' });
+    }
+
+    // Supporting evidence is mandatory — a delegation moves someone's
+    // signing authority, so the reason must be backed by a document.
+    if (!Number.isInteger(attachmentCount) || attachmentCount < 1) {
+      return res.status(400).json({ error: 'At least one supporting image is required' });
+    }
+
+    // Scope. 'specific' is the safe default for any caller that names requests;
+    // 'all' must be asked for explicitly because it hands over every approval
+    // that lands on the delegator during the window.
+    const namedRequestIds: string[] = Array.from(
+      new Set(
+        (Array.isArray(requestIds) ? requestIds : Array.isArray(redirectRequestIds) ? redirectRequestIds : [])
+          .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
+      )
+    );
+    const delegationScope = scope === 'all' ? 'all' : 'specific';
+    if (delegationScope === 'specific' && namedRequestIds.length === 0) {
+      return res.status(400).json({
+        error: 'Choose at least one request to delegate, or switch the delegation to cover all approvals.',
+      });
     }
 
     const starts = startsAt ? new Date(startsAt) : new Date();
@@ -118,16 +153,65 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const delegator = users.find((u) => u.id === delegatorId)!;
     const delegate = users.find((u) => u.id === delegateId)!;
 
-    // Guard against overlapping active delegations for the same delegator.
+    // Guard against ambiguous overlapping delegations for the same delegator.
+    // Two scoped delegations covering different requests are fine (an admin may
+    // split cover between two people); anything that could route the same
+    // approval two ways is not.
     const { data: existing } = await supabaseAdmin
       .from('approval_delegations')
-      .select('id')
+      .select('id, scope, request_ids')
       .eq('delegator_id', delegatorId)
       .eq('status', 'active')
-      .gt('ends_at', new Date().toISOString())
-      .limit(1);
-    if (existing && existing.length > 0) {
-      return res.status(409).json({ error: 'This person already has an active delegation. Revoke it first.' });
+      .gt('ends_at', new Date().toISOString());
+
+    for (const other of existing || []) {
+      if (other.scope !== 'specific' || delegationScope !== 'specific') {
+        return res.status(409).json({
+          error: 'This person already has an active delegation covering all of their approvals. Revoke it first.',
+        });
+      }
+      const overlap = namedRequestIds.filter((id) => (other.request_ids || []).includes(id));
+      if (overlap.length > 0) {
+        return res.status(409).json({
+          error: `${overlap.length} of the selected request${overlap.length === 1 ? ' is' : 's are'} already delegated under another active delegation. Revoke that one first, or deselect them.`,
+        });
+      }
+    }
+
+    // Every named request must be in this org, and the delegate must not
+    // already be an approver on it — otherwise one person would sign the same
+    // request twice (the CFO-signs-the-CEO's-step breach).
+    if (namedRequestIds.length > 0) {
+      const { data: namedRequests } = await supabaseAdmin
+        .from('requests')
+        .select('id, organization_id')
+        .in('id', namedRequestIds);
+      const outOfOrg = namedRequestIds.filter(
+        (id) => !(namedRequests || []).some((r) => r.id === id && r.organization_id === orgId)
+      );
+      if (outOfOrg.length > 0) {
+        return res.status(400).json({ error: 'One or more selected requests are not in your organization' });
+      }
+
+      const { data: delegateSteps } = await supabaseAdmin
+        .from('request_steps')
+        .select('request_id')
+        .in('request_id', namedRequestIds)
+        .eq('approver_user_id', delegateId);
+
+      const conflicting = Array.from(new Set((delegateSteps || []).map((s) => s.request_id)));
+      if (conflicting.length > 0) {
+        const { data: conflictRequests } = await supabaseAdmin
+          .from('requests')
+          .select('id, title, metadata')
+          .in('id', conflicting);
+        const labels = (conflictRequests || [])
+          .map((r: any) => r.metadata?.referenceCode || r.title || r.id)
+          .join(', ');
+        return res.status(409).json({
+          error: `${delegate.display_name || 'The delegate'} is already an approver on ${labels}. One person cannot approve the same request twice — remove ${conflicting.length === 1 ? 'it' : 'those'} from the selection or choose a different delegate.`,
+        });
+      }
     }
 
     const { data: created, error: insertError } = await supabaseAdmin
@@ -141,6 +225,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         ends_at: ends.toISOString(),
         status: 'active',
         created_by: userId,
+        scope: delegationScope,
+        request_ids: delegationScope === 'specific' ? namedRequestIds : [],
       })
       .select('id')
       .single();
@@ -151,12 +237,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
     const delegationId = created.id;
 
-    // Optionally redirect the delegator's currently-pending steps on the
-    // named in-flight requests to the delegate right away.
+    // Move the delegator's currently-pending steps on the named in-flight
+    // requests to the delegate right away.
     let redirectedRequestIds: string[] = [];
-    if (Array.isArray(redirectRequestIds) && redirectRequestIds.length > 0) {
+    if (namedRequestIds.length > 0) {
       redirectedRequestIds = await redirectExistingRequests({
-        requestIds: redirectRequestIds,
+        requestIds: namedRequestIds,
         delegatorId,
         delegateId,
         adminId: userId,
@@ -183,11 +269,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         reason: trimmedReason,
         startsAt: starts.toISOString(),
         endsAt: ends.toISOString(),
+        scope: delegationScope,
+        requestIds: namedRequestIds,
         redirectedRequestIds,
       },
     });
 
-    // Notify the delegate (in-app task + email, best-effort).
+    // Notify the delegate (in-app task + email, best-effort). Say plainly how
+    // wide the delegation is so nobody assumes more authority than was given.
+    const scopeSentence =
+      delegationScope === 'all'
+        ? `You will handle every approval that reaches ${delegator.display_name || 'them'} until ${ends.toLocaleDateString('en-GB')}.`
+        : `You will handle ${namedRequestIds.length} specific request${namedRequestIds.length === 1 ? '' : 's'} on behalf of ${delegator.display_name || 'them'} until ${ends.toLocaleDateString('en-GB')}. No other approvals are delegated to you.`;
     try {
       await supabaseAdmin.from('notifications').insert({
         organization_id: orgId,
@@ -195,7 +288,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         sender_id: userId,
         type: 'task',
         title: 'You are now an approval delegate',
-        message: `You will handle ${delegator.display_name || 'another approver'}'s approvals until ${ends.toLocaleDateString('en-GB')}. Reason: ${trimmedReason}`,
+        message: `${scopeSentence} Reason: ${trimmedReason}`,
         metadata: { action_label: 'View my approvals', action_url: '/approvals', delegation_id: delegationId },
         is_read: false,
       });
@@ -205,7 +298,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         kind: 'approval_tasks',
         subject: 'You are now an approval delegate — The Circle',
         heading: 'Approval delegation assigned to you',
-        bodyHtml: `<p>You have been asked to handle <strong>${escapeHtml(delegator.display_name || 'another approver')}</strong>'s approvals until <strong>${escapeHtml(ends.toLocaleDateString('en-GB'))}</strong>.</p><p>Reason: ${escapeHtml(trimmedReason)}</p>`,
+        bodyHtml: `<p>${escapeHtml(scopeSentence)}</p><p>Reason: ${escapeHtml(trimmedReason)}</p>`,
         actionUrl: '/approvals',
         actionLabel: 'View my approvals',
       });
@@ -213,7 +306,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       console.error('delegation notify failed (non-fatal):', e);
     }
 
-    return res.status(201).json({ success: true, id: delegationId, redirectedRequestIds });
+    return res.status(201).json({
+      success: true,
+      id: delegationId,
+      scope: delegationScope,
+      requestIds: namedRequestIds,
+      redirectedRequestIds,
+    });
   }
 
   return res.status(405).json({ error: 'Method not allowed' });
@@ -239,6 +338,21 @@ async function redirectExistingRequests(args: {
   const nowIso = new Date().toISOString();
 
   for (const requestId of args.requestIds) {
+    // Segregation of duties: never move a step onto someone who already holds
+    // or has signed another step of this request.
+    const { data: delegateOwnSteps } = await supabaseAdmin
+      .from('request_steps')
+      .select('id')
+      .eq('request_id', requestId)
+      .eq('approver_user_id', args.delegateId)
+      .limit(1);
+    if (delegateOwnSteps && delegateOwnSteps.length > 0) {
+      console.warn(
+        `delegations: refused to redirect request ${requestId} to ${args.delegateId} — they already approve a step on it.`
+      );
+      continue;
+    }
+
     // Only steps still on the delegator and still actionable.
     const { data: steps } = await supabaseAdmin
       .from('request_steps')

@@ -74,7 +74,7 @@ const TRAVEL_LOCATIONS = [
     { code: 'MRC', name: 'Montclair Resort and Conferencing (MRC)', city: 'Nyanga' },
     { code: 'NAH', name: 'New Ambassador Hotel (NAH)', city: 'Harare' },
     { code: 'RTH', name: 'Rainbow Towers Hotel (RTH)', city: 'Harare' },
-    { code: 'KHCC', name: 'KHCC Conference Centre', city: 'Kadoma' },
+    { code: 'KHCC', name: 'Kadoma Hotel and Conference Centre', city: 'Kadoma' },
     { code: 'BRH', name: 'Bulawayo Rainbow Hotel (BRH)', city: 'Bulawayo' },
     { code: 'VFRH', name: 'Victoria Falls Rainbow Hotel (VFRH)', city: 'Victoria Falls' },
     { code: 'AZAM', name: 'A\'Zambezi River Lodge (AZAM)', city: 'Victoria Falls' },
@@ -93,8 +93,8 @@ const TRAVEL_LOCATIONS = [
 
 // These are from the distance table shared by THE DISTANCE TABLE
 const DISTANCE_MATRIX: Record<string, Record<string, number>> = {
-    'RTH':  { 'RTH': 0,   'NAH': 0,   'KHCC': 134,   'BRH': 439,   'AZAM': 876,   'VFRH': 876,   'MRC': 250 },
-    'NAH':  { 'RTH': 0, 'NAH': 0, 'KHCC': 134,     'BRH': 439,   'AZAM': 876,   'VFRH': 876,   'MRC': 250 },
+    'RTH':  { 'RTH': 0,   'NAH': 0,   'KHCC': 141,   'BRH': 439,   'AZAM': 876,   'VFRH': 876,   'MRC': 250 },
+    'NAH':  { 'RTH': 0, 'NAH': 0, 'KHCC': 141,     'BRH': 439,   'AZAM': 876,   'VFRH': 876,   'MRC': 250 },
     'KHCC': { 'RTH': 141, 'NAH': 141, 'KHCC': 0,     'BRH': 298,   'AZAM': 735,   'VFRH': 735,   'MRC': 400 },
     'BRH':  { 'RTH': 439, 'NAH': 439, 'KHCC': 298,   'BRH': 0,     'AZAM': 437,   'VFRH': 437,   'MRC': 102 },
     'AZAM': { 'RTH': 876, 'NAH': 876, 'KHCC': 735,   'BRH': 437,   'AZAM': 0,     'VFRH': 0,     'MRC': 1123 },
