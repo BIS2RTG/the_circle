@@ -19,7 +19,7 @@ const UNIT_OPTIONS: Array<{ code: string; label: string }> = [
     { code: 'MRC', label: 'Montclair Resort and Conferencing (MRC)' },
     { code: 'NAH', label: 'New Ambassador Hotel (NAH)' },
     { code: 'RTH', label: 'Rainbow Towers Hotel (RTH)' },
-    { code: 'KHCC', label: 'KHCC Conference Centre (KHCC)' },
+    { code: 'KHCC', label: 'Kadoma Hotel and Conference Centre (KHCC)' },
     { code: 'BRH', label: 'Bulawayo Rainbow Hotel (BRH)' },
     { code: 'VFRH', label: 'Victoria Falls Rainbow Hotel (VFRH)' },
     { code: 'AZAM', label: "A'Zambezi River Lodge (AZAM)" },

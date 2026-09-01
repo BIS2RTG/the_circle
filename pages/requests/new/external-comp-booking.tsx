@@ -91,7 +91,7 @@ const TRAVEL_LOCATIONS = [
     { code: 'MRC', name: 'Montclair Resort and Conferencing (MRC)', city: 'Nyanga' },
     { code: 'NAH', name: 'New Ambassador Hotel (NAH)', city: 'Harare' },
     { code: 'RTH', name: 'Rainbow Towers Hotel (RTH)', city: 'Harare' },
-    { code: 'KHCC', name: 'KHCC Conference Centre', city: 'Kadoma' },
+    { code: 'KHCC', name: 'Kadoma Hotel and Conference Centre', city: 'Kadoma' },
     { code: 'BRH', name: 'Bulawayo Rainbow Hotel (BRH)', city: 'Bulawayo' },
     { code: 'VFRH', name: 'Victoria Falls Rainbow Hotel (VFRH)', city: 'Victoria Falls' },
     { code: 'AZAM', name: 'A\'Zambezi River Lodge (AZAM)', city: 'Victoria Falls' },
@@ -100,9 +100,9 @@ const TRAVEL_LOCATIONS = [
 
 // Inter-business unit distances in KM (exact values from distance matrix)
 const DISTANCE_MATRIX: Record<string, Record<string, number>> = {
-    'RTH':  { 'RTH': 0,   'NAH': 2.1,   'KHCC': 139,   'BRH': 440,   'AZAM': 713,   'VFRH': 709,   'MRC': 272 },
-    'NAH':  { 'RTH': 2.1, 'NAH': 0,     'KHCC': 136.9, 'BRH': 437.9, 'AZAM': 710.9, 'VFRH': 706.9, 'MRC': 269.9 },
-    'KHCC': { 'RTH': 139, 'NAH': 140, 'KHCC': 0,     'BRH': 301,   'AZAM': 574,   'VFRH': 570,   'MRC': 133 },
+    'RTH':  { 'RTH': 0,   'NAH': 2.1,   'KHCC': 141,   'BRH': 440,   'AZAM': 713,   'VFRH': 709,   'MRC': 272 },
+    'NAH':  { 'RTH': 2.1, 'NAH': 0,     'KHCC': 141, 'BRH': 437.9, 'AZAM': 710.9, 'VFRH': 706.9, 'MRC': 269.9 },
+    'KHCC': { 'RTH': 141, 'NAH': 141, 'KHCC': 0,     'BRH': 301,   'AZAM': 574,   'VFRH': 570,   'MRC': 133 },
     'BRH':  { 'RTH': 440, 'NAH': 437.9, 'KHCC': 301,   'BRH': 0,     'AZAM': 273,   'VFRH': 269,   'MRC': 168 },
     'AZAM': { 'RTH': 713, 'NAH': 710.9, 'KHCC': 574,   'BRH': 273,   'AZAM': 0,     'VFRH': 4,     'MRC': 441 },
     'VFRH': { 'RTH': 709, 'NAH': 706.9, 'KHCC': 570,   'BRH': 269,   'AZAM': 4,     'VFRH': 0,     'MRC': 437 },

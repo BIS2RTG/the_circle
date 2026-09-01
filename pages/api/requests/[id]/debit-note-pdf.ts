@@ -9,7 +9,7 @@ const UNIT_LABELS: Record<string, string> = {
   MRC: 'Montclair Resort and Conferencing (MRC)',
   NAH: 'New Ambassador Hotel (NAH)',
   RTH: 'Rainbow Towers Hotel (RTH)',
-  KHCC: 'KHCC Conference Centre (KHCC)',
+  KHCC: 'Kadoma Hotel and Conference Centre (KHCC)',
   BRH: 'Bulawayo Rainbow Hotel (BRH)',
   VFRH: 'Victoria Falls Rainbow Hotel (VFRH)',
   AZAM: "A'Zambezi River Lodge (AZAM)",
