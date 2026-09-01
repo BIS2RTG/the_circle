@@ -13,6 +13,7 @@ import {
   userSignatureProxyUrl,
   resolveSignatureSignedUrl,
 } from '@/lib/signatureStorage';
+import { ppName } from '@/lib/delegatedSignatory';
 
 // This API generates and stores a PDF archive for a fully approved request
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -1228,7 +1229,7 @@ async function generatePdfBuffer(
           : (ROLE_LABELS[roleKey] || humanizeRole(roleKey) || `Approver ${index + 1}`);
         return {
           role,
-          name: step.is_redirected ? `pp ${nm}` : nm,
+          name: ppName(nm, step),
           date: approval?.signed_at || null,
           sig: signatureBuffers.get(index) || null,
           redirected: step.is_redirected === true,

@@ -18,6 +18,7 @@
 
 import type { ReactNode } from 'react';
 import type { PreviewSection, DocumentHeader } from '../../components/ui';
+import { ppName } from '@/lib/delegatedSignatory';
 
 // ──────────────────────────────────────────────────────────────────────
 // Shared inline styles — copied verbatim from the form so the visual
@@ -616,11 +617,11 @@ export function travelAuthInputFromRequest(request: any, travelMeta?: any): Trav
         // The document names the person who actually authorises the step: on a
         // delegated step that is the delegate, since they are the one who signs it.
         // Delegated signatures are prefixed "pp" (per procurationem — signed on
-        // behalf of the role holder), matching the archived PDF's convention in
-        // pages/api/archives/generate-pdf.ts so preview and archive read alike.
+        // behalf of the role holder) via the shared rule in
+        // lib/delegatedSignatory, so every request type reads alike.
         const signatory = step.approver || (!isDelegated ? approval?.approver : null);
         const signatoryName = signatory?.display_name || null;
-        const approverName = signatoryName && isDelegated ? `pp ${signatoryName}` : signatoryName;
+        const approverName = ppName(signatoryName, step);
         const approverJobTitle = signatory?.job_title || null;
         approvers[role] = {
             name: approverName || undefined,

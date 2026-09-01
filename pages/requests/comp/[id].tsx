@@ -17,6 +17,7 @@ import { ApprovedRequestPreviewInline, buildPreviewForRequest } from '../../../c
 import Link from 'next/link';
 import { AnimatePresence, motion } from 'framer-motion';
 import RedirectApprovalModal from '../../../components/RedirectApprovalModal';
+import { ppName, ppJobTitle } from '@/lib/delegatedSignatory';
 
 interface RequestDetail {
     id: string;
@@ -321,8 +322,10 @@ function ApprovalTimeline({ request, onRedirect, canRedirect }: { request: Reque
                                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
                                                             </svg>
                                                             {isDelegation
-                                                                ? `Delegated to ${(step as any).approver?.display_name || 'a delegate'}`
-                                                                : `pp ${(step as any).redirect_job_title || 'Redirected'}`}
+                                                                ? (step.status === 'approved'
+                                                                    ? `Signed ${ppName((step as any).approver?.display_name || 'a delegate', { is_redirected: true })}`
+                                                                    : `Delegated to ${(step as any).approver?.display_name || 'a delegate'}`)
+                                                                : ppJobTitle((step as any).redirect_job_title || 'Redirected', { is_redirected: true })}
                                                         </div>
                                                     );
                                                 }
