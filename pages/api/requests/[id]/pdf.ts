@@ -8,6 +8,7 @@ import { formatDateTime } from '../../../../lib/formatDate';
 import { CAPEX_APPROVAL_SECTIONS } from '../../../../lib/capexApproval';
 import { buildCapexPdf, CapexPdfData, CapexAttachment } from '../../../../lib/capexPdf';
 import { getUserRBACProfile, hasPermission, PERMISSIONS } from '../../../../lib/rbac';
+import { ppName } from '@/lib/delegatedSignatory';
 
 const CAPEX_PAYBACK_LABELS: Record<string, string> = {
   '<6m': 'Less than 6 months',
@@ -83,6 +84,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           status,
           due_at,
           created_at,
+          is_redirected,
+          original_approver_id,
+          redirect_job_title,
           approver:app_users!request_steps_approver_user_id_fkey (
             id,
             display_name,
@@ -194,9 +198,33 @@ async function buildCapexPdfForRequest(request: any, requestId: string): Promise
       .in('id', missingIds);
     for (const u of extraUsers || []) nameById.set(u.id, u.display_name);
   }
+  // The step that actually carries a role, whether or not it was delegated.
+  // A delegated step has had approver_user_id swapped to the stand-in, so the
+  // role's assigned id only survives in original_approver_id.
+  const stepForRole = (key: string) => {
+    const uid = roleMap[key];
+    if (!uid) return null;
+    const steps = (request.request_steps || []) as any[];
+    return steps.find((st) => st.approver_user_id === uid)
+        || steps.find((st) => st.original_approver_id === uid)
+        || null;
+  };
+
+  /**
+   * The name printed against a role. On a delegated step this is the person who
+   * actually signed, prefixed "pp" — printing the role holder's name over a
+   * stand-in's signature would misattribute the authorisation.
+   */
   const nameFor = (key: string) => {
     const uid = roleMap[key];
-    return uid ? nameById.get(uid) || '' : '';
+    if (!uid) return '';
+    const step = stepForRole(key);
+    if (step?.is_redirected) {
+      const signer = Array.isArray(step.approver) ? step.approver[0] : step.approver;
+      const signerName = signer?.display_name || nameById.get(step.approver_user_id) || '';
+      if (signerName) return ppName(signerName, step) as string;
+    }
+    return nameById.get(uid) || '';
   };
 
   // Quotations (supplier + amount), preferred supplier + reason.

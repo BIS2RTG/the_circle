@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '../../auth/[...nextauth]';
 import { supabaseAdmin } from '../../../../lib/supabaseAdmin';
 import { signatureExists, userSignaturePath, userSignatureProxyUrl } from '../../../../lib/signatureStorage';
+import { ppName } from '@/lib/delegatedSignatory';
 
 const UNIT_LABELS: Record<string, string> = {
   CORP: 'Corporate (CORP)',
@@ -55,6 +56,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         creator:app_users!requests_creator_id_fkey ( id, display_name, email, job_title ),
         request_steps (
           id, step_index, step_type, approver_role, approver_user_id, status, due_at, created_at,
+          is_redirected, original_approver_id, redirect_job_title,
           approver:app_users!request_steps_approver_user_id_fkey ( id, display_name, email, signature_url ),
           approvals (
             id, decision, comment, signed_at,
@@ -134,14 +136,21 @@ function generateCreditNoteHtml(request: any): string {
   // signed on submission, so we surface their stored signature as the cell.
   const approverRoles = metadata.approverRoles || {};
   const steps: any[] = request.request_steps || [];
-  const stepByUserId = (uid: string) => steps.find((s: any) => s.approver_user_id === uid);
+  // Match on the ORIGINAL approver too: a delegated step has had its
+  // approver_user_id swapped to the stand-in, so looking up only by the
+  // assigned id would fail to find the step and print an unsigned placeholder
+  // under the role holder's name.
+  const stepByUserId = (uid: string) =>
+    steps.find((s: any) => s.approver_user_id === uid) ||
+    steps.find((s: any) => s.original_approver_id === uid);
 
   const fromAccountantStep = stepByUserId(approverRoles.from_accountant);
   const fromFinanceManagerStep = stepByUserId(approverRoles.from_finance_manager);
   const toAccountantStep = stepByUserId(approverRoles.to_accountant);
 
   const renderApprovalCell = (label: string, step: any, fallbackName: string) => {
-    const name = getApproverField(step, 'display_name') || fallbackName || '—';
+    // "pp <name>" when a stand-in signed for the role holder.
+    const name = ppName(getApproverField(step, 'display_name') || fallbackName || '—', step);
     const signature = step?.resolved_signature_url || getApproverField(step, 'signature_url');
     const decision = step?.approvals?.[0];
     const signedAt = decision?.signed_at ? new Date(decision.signed_at).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '';

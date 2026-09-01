@@ -13,6 +13,7 @@ import {
     capexPreviewDocumentHeader,
 } from '../../lib/previews/capexPreview';
 import { CAPEX_APPROVAL_ROLES } from '../../lib/capexApproval';
+import { ppName } from '@/lib/delegatedSignatory';
 
 /**
  * ApprovedRequestPreview
@@ -160,7 +161,11 @@ function buildApprovalSignaturesSection(request: any): PreviewSection {
                     ) : (
                         steps.map((step: any, i: number) => {
                             const approval = Array.isArray(step.approvals) ? step.approvals[0] : null;
-                            const approverName = step.approver?.display_name || approval?.approver?.display_name || '—';
+                            // "pp <name>" when a stand-in signed for the named approver.
+                            const approverName = ppName(
+                                step.approver?.display_name || approval?.approver?.display_name || '—',
+                                step,
+                            );
                             const role = step.approver_role || step.step_definition?.name || `Step ${i + 1}`;
                             const decision = approval?.decision
                                 ? approval.decision.charAt(0).toUpperCase() + approval.decision.slice(1)
@@ -806,7 +811,19 @@ function buildCapexSections(request: any, metadata: any): PreviewSection[] {
     const approverNameByRole: Record<string, string> = {};
     for (const role of CAPEX_APPROVAL_ROLES) {
         const uid = roleMap[role.key];
-        approverNameByRole[role.key] = uid ? nameById.get(uid) || '' : '';
+        if (!uid) { approverNameByRole[role.key] = ''; continue; }
+        // A delegated step no longer carries the role holder's id in
+        // approver_user_id — it moved to original_approver_id — so match both
+        // and name whoever actually signed, prefixed "pp".
+        const step =
+            steps.find((s) => s.approver_user_id === uid) ||
+            steps.find((s) => s.original_approver_id === uid);
+        if (step?.is_redirected) {
+            const signer = Array.isArray(step.approver) ? step.approver[0] : step.approver;
+            const signerName = signer?.display_name || nameById.get(step.approver_user_id) || '';
+            if (signerName) { approverNameByRole[role.key] = ppName(signerName, step) as string; continue; }
+        }
+        approverNameByRole[role.key] = nameById.get(uid) || '';
     }
 
     // Recorded signature per role: the signature IMAGE of each approver who has
@@ -817,7 +834,8 @@ function buildCapexSections(request: any, metadata: any): PreviewSection[] {
         const uid = roleMap[role.key];
         const step =
             steps.find((s) => s.approver_role === role.key) ||
-            (uid ? steps.find((s) => s.approver_user_id === uid) : null);
+            (uid ? steps.find((s) => s.approver_user_id === uid) : null) ||
+            (uid ? steps.find((s) => s.original_approver_id === uid) : null);
         if (!step) continue;
         const approval = Array.isArray(step.approvals) ? step.approvals[0] : null;
         if (!approval?.signed_at || approval.decision !== 'approved') continue;
