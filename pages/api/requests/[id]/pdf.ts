@@ -232,6 +232,9 @@ async function buildCapexPdfForRequest(request: any, requestId: string): Promise
   const quotations = quotes.map((q) => ({
     supplier: q.supplierName || '',
     amount: q.amount || '',
+    // Per-quotation currency; legacy records without one were priced in the
+    // CAPEX's own currency.
+    currency: q.currency || md.currency || 'USD',
   }));
   const preferred = quotes.find((q) => q.isSelectedSupplier);
 
@@ -242,6 +245,7 @@ async function buildCapexPdfForRequest(request: any, requestId: string): Promise
         supplier: q.supplierName || '',
         quoteAmount: q.amount || '',
         orderValue: q.sourcedAmount && String(q.sourcedAmount).trim() ? q.sourcedAmount : (q.amount || ''),
+        currency: q.currency || md.currency || 'USD',
       }))
     : [];
 

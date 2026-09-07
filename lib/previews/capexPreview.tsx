@@ -13,6 +13,12 @@ import { CAPEX_APPROVAL_SECTIONS } from '../capexApproval';
 export interface CapexPreviewQuote {
   supplier: string;
   amount: string;
+  /**
+   * Currency this quotation was priced in. Suppliers often quote in different
+   * currencies on the same CAPEX, so each line prints its own symbol rather
+   * than inheriting the form's currency. Falls back to the form currency.
+   */
+  currency?: string;
 }
 
 export interface CapexSelectedSupplier {
@@ -21,6 +27,8 @@ export interface CapexSelectedSupplier {
   quoteAmount: string;
   /** Value of the items ordered from this supplier (sums to Project Cost). */
   orderValue: string;
+  /** Currency of this supplier's quotation. Falls back to the form currency. */
+  currency?: string;
 }
 
 export interface CapexRoleSignature {
@@ -79,7 +87,8 @@ export function buildCapexPreviewSections(input: CapexPreviewInput): PreviewSect
   const curr = input.currency || 'USD';
   // Currency symbol/prefix — never a bare "$" for non-dollar currencies
   // ("$ ZAR …" is financially wrong). ZAR ⇒ R, ZIG ⇒ ZiG, otherwise "$".
-  const symbol = curr === 'ZAR' ? 'R' : curr === 'ZIG' ? 'ZiG' : '$';
+  const symbolFor = (c?: string) => (c === 'ZAR' ? 'R' : c === 'ZIG' ? 'ZiG' : '$');
+  const symbol = symbolFor(curr);
   const money = (v?: string) => `${symbol} ${v && String(v).trim() ? v : 'NIL'}`;
   const approverName = (key: string) => input.approverNameByRole[key] || '';
 
@@ -170,9 +179,18 @@ export function buildCapexPreviewSections(input: CapexPreviewInput): PreviewSect
           (() => {
             const tdCell: React.CSSProperties = { border: '1px solid #333', padding: '2px 6px', fontSize: 11 };
             const thCell: React.CSSProperties = { ...tdCell, ...bold, background: '#f2f2f2' };
-            const ordersTotal = input.selectedSuppliers!.reduce(
-              (s, it) => s + (parseFloat((it.orderValue || '').replace(/[^0-9.]/g, '')) || 0), 0
-            ).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            // Order values are totalled PER CURRENCY — suppliers may quote in
+            // different currencies and there is no exchange rate on the form,
+            // so mixed-currency CAPEX prints each subtotal side by side.
+            const totalsByCurrency = new Map<string, number>();
+            for (const it of input.selectedSuppliers!) {
+              const c = it.currency || curr;
+              const v = parseFloat((it.orderValue || '').replace(/[^0-9.]/g, '')) || 0;
+              totalsByCurrency.set(c, (totalsByCurrency.get(c) || 0) + v);
+            }
+            const ordersTotal = Array.from(totalsByCurrency.entries())
+              .map(([c, v]) => `${symbolFor(c)} ${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+              .join('  +  ') || `${symbol} 0.00`;
             return (
               <div style={{ marginBottom: 10 }}>
                 <div style={{ ...cap, ...bold, fontSize: 12, marginBottom: 4 }}>Selected Suppliers</div>
@@ -185,16 +203,19 @@ export function buildCapexPreviewSections(input: CapexPreviewInput): PreviewSect
                     </tr>
                   </thead>
                   <tbody>
-                    {input.selectedSuppliers!.map((s, i) => (
-                      <tr key={`ss${i}`}>
-                        <td style={tdCell}>{s.supplier || '—'}</td>
-                        <td style={{ ...tdCell, textAlign: 'right' }}>{s.quoteAmount ? `${symbol} ${s.quoteAmount}` : '—'}</td>
-                        <td style={{ ...tdCell, textAlign: 'right' }}>{s.orderValue ? `${symbol} ${s.orderValue}` : '—'}</td>
-                      </tr>
-                    ))}
+                    {input.selectedSuppliers!.map((s, i) => {
+                      const sSym = symbolFor(s.currency || curr);
+                      return (
+                        <tr key={`ss${i}`}>
+                          <td style={tdCell}>{s.supplier || '—'}</td>
+                          <td style={{ ...tdCell, textAlign: 'right' }}>{s.quoteAmount ? `${sSym} ${s.quoteAmount}` : '—'}</td>
+                          <td style={{ ...tdCell, textAlign: 'right' }}>{s.orderValue ? `${sSym} ${s.orderValue}` : '—'}</td>
+                        </tr>
+                      );
+                    })}
                     <tr>
                       <td style={{ ...tdCell, ...bold }} colSpan={2}>Total Project Cost</td>
-                      <td style={{ ...tdCell, ...bold, textAlign: 'right' }}>{`${symbol} ${ordersTotal}`}</td>
+                      <td style={{ ...tdCell, ...bold, textAlign: 'right' }}>{ordersTotal}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -209,7 +230,7 @@ export function buildCapexPreviewSections(input: CapexPreviewInput): PreviewSect
                 <div style={{ marginBottom: 10 }} key={`q${i}`}>
                   <div style={{ fontSize: 12 }}>
                     <span style={cap}>Quotation {i + 1}: </span>
-                    <span style={bold}>{q && q.amount ? `${symbol} ${q.amount}` : ''}</span>
+                    <span style={bold}>{q && q.amount ? `${symbolFor(q.currency || curr)} ${q.amount}` : ''}</span>
                     <span style={{ ...bold, marginLeft: 30 }}>{q?.supplier || ''}</span>
                   </div>
                 </div>

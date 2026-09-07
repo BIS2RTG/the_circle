@@ -857,6 +857,7 @@ function buildCapexSections(request: any, metadata: any): PreviewSection[] {
             supplier: q.supplierName || '',
             quoteAmount: q.amount || '',
             orderValue: q.sourcedAmount && String(q.sourcedAmount).trim() ? q.sourcedAmount : (q.amount || ''),
+            currency: q.currency || data.currency || 'USD',
         }))
         : [];
 
@@ -882,7 +883,9 @@ function buildCapexSections(request: any, metadata: any): PreviewSection[] {
         npv: data.npv || '',
         irr: data.irr || '',
         evaluation: data.evaluation || '',
-        quotations: quotes.map((q) => ({ supplier: q.supplierName || '', amount: q.amount || '' })),
+        // Per-quotation currency; legacy records without one were priced in the
+        // CAPEX's own currency.
+        quotations: quotes.map((q) => ({ supplier: q.supplierName || '', amount: q.amount || '', currency: q.currency || data.currency || 'USD' })),
         multiSupplier,
         selectedSuppliers,
         preferredSupplier: preferred?.supplierName || '',

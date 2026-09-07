@@ -1289,10 +1289,13 @@ export default function InterUnitDebitNoteRequestPage() {
                                                             <button
                                                                 type="button"
                                                                 onClick={() => { handleRemoveApprover(role.key); setAutoResolvedRoles(prev => ({ ...prev, [role.key]: false })); }}
-                                                                className="p-1.5 rounded-lg hover:bg-danger-50 text-gray-400 hover:text-danger-500"
+                                                                className="flex-shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-full border border-danger-100 bg-danger-50 text-danger-600 shadow-sm hover:bg-danger-500 hover:border-danger-500 hover:text-white focus:outline-none focus:ring-2 focus:ring-danger-500 focus:ring-offset-1 transition-all"
                                                                 title="Remove approver"
+                                                                aria-label="Remove approver"
                                                             >
-                                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" /></svg>
+                                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                                                                </svg>
                                                             </button>
                                                         )}
                                                     </div>

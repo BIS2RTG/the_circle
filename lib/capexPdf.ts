@@ -19,6 +19,11 @@ export interface CapexApproverLine {
 export interface CapexQuoteLine {
   supplier: string;
   amount: string;
+  /**
+   * Currency this quotation was priced in — suppliers may quote in different
+   * currencies on the same CAPEX. Falls back to the form currency.
+   */
+  currency?: string;
 }
 
 export interface CapexPdfData {
@@ -43,7 +48,7 @@ export interface CapexPdfData {
    * replaces the per-quotation lines and the preferred-quotation line.
    */
   multiSupplier?: boolean;
-  selectedSuppliers?: { supplier: string; quoteAmount: string; orderValue: string }[];
+  selectedSuppliers?: { supplier: string; quoteAmount: string; orderValue: string; currency?: string }[];
   preferredSupplier: string;
   reason: string;
   fundingSource: string;
@@ -174,7 +179,8 @@ export async function buildCapexPdf(
   };
   // Currency symbol/prefix — never a bare "$" for non-dollar currencies
   // ("$ ZAR …" is financially wrong). ZAR ⇒ R, ZIG ⇒ ZiG, otherwise "$".
-  const currencySymbol = data.currency === 'ZAR' ? 'R' : data.currency === 'ZIG' ? 'ZiG' : '$';
+  const symbolFor = (c?: string) => (c === 'ZAR' ? 'R' : c === 'ZIG' ? 'ZiG' : '$');
+  const currencySymbol = symbolFor(data.currency);
   const money = (v: string) => `${currencySymbol} ${v && v.trim() ? v : 'NIL'}`;
 
   // ── Header: centred logo + title ──
@@ -256,18 +262,26 @@ export async function buildCapexPdf(
     drawRight('Order Value', col3R, font, s2, grey);
     y -= s2 + 3;
 
-    let ordersTotal = 0;
+    // Order values are totalled PER CURRENCY — suppliers may quote in different
+    // currencies and the form carries no exchange rate, so a mixed-currency
+    // CAPEX prints each subtotal rather than a meaningless combined figure.
+    const totalsByCurrency = new Map<string, number>();
     for (const s of data.selectedSuppliers) {
       ensure(s2 + 3);
-      ordersTotal += parseFloat((s.orderValue || '').replace(/[^0-9.]/g, '')) || 0;
+      const sc = s.currency || data.currency;
+      const sSym = symbolFor(sc);
+      totalsByCurrency.set(sc, (totalsByCurrency.get(sc) || 0) + (parseFloat((s.orderValue || '').replace(/[^0-9.]/g, '')) || 0));
       draw(s.supplier || '-', marginX, font, s2);
-      drawRight(s.quoteAmount ? `${currencySymbol} ${s.quoteAmount}` : '-', col2R, font, s2, grey);
-      drawRight(s.orderValue ? `${currencySymbol} ${s.orderValue}` : '-', col3R, bold, s2);
+      drawRight(s.quoteAmount ? `${sSym} ${s.quoteAmount}` : '-', col2R, font, s2, grey);
+      drawRight(s.orderValue ? `${sSym} ${s.orderValue}` : '-', col3R, bold, s2);
       y -= s2 + 3;
     }
+    const ordersTotal = Array.from(totalsByCurrency.entries())
+      .map(([c, v]) => `${symbolFor(c)} ${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+      .join('  +  ') || `${currencySymbol} 0.00`;
     ensure(s2 + 4);
     draw('Total Project Cost', marginX, bold, s2);
-    drawRight(`${currencySymbol} ${ordersTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, col3R, bold, s2);
+    drawRight(ordersTotal, col3R, bold, s2);
     y -= s2 + gapY;
     spacer(2);
   } else {
@@ -280,7 +294,7 @@ export async function buildCapexPdf(
       const lbl = `QUOTATION ${i + 1}: `;
       draw(lbl, cx, font);
       cx += w(lbl, font, size);
-      const amt = q && q.amount ? `${currencySymbol} ${q.amount}` : '';
+      const amt = q && q.amount ? `${symbolFor(q.currency || data.currency)} ${q.amount}` : '';
       if (amt) {
         draw(amt, cx, bold);
         cx += w(amt, bold, size);
