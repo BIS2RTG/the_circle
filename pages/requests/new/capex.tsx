@@ -16,11 +16,19 @@ import { buildCapexPreviewSections } from '../../../lib/previews/capexPreview';
 import { formatMoneyInput } from '../../../lib/money';
 
 interface DocumentMetadata {
+  /** Stable identity for React keys, so reordering doesn't scramble the cards. */
+  uid: string;
   file: File;
   description: string;
   supplierName: string;
   /** Quoted amount for this supplier, e.g. "6,805.20". Shown on the CAPEX form. */
   amount: string;
+  /**
+   * Currency THIS quotation is priced in. Suppliers on the same CAPEX often
+   * quote in different currencies, so the amount is never assumed to be in the
+   * currency chosen in Financial Analysis. Defaults to USD on upload.
+   */
+  currency?: string;
   isSelectedSupplier: boolean;
   selectionReason: string;
   /**
@@ -30,6 +38,85 @@ interface DocumentMetadata {
    * multi-supplier mode, in which case the full quotation amount is used.
    */
   sourcedAmount?: string;
+}
+
+/**
+ * Currencies a CAPEX (and each individual quotation) can be priced in.
+ * Quotations default to USD regardless of the currency chosen in the
+ * Financial Analysis section.
+ */
+const CAPEX_CURRENCIES = ['USD', 'ZIG', 'ZAR'] as const;
+const DEFAULT_QUOTATION_CURRENCY = 'USD';
+
+/** Symbol/prefix for a currency — never a bare "$" for non-dollar currencies. */
+const currencySymbolFor = (curr?: string) => (curr === 'ZIG' ? 'ZiG' : curr === 'ZAR' ? 'R' : '$');
+
+/**
+ * Left padding for an amount input, widened so a three-character prefix
+ * ("ZiG") doesn't collide with the typed figure. `md` is the taller
+ * Financial Analysis inputs, whose prefix sits further in.
+ */
+const currencyPadFor = (curr?: string, size: 'sm' | 'md' = 'sm') =>
+  curr === 'ZIG' ? (size === 'md' ? 'pl-12' : 'pl-11') : (size === 'md' ? 'pl-8' : 'pl-7');
+
+/** The two quotation lists on the form: already-saved ones and new uploads. */
+type QuotationList = 'existing' | 'new';
+
+/** Stable per-row id so reordered cards keep their identity across renders. */
+let uidCounter = 0;
+const nextUid = () => `q${Date.now().toString(36)}-${uidCounter++}`;
+
+/**
+ * Grip handle shown across the top of a reorderable card. Dragging it moves the
+ * card (and everything captured on it); with the handle focused, ArrowUp /
+ * ArrowDown move it one slot, which also covers devices without drag support.
+ * Hidden entirely when there is nothing to reorder against.
+ */
+function DragHandle({
+  label,
+  visible,
+  dragging,
+  onKeyMove,
+  onPressStart,
+  onPressEnd,
+}: {
+  label: string;
+  visible: boolean;
+  dragging: boolean;
+  onKeyMove: (direction: -1 | 1) => void;
+  onPressStart: () => void;
+  onPressEnd: () => void;
+}) {
+  if (!visible) return null;
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      aria-label={label}
+      title="Drag to reorder — or focus and press the up / down arrow keys"
+      onMouseDown={onPressStart}
+      onMouseUp={onPressEnd}
+      onBlur={onPressEnd}
+      onKeyDown={(e) => {
+        if (e.key === 'ArrowUp') { e.preventDefault(); onKeyMove(-1); }
+        if (e.key === 'ArrowDown') { e.preventDefault(); onKeyMove(1); }
+      }}
+      className={`-mx-4 -mt-4 mb-1 flex items-center justify-center rounded-t-xl border-b py-2 cursor-grab active:cursor-grabbing focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary-500 transition-colors ${
+        dragging
+          ? 'bg-primary-100 border-primary-200 text-primary-600'
+          : 'bg-gray-100 border-gray-200 text-gray-400 hover:bg-primary-50 hover:border-primary-200 hover:text-primary-500'
+      }`}
+    >
+      <svg className="w-6 h-2.5" viewBox="0 0 24 10" fill="currentColor" aria-hidden="true">
+        <circle cx="5" cy="3" r="1.6" />
+        <circle cx="12" cy="3" r="1.6" />
+        <circle cx="19" cy="3" r="1.6" />
+        <circle cx="5" cy="7.5" r="1.6" />
+        <circle cx="12" cy="7.5" r="1.6" />
+        <circle cx="19" cy="7.5" r="1.6" />
+      </svg>
+    </div>
+  );
 }
 
 export default function NewCapexRequestPage() {
@@ -82,6 +169,11 @@ export default function NewCapexRequestPage() {
   const [watcherSearch, setWatcherSearch] = useState('');
   const [showWatcherDropdown, setShowWatcherDropdown] = useState(false);
   const [quotationDocuments, setQuotationDocuments] = useState<DocumentMetadata[]>([]);
+  // Quotation drag-to-reorder. `dragArmed` is set while a grip handle is held
+  // (only then is the card draggable, so the inputs stay usable); `dragFrom`
+  // tracks the row currently in flight.
+  const [dragArmed, setDragArmed] = useState<{ list: QuotationList; index: number } | null>(null);
+  const [dragFrom, setDragFrom] = useState<{ list: QuotationList; index: number } | null>(null);
   // Multiple-suppliers mode: when on, more than one uploaded quotation can be
   // flagged as a selected supplier and their amounts sum to the Project Cost.
   const [allowMultipleSuppliers, setAllowMultipleSuppliers] = useState(false);
@@ -189,10 +281,13 @@ export default function NewCapexRequestPage() {
     const files = e.target.files;
     if (files) {
       const newDocs: DocumentMetadata[] = Array.from(files).map(file => ({
+        uid: nextUid(),
         file,
         description: '',
         supplierName: '',
         amount: '',
+        // Each quotation carries its own currency; USD is the house default.
+        currency: DEFAULT_QUOTATION_CURRENCY,
         isSelectedSupplier: false,
         selectionReason: '',
       }));
@@ -205,10 +300,36 @@ export default function NewCapexRequestPage() {
     setQuotationDocuments(prev => prev.filter((_, i) => i !== index));
   };
 
+  // ---- Quotation reordering -----------------------------------------------
+  // A quotation card carries its file AND every detail captured on it, so they
+  // move together. The resulting order is the order the quotations are numbered
+  // in on the printed CAPEX form.
+  const reorderItem = <T,>(list: T[], from: number, to: number): T[] => {
+    if (from === to || from < 0 || to < 0 || from >= list.length || to >= list.length) return list;
+    const next = [...list];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    return next;
+  };
+
+  const applyQuotationReorder = (list: QuotationList, from: number, to: number) => {
+    if (list === 'new') setQuotationDocuments(prev => reorderItem(prev, from, to));
+    else setExistingQuotations(prev => reorderItem(prev, from, to));
+    setIsDirty(true);
+  };
+
+  // Live reorder: as the dragged card passes over another, they trade places.
+  const handleQuotationDragEnter = (list: QuotationList, index: number) => {
+    if (!dragFrom || dragFrom.list !== list || dragFrom.index === index) return;
+    applyQuotationReorder(list, dragFrom.index, index);
+    setDragFrom({ list, index });
+  };
+
   const handleSupportingDocUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files) {
       const newDocs: DocumentMetadata[] = Array.from(files).map(file => ({
+        uid: nextUid(),
         file,
         description: '',
         supplierName: '',
@@ -228,6 +349,7 @@ export default function NewCapexRequestPage() {
     const files = e.target.files;
     if (files) {
       const newDocs: DocumentMetadata[] = Array.from(files).map(file => ({
+        uid: nextUid(),
         file,
         description: '',
         supplierName: '',
@@ -493,7 +615,8 @@ export default function NewCapexRequestPage() {
         const justificationData = metadata.quotationJustification || capexData.quotationJustification;
 
         if (quotationsData && Array.isArray(quotationsData)) {
-          setExistingQuotations(quotationsData);
+          // uid is client-only (React keys for reordering) and is stripped again on save.
+          setExistingQuotations(quotationsData.map((q: any) => ({ ...q, uid: q.documentId || nextUid() })));
         }
         if (supportingDocsData && Array.isArray(supportingDocsData)) {
           setExistingSupportingDocs(supportingDocsData);
@@ -521,6 +644,7 @@ export default function NewCapexRequestPage() {
           if (!quotationsData && !supportingDocsData) {
             // All documents without metadata categorization - show them as existing quotations
             const docsFromTable = request.documents.map((doc: any) => ({
+              uid: doc.id,
               name: doc.filename,
               size: doc.file_size,
               type: doc.mime_type,
@@ -728,12 +852,12 @@ export default function NewCapexRequestPage() {
       : '';
 
     // Combined quotations (already-saved + newly-uploaded), in display order.
-    const allQuotes: Array<{ supplier: string; amount: string; selected: boolean; reason: string }> = [
+    const allQuotes: Array<{ supplier: string; amount: string; currency: string; selected: boolean; reason: string }> = [
       ...(Array.isArray(existingQuotations) ? existingQuotations : []).map((q: any) => ({
-        supplier: q.supplierName || '', amount: q.amount || '', selected: !!q.isSelectedSupplier, reason: q.selectionReason || '',
+        supplier: q.supplierName || '', amount: q.amount || '', currency: quoteCurrency(q), selected: !!q.isSelectedSupplier, reason: q.selectionReason || '',
       })),
       ...quotationDocuments.map(d => ({
-        supplier: d.supplierName || '', amount: d.amount || '', selected: !!d.isSelectedSupplier, reason: d.selectionReason || '',
+        supplier: d.supplierName || '', amount: d.amount || '', currency: quoteCurrency(d), selected: !!d.isSelectedSupplier, reason: d.selectionReason || '',
       })),
     ];
     const preferred = allQuotes.find(q => q.selected);
@@ -757,12 +881,13 @@ export default function NewCapexRequestPage() {
       npv: formData.npv,
       irr: formData.irr,
       evaluation: formData.evaluation,
-      quotations: allQuotes.map(q => ({ supplier: q.supplier, amount: q.amount })),
+      quotations: allQuotes.map(q => ({ supplier: q.supplier, amount: q.amount, currency: q.currency })),
       multiSupplier: allowMultipleSuppliers,
       selectedSuppliers: selectedSupplierQuotes.map(q => ({
         supplier: q.supplier,
         quoteAmount: q.quoteAmount,
         orderValue: q.sourcedAmount && q.sourcedAmount.trim() ? q.sourcedAmount : q.quoteAmount,
+        currency: q.currency,
       })),
       preferredSupplier: preferred?.supplier || '',
       reason: preferredReason,
@@ -1024,7 +1149,8 @@ export default function NewCapexRequestPage() {
               useParallelApprovals: useParallelApprovals,
               watchers: Array.isArray(selectedWatchers) ? selectedWatchers.map(w => typeof w === 'string' ? w : w.id) : [],
               quotations: [
-                ...(Array.isArray(existingQuotations) ? existingQuotations : []),
+                // `uid` is a client-only React key — never persisted.
+                ...(Array.isArray(existingQuotations) ? existingQuotations : []).map(({ uid, ...q }: any) => q),
                 ...quotationDocuments.map(doc => ({
                   name: doc.file.name,
                   size: doc.file.size,
@@ -1032,6 +1158,7 @@ export default function NewCapexRequestPage() {
                   description: doc.description,
                   supplierName: doc.supplierName,
                   amount: doc.amount,
+                  currency: doc.currency || DEFAULT_QUOTATION_CURRENCY,
                   sourcedAmount: doc.sourcedAmount || '',
                   isSelectedSupplier: doc.isSelectedSupplier,
                   selectionReason: doc.selectionReason,
@@ -1264,6 +1391,7 @@ export default function NewCapexRequestPage() {
               description: doc.description,
               supplierName: doc.supplierName,
               amount: doc.amount,
+              currency: doc.currency || DEFAULT_QUOTATION_CURRENCY,
               sourcedAmount: doc.sourcedAmount || '',
               isSelectedSupplier: doc.isSelectedSupplier,
               selectionReason: doc.selectionReason,
@@ -1423,7 +1551,13 @@ export default function NewCapexRequestPage() {
   };
 
   // Symbol shown in front of amounts for the selected currency.
-  const currencySymbol = (curr?: string) => (curr === 'ZIG' ? 'ZiG' : curr === 'ZAR' ? 'R' : '$');
+  const currencySymbol = currencySymbolFor;
+
+  // Currency a quotation is priced in. Quotations saved before per-quotation
+  // currencies existed carry none — those amounts were entered under the
+  // CAPEX's own currency, so that is the fallback.
+  const quoteCurrency = (q: { currency?: string } | null | undefined) =>
+    q?.currency || formData.currency || DEFAULT_QUOTATION_CURRENCY;
 
   // ---- Multiple-suppliers helpers -----------------------------------------
   // The quotations the user flagged as selected suppliers (across both the
@@ -1432,26 +1566,64 @@ export default function NewCapexRequestPage() {
   // `quoteAmount` is the full quotation total; `sourcedAmount` is the value of
   // the items actually being bought from that quotation. When a sourced amount
   // isn't given we fall back to the full quotation total.
-  const selectedSupplierQuotes: Array<{ supplier: string; description: string; quoteAmount: string; sourcedAmount: string }> = [
+  const selectedSupplierQuotes: Array<{ supplier: string; description: string; quoteAmount: string; sourcedAmount: string; currency: string }> = [
     ...(Array.isArray(existingQuotations) ? existingQuotations : [])
       .filter((q: any) => q.isSelectedSupplier)
-      .map((q: any) => ({ supplier: q.supplierName || '', description: q.description || '', quoteAmount: q.amount || '', sourcedAmount: q.sourcedAmount || '' })),
+      .map((q: any) => ({ supplier: q.supplierName || '', description: q.description || '', quoteAmount: q.amount || '', sourcedAmount: q.sourcedAmount || '', currency: quoteCurrency(q) })),
     ...quotationDocuments
       .filter(d => d.isSelectedSupplier)
-      .map(d => ({ supplier: d.supplierName || '', description: d.description || '', quoteAmount: d.amount || '', sourcedAmount: d.sourcedAmount || '' })),
+      .map(d => ({ supplier: d.supplierName || '', description: d.description || '', quoteAmount: d.amount || '', sourcedAmount: d.sourcedAmount || '', currency: quoteCurrency(d) })),
   ];
   const sourcedValueOf = (q: { quoteAmount: string; sourcedAmount: string }) =>
     q.sourcedAmount && q.sourcedAmount.trim() ? parseCurrency(q.sourcedAmount) : parseCurrency(q.quoteAmount);
-  const selectedSuppliersTotal = selectedSupplierQuotes.reduce((sum, q) => sum + sourcedValueOf(q), 0);
 
-  // Keep the Project Cost in step with the selected suppliers while multi mode
-  // is on. The field is read-only in this mode, so it always mirrors the sum of
-  // the selected quotations' amounts.
+  // Order values are totalled PER CURRENCY. Suppliers can quote in different
+  // currencies and the form carries no exchange rate, so amounts in different
+  // currencies are never added together.
+  const selectedSuppliersTotalsByCurrency = selectedSupplierQuotes.reduce<Record<string, number>>((acc, q) => {
+    acc[q.currency] = (acc[q.currency] || 0) + sourcedValueOf(q);
+    return acc;
+  }, {});
+  const selectedSupplierCurrencies = Object.keys(selectedSuppliersTotalsByCurrency);
+  const selectedSuppliersTotal = selectedSupplierQuotes.reduce((sum, q) => sum + sourcedValueOf(q), 0);
+  const capexCurrency = formData.currency || DEFAULT_QUOTATION_CURRENCY;
+  // The currency the selected supplier(s) quoted in — null when they disagree,
+  // which is the only case the Financial Analysis can't simply adopt.
+  const uniformSelectedCurrency = selectedSupplierCurrencies.length === 1 ? selectedSupplierCurrencies[0] : null;
+  const mixedSupplierCurrencies = selectedSupplierCurrencies.length > 1;
+  // Multi-supplier mode owns the Project Cost (it's the sum of the order
+  // values) unless the selected quotations disagree on currency, in which case
+  // the requester converts them and types the figure in.
+  const canAutoTotalProjectCost = allowMultipleSuppliers && !mixedSupplierCurrencies;
+  // Single-supplier mode: the one selected quotation's own total.
+  const singleSelectedAmount =
+    !allowMultipleSuppliers && selectedSupplierQuotes.length === 1 ? selectedSupplierQuotes[0].quoteAmount : '';
+
+  // Financial Analysis follows the selected supplier: the CAPEX is priced in
+  // the currency that supplier quoted in. Changing a selected quotation's
+  // currency therefore re-denominates the whole form. Both this and the amount
+  // below stay editable — a later manual override sticks until the selected
+  // quotation changes again.
   useEffect(() => {
-    if (!allowMultipleSuppliers) return;
+    if (!uniformSelectedCurrency) return;
+    setFormData(prev => (prev.currency === uniformSelectedCurrency ? prev : { ...prev, currency: uniformSelectedCurrency }));
+  }, [uniformSelectedCurrency]);
+
+  // ...and the Project Cost follows the selected supplier's amount.
+  useEffect(() => {
+    if (!canAutoTotalProjectCost) return;
     setFormData(prev => ({ ...prev, amount: formatMoneyInput(selectedSuppliersTotal.toFixed(2)) }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allowMultipleSuppliers, selectedSuppliersTotal]);
+  }, [canAutoTotalProjectCost, selectedSuppliersTotal]);
+
+  useEffect(() => {
+    if (allowMultipleSuppliers || !singleSelectedAmount) return;
+    // Don't rewrite a saved Project Cost just because an edit form opened — only
+    // once the requester actually touches the quotations.
+    if (isEditMode && !isDirty) return;
+    setFormData(prev => (prev.amount === singleSelectedAmount ? prev : { ...prev, amount: singleSelectedAmount }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allowMultipleSuppliers, singleSelectedAmount]);
 
   // Budgeted CAPEX only: balance remaining once this project's cost is drawn
   // down against the approved budget line = budget − already spent − this project.
@@ -1545,7 +1717,8 @@ export default function NewCapexRequestPage() {
             useParallelApprovals: useParallelApprovals,
             watchers: selectedWatchers.map(w => typeof w === 'string' ? w : w.id),
             quotations: [
-              ...existingQuotations,
+              // `uid` is a client-only React key — never persisted.
+              ...existingQuotations.map(({ uid, ...q }: any) => q),
               ...quotationDocuments.map(doc => ({
                 name: doc.file.name,
                 size: doc.file.size,
@@ -1553,6 +1726,7 @@ export default function NewCapexRequestPage() {
                 description: doc.description,
                 supplierName: doc.supplierName,
                 amount: doc.amount,
+                currency: doc.currency || DEFAULT_QUOTATION_CURRENCY,
                 sourcedAmount: doc.sourcedAmount || '',
                 isSelectedSupplier: doc.isSelectedSupplier,
                 selectionReason: doc.selectionReason,
@@ -1922,6 +2096,8 @@ export default function NewCapexRequestPage() {
             {isEditMode
               ? 'You can upload additional quotations if needed.'
               : 'The standard is 3 quotations from different suppliers, but you may upload more. Each quotation should include supplier details.'}
+            {' '}Set each quotation&apos;s own currency (USD by default), and drag a card by the grip at its top to reorder —
+            the order here is the order they are numbered in on the printed CAPEX form.
           </p>
 
           {/* Multiple-suppliers toggle — when on, more than one quotation can be
@@ -1954,7 +2130,23 @@ export default function NewCapexRequestPage() {
             <div className="mb-4 space-y-3">
               <h4 className="text-sm font-medium text-gray-700">Existing Quotations:</h4>
               {existingQuotations.map((quotation: any, index: number) => (
-                <div key={index} className={`p-4 rounded-xl border transition-all space-y-4 ${quotation.isSelectedSupplier ? 'bg-emerald-50 border-emerald-200' : 'bg-gray-50 border-gray-200'}`}>
+                <div
+                  key={quotation.uid || index}
+                  draggable={dragArmed?.list === 'existing' && dragArmed.index === index}
+                  onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; setDragFrom({ list: 'existing', index }); }}
+                  onDragEnd={() => { setDragFrom(null); setDragArmed(null); }}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDragEnter={() => handleQuotationDragEnter('existing', index)}
+                  className={`p-4 rounded-xl border transition-all space-y-4 ${quotation.isSelectedSupplier ? 'bg-emerald-50 border-emerald-200' : 'bg-gray-50 border-gray-200'} ${dragFrom?.list === 'existing' && dragFrom.index === index ? 'opacity-60 ring-2 ring-primary-300' : ''}`}
+                >
+                  <DragHandle
+                    label={`Reorder quotation ${index + 1}`}
+                    visible={existingQuotations.length > 1}
+                    dragging={dragFrom?.list === 'existing' && dragFrom.index === index}
+                    onKeyMove={(dir) => applyQuotationReorder('existing', index, index + dir)}
+                    onPressStart={() => setDragArmed({ list: 'existing', index })}
+                    onPressEnd={() => setDragArmed(null)}
+                  />
                   <div className="flex items-start gap-3">
                     <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${quotation.isSelectedSupplier ? 'bg-emerald-100' : 'bg-gray-100'}`}>
                       <svg className={`w-5 h-5 ${quotation.isSelectedSupplier ? 'text-emerald-600' : 'text-gray-500'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1962,6 +2154,7 @@ export default function NewCapexRequestPage() {
                       </svg>
                     </div>
                     <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold text-gray-500">Quotation {index + 1}</p>
                       <p className="font-medium text-gray-900 text-sm truncate">{quotation.name}</p>
                     </div>
                     <button
@@ -1990,16 +2183,28 @@ export default function NewCapexRequestPage() {
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-gray-600 mb-1">Quotation Amount</label>
-                      <div className="relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
-                        <input
-                          type="text"
-                          inputMode="decimal"
-                          className="w-full pl-7 pr-3 py-2 text-sm rounded-lg border border-gray-300 bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
-                          placeholder="0.00"
-                          value={quotation.amount || ''}
-                          onChange={(e) => handleUpdateExistingQuotation(index, 'amount', formatCurrency(e.target.value))}
-                        />
+                      <div className="flex gap-2">
+                        <select
+                          className="w-24 flex-shrink-0 px-2 py-2 text-sm rounded-lg border border-gray-300 bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                          value={quoteCurrency(quotation)}
+                          onChange={(e) => handleUpdateExistingQuotation(index, 'currency', e.target.value)}
+                          title="Currency of this quotation"
+                        >
+                          {CAPEX_CURRENCIES.map(c => (
+                            <option key={c} value={c}>{c}</option>
+                          ))}
+                        </select>
+                        <div className="relative flex-1">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{currencySymbol(quoteCurrency(quotation))}</span>
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            className={`w-full ${currencyPadFor(quoteCurrency(quotation))} pr-3 py-2 text-sm rounded-lg border border-gray-300 bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all`}
+                            placeholder="0.00"
+                            value={quotation.amount || ''}
+                            onChange={(e) => handleUpdateExistingQuotation(index, 'amount', formatCurrency(e.target.value))}
+                          />
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -2031,19 +2236,19 @@ export default function NewCapexRequestPage() {
                         Order Value <span className="text-danger-500">*</span>
                       </label>
                       <div className="relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{currencySymbol(formData.currency)}</span>
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{currencySymbol(quoteCurrency(quotation))}</span>
                         <input
                           type="text"
                           inputMode="decimal"
-                          className="w-full pl-7 pr-3 py-2 text-sm rounded-lg border border-gray-300 bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                          className={`w-full ${currencyPadFor(quoteCurrency(quotation))} pr-3 py-2 text-sm rounded-lg border border-gray-300 bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all`}
                           placeholder="0.00"
                           value={quotation.sourcedAmount || ''}
                           onChange={(e) => handleUpdateExistingQuotation(index, 'sourcedAmount', formatCurrency(e.target.value))}
                         />
                       </div>
                       <p className="mt-1 text-xs text-gray-500">
-                        Value of the items you&apos;re buying from this supplier — this is what&apos;s summed into the Project Cost.
-                        Full quotation total: {currencySymbol(formData.currency)} {quotation.amount || '0.00'}.
+                        Value of the items you&apos;re buying from this supplier, in {quoteCurrency(quotation)} — this is what&apos;s summed into the Project Cost.
+                        Full quotation total: {currencySymbol(quoteCurrency(quotation))} {quotation.amount || '0.00'}.
                       </p>
                     </div>
                   )}
@@ -2094,7 +2299,23 @@ export default function NewCapexRequestPage() {
             <div className="mt-4 space-y-4">
               <h4 className="text-sm font-medium text-gray-700">Uploaded Quotations:</h4>
               {quotationDocuments.map((doc, index) => (
-                <div key={index} className="p-4 bg-gray-50 rounded-xl border border-gray-200 space-y-4">
+                <div
+                  key={doc.uid}
+                  draggable={dragArmed?.list === 'new' && dragArmed.index === index}
+                  onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; setDragFrom({ list: 'new', index }); }}
+                  onDragEnd={() => { setDragFrom(null); setDragArmed(null); }}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDragEnter={() => handleQuotationDragEnter('new', index)}
+                  className={`p-4 bg-gray-50 rounded-xl border border-gray-200 space-y-4 ${dragFrom?.list === 'new' && dragFrom.index === index ? 'opacity-60 ring-2 ring-primary-300' : ''}`}
+                >
+                  <DragHandle
+                    label={`Reorder quotation ${existingQuotations.length + index + 1}`}
+                    visible={quotationDocuments.length > 1}
+                    dragging={dragFrom?.list === 'new' && dragFrom.index === index}
+                    onKeyMove={(dir) => applyQuotationReorder('new', index, index + dir)}
+                    onPressStart={() => setDragArmed({ list: 'new', index })}
+                    onPressEnd={() => setDragArmed(null)}
+                  />
                   <div className="flex items-start gap-3">
                     <div className="flex-shrink-0 mt-1">
                       <svg className="w-8 h-8 text-danger-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2102,6 +2323,7 @@ export default function NewCapexRequestPage() {
                       </svg>
                     </div>
                     <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold text-gray-500">Quotation {existingQuotations.length + index + 1}</p>
                       <p className="text-sm font-medium text-gray-900 truncate">{doc.file.name}</p>
                       <p className="text-xs text-gray-500">{(doc.file.size / 1024).toFixed(1)} KB</p>
                     </div>
@@ -2170,17 +2392,30 @@ export default function NewCapexRequestPage() {
                       <label className="block text-xs font-medium text-gray-600 mb-1">
                         Quotation Amount <span className="text-danger-500">*</span>
                       </label>
-                      <div className="relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
-                        <input
-                          type="text"
-                          inputMode="decimal"
-                          className="w-full pl-7 pr-3 py-2 text-sm rounded-lg border border-gray-300 bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
-                          placeholder="0.00"
-                          value={doc.amount || ''}
-                          onChange={(e) => handleUpdateQuotationMetadata(index, 'amount', formatCurrency(e.target.value))}
-                        />
+                      <div className="flex gap-2">
+                        <select
+                          className="w-24 flex-shrink-0 px-2 py-2 text-sm rounded-lg border border-gray-300 bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                          value={quoteCurrency(doc)}
+                          onChange={(e) => handleUpdateQuotationMetadata(index, 'currency', e.target.value)}
+                          title="Currency of this quotation"
+                        >
+                          {CAPEX_CURRENCIES.map(c => (
+                            <option key={c} value={c}>{c}</option>
+                          ))}
+                        </select>
+                        <div className="relative flex-1">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{currencySymbol(quoteCurrency(doc))}</span>
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            className={`w-full ${currencyPadFor(quoteCurrency(doc))} pr-3 py-2 text-sm rounded-lg border border-gray-300 bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all`}
+                            placeholder="0.00"
+                            value={doc.amount || ''}
+                            onChange={(e) => handleUpdateQuotationMetadata(index, 'amount', formatCurrency(e.target.value))}
+                          />
+                        </div>
                       </div>
+                      <p className="mt-1 text-[11px] text-gray-500">Currency this supplier quoted in — it need not match the CAPEX currency.</p>
                     </div>
                   </div>
 
@@ -2215,19 +2450,19 @@ export default function NewCapexRequestPage() {
                         Order Value <span className="text-danger-500">*</span>
                       </label>
                       <div className="relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{currencySymbol(formData.currency)}</span>
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{currencySymbol(quoteCurrency(doc))}</span>
                         <input
                           type="text"
                           inputMode="decimal"
-                          className="w-full pl-7 pr-3 py-2 text-sm rounded-lg border border-gray-300 bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                          className={`w-full ${currencyPadFor(quoteCurrency(doc))} pr-3 py-2 text-sm rounded-lg border border-gray-300 bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all`}
                           placeholder="0.00"
                           value={doc.sourcedAmount || ''}
                           onChange={(e) => handleUpdateQuotationMetadata(index, 'sourcedAmount', formatCurrency(e.target.value))}
                         />
                       </div>
                       <p className="mt-1 text-xs text-gray-500">
-                        Value of the items you&apos;re buying from this supplier — this is what&apos;s summed into the Project Cost.
-                        Full quotation total: {currencySymbol(formData.currency)} {doc.amount || '0.00'}.
+                        Value of the items you&apos;re buying from this supplier, in {quoteCurrency(doc)} — this is what&apos;s summed into the Project Cost.
+                        Full quotation total: {currencySymbol(quoteCurrency(doc))} {doc.amount || '0.00'}.
                       </p>
                     </div>
                   )}
@@ -2352,6 +2587,13 @@ export default function NewCapexRequestPage() {
               A summary of the suppliers you selected from the quotations above. The <span className="font-medium">order value</span> from
               each quotation (not the full quotation total) adds up to the total Project Cost.
             </p>
+            {mixedSupplierCurrencies && (
+              <div className="mb-4 p-3 rounded-xl bg-warning-50 border border-warning-200 text-xs text-warning-800">
+                These suppliers quoted in different currencies ({selectedSupplierCurrencies.join(', ')}), so they are
+                totalled per currency below and the Project Cost is not auto-filled. Convert them yourself and enter the
+                Project Cost in {capexCurrency}.
+              </div>
+            )}
             <div className="overflow-x-auto rounded-xl border border-gray-200">
               <table className="w-full text-sm">
                 <thead>
@@ -2363,7 +2605,7 @@ export default function NewCapexRequestPage() {
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {selectedSupplierQuotes.map((q, i) => {
-                    const sym = formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$';
+                    const sym = currencySymbol(q.currency);
                     const orderValue = q.sourcedAmount && q.sourcedAmount.trim() ? q.sourcedAmount : (q.quoteAmount || '');
                     return (
                       <tr key={i}>
@@ -2373,12 +2615,18 @@ export default function NewCapexRequestPage() {
                       </tr>
                     );
                   })}
-                  <tr className="bg-gray-50 font-semibold">
-                    <td className="px-4 py-2 text-gray-900" colSpan={2}>Total Project Cost</td>
-                    <td className="px-4 py-2 text-right text-gray-900">
-                      {formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'} {formatMoneyInput(selectedSuppliersTotal.toFixed(2))}
-                    </td>
-                  </tr>
+                  {/* Totalled per currency — quotations in different currencies
+                      are never added together. */}
+                  {selectedSupplierCurrencies.map(c => (
+                    <tr key={`total-${c}`} className="bg-gray-50 font-semibold">
+                      <td className="px-4 py-2 text-gray-900" colSpan={2}>
+                        {selectedSupplierCurrencies.length > 1 ? `Total (${c})` : 'Total Project Cost'}
+                      </td>
+                      <td className="px-4 py-2 text-right text-gray-900">
+                        {currencySymbol(c)} {formatMoneyInput(selectedSuppliersTotalsByCurrency[c].toFixed(2))}
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -2653,20 +2901,31 @@ export default function NewCapexRequestPage() {
                 Project Cost <span className="text-red-500">*</span>
               </label>
               <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{currencySymbol(formData.currency)}</span>
                 <input
                   type="text"
-                  readOnly={allowMultipleSuppliers}
-                  tabIndex={allowMultipleSuppliers ? -1 : undefined}
-                  className={`w-full pl-8 pr-4 py-2 min-h-[44px] rounded-xl border focus:outline-none focus:ring-2 focus:border-transparent transition-all ${allowMultipleSuppliers ? 'bg-gray-50 cursor-not-allowed text-gray-900' : 'bg-white text-gray-900 placeholder-gray-400'} ${fieldErrors.amount ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
+                  readOnly={canAutoTotalProjectCost}
+                  tabIndex={canAutoTotalProjectCost ? -1 : undefined}
+                  className={`w-full ${currencyPadFor(formData.currency, 'md')} pr-4 py-2 min-h-[44px] rounded-xl border focus:outline-none focus:ring-2 focus:border-transparent transition-all ${canAutoTotalProjectCost ? 'bg-gray-50 cursor-not-allowed text-gray-900' : 'bg-white text-gray-900 placeholder-gray-400'} ${fieldErrors.amount ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
                   placeholder="0.00"
                   value={formData.amount}
-                  onChange={(e) => { if (allowMultipleSuppliers) return; setFormData({ ...formData, amount: formatCurrency(e.target.value) }); clearFieldError('amount'); }}
+                  onChange={(e) => { if (canAutoTotalProjectCost) return; setFormData({ ...formData, amount: formatCurrency(e.target.value) }); clearFieldError('amount'); }}
                   required
                 />
               </div>
-              {allowMultipleSuppliers && (
+              {canAutoTotalProjectCost && (
                 <p className="mt-1 text-xs text-gray-500">Auto-calculated from the selected supplier quotations.</p>
+              )}
+              {allowMultipleSuppliers && mixedSupplierCurrencies && (
+                <p className="mt-1 text-xs text-warning-700">
+                  The selected quotations are priced in different currencies ({selectedSupplierCurrencies.join(', ')}),
+                  so they can&apos;t be totalled for you. Convert them and enter the total in {capexCurrency} yourself.
+                </p>
+              )}
+              {!allowMultipleSuppliers && singleSelectedAmount && (
+                <p className="mt-1 text-xs text-gray-500">
+                  Auto-filled from the selected supplier&apos;s quotation — override it if you&apos;re only ordering part of it.
+                </p>
               )}
               {fieldErrors.amount && <p className="mt-1 text-sm text-red-500">{fieldErrors.amount}</p>}
             </div>
@@ -2676,13 +2935,18 @@ export default function NewCapexRequestPage() {
               </label>
               <select
                 className="w-full px-4 py-2 min-h-[44px] rounded-xl border border-gray-300 bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
-                value={formData.currency || 'USD'}
+                value={formData.currency || DEFAULT_QUOTATION_CURRENCY}
                 onChange={(e) => setFormData({ ...formData, currency: e.target.value })}
               >
-                <option value="USD">USD</option>
-                <option value="ZIG">ZIG</option>
-                <option value="ZAR">ZAR</option>
+                {CAPEX_CURRENCIES.map(c => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
               </select>
+              <p className="mt-1 text-xs text-gray-500">
+                {uniformSelectedCurrency
+                  ? 'Follows the selected supplier’s quotation currency. Change it here only to override.'
+                  : 'The currency of this CAPEX (budget and project cost). Each quotation has its own currency, set on the quotation itself.'}
+              </p>
             </div>
             {/* Budgeted CAPEX: capture the approved budget line, what's already
                 been spent against it, and the balance remaining once this
@@ -2696,10 +2960,10 @@ export default function NewCapexRequestPage() {
                       Budget Amount <span className="text-red-500">*</span>
                     </label>
                     <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{currencySymbol(formData.currency)}</span>
                       <input
                         type="text"
-                        className={`w-full pl-8 pr-4 py-2 min-h-[44px] rounded-xl border bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:border-transparent transition-all ${fieldErrors.budgetAmount ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
+                        className={`w-full ${currencyPadFor(formData.currency, 'md')} pr-4 py-2 min-h-[44px] rounded-xl border bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:border-transparent transition-all ${fieldErrors.budgetAmount ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
                         placeholder="0.00"
                         value={formData.budgetAmount}
                         onChange={(e) => { setFormData({ ...formData, budgetAmount: formatCurrency(e.target.value) }); clearFieldError('budgetAmount'); }}
@@ -2712,10 +2976,10 @@ export default function NewCapexRequestPage() {
                       Amount Spent <span className="text-red-500">*</span>
                     </label>
                     <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{currencySymbol(formData.currency)}</span>
                       <input
                         type="text"
-                        className={`w-full pl-8 pr-4 py-2 min-h-[44px] rounded-xl border bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:border-transparent transition-all ${fieldErrors.amountSpent ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
+                        className={`w-full ${currencyPadFor(formData.currency, 'md')} pr-4 py-2 min-h-[44px] rounded-xl border bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:border-transparent transition-all ${fieldErrors.amountSpent ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-primary-500'}`}
                         placeholder="0.00"
                         value={formData.amountSpent}
                         onChange={(e) => { setFormData({ ...formData, amountSpent: formatCurrency(e.target.value) }); clearFieldError('amountSpent'); }}
@@ -2728,11 +2992,11 @@ export default function NewCapexRequestPage() {
                       Balance After Project
                     </label>
                     <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}</span>
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">{currencySymbol(formData.currency)}</span>
                       <input
                         type="text"
                         readOnly
-                        className={`w-full pl-8 pr-4 py-2 min-h-[44px] rounded-xl border bg-gray-50 cursor-not-allowed focus:outline-none transition-all ${budgetBalanceAfterProject < 0 ? 'border-red-300 text-red-600' : 'border-gray-300 text-gray-900'}`}
+                        className={`w-full ${currencyPadFor(formData.currency, 'md')} pr-4 py-2 min-h-[44px] rounded-xl border bg-gray-50 cursor-not-allowed focus:outline-none transition-all ${budgetBalanceAfterProject < 0 ? 'border-red-300 text-red-600' : 'border-gray-300 text-gray-900'}`}
                         value={budgetBalanceDisplay}
                         tabIndex={-1}
                       />
@@ -3051,11 +3315,12 @@ export default function NewCapexRequestPage() {
                           <button
                             type="button"
                             onClick={() => handleRemoveApprover(role.key)}
-                            className="p-1.5 rounded-lg hover:bg-danger-50 text-gray-400 hover:text-danger-500 transition-colors"
+                            className="flex-shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-full border border-danger-100 bg-danger-50 text-danger-600 shadow-sm hover:bg-danger-500 hover:border-danger-500 hover:text-white focus:outline-none focus:ring-2 focus:ring-danger-500 focus:ring-offset-1 transition-all"
                             title="Remove approver"
+                            aria-label="Remove approver"
                           >
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
                             </svg>
                           </button>
                           )}
@@ -3241,7 +3506,7 @@ export default function NewCapexRequestPage() {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-500">Amount:</span>
-                    <span className="font-medium text-gray-900">{formData.currency === 'ZIG' ? 'ZiG' : formData.currency === 'ZAR' ? 'R' : '$'}{formData.amount}</span>
+                    <span className="font-medium text-gray-900">{currencySymbol(formData.currency)}{formData.amount}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-500">Approvers:</span>

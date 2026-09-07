@@ -858,7 +858,9 @@ function renderCapex(
       String(i + 1),
       q.supplierName || q.supplier || '',
       q.description || '',
-      q.amount ? `${cur} ${q.amount}` : '',
+      // Each quotation carries its own currency (legacy rows fall back to the
+      // CAPEX currency).
+      q.amount ? `${q.currency || cur} ${q.amount}` : '',
     ]);
     yPos = oTable(doc, ['#', 'Supplier', 'Description', 'Amount'], rows, [0.07, 0.28, 0.43, 0.22], yPos, pw);
   }
