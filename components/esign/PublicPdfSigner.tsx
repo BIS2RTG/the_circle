@@ -2,7 +2,12 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import { PDFDocument } from "pdf-lib";
 
-pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.js";
+// react-pdf bundles its own pinned pdfjs-dist, which trails our top-level one.
+// pdf.js refuses to run against a mismatched worker, so this must be react-pdf's
+// OWN worker — NOT /pdf.worker.min.mjs, which the signature editor uses for the
+// newer top-level build. scripts/sync-pdfjs.js keeps both in step with
+// node_modules; see its header for why they are served from public/ at all.
+pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.react-pdf.min.mjs";
 
 interface PublicPdfSignerProps {
   pdfUrl: string;

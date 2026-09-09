@@ -9,7 +9,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint pages lib components hooks contexts types --ext .ts,.tsx --max-warnings 200"
+    "lint": "eslint pages lib components hooks contexts types --ext .ts,.tsx --max-warnings 200",
+    "sync:pdfjs": "node scripts/sync-pdfjs.js",
+    "postinstall": "node scripts/sync-pdfjs.js"
   },
   "dependencies": {
     "@craftjs/core": "^0.2.12",
@@ -33,7 +35,7 @@
     "next": "^15.3.3",
     "next-auth": "^4.24.7",
     "pdf-lib": "^1.17.1",
-    "pdfjs-dist": "^5.6.205",
+    "pdfjs-dist": "^6.3.289",
     "pdfkit": "^0.17.2",
     "qrcode.react": "^4.2.0",
     "react": "^18.3.1",
