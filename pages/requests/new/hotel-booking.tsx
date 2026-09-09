@@ -92,14 +92,15 @@ const TRAVEL_LOCATIONS = [
 // };
 
 // These are from the distance table shared by THE DISTANCE TABLE
+
 const DISTANCE_MATRIX: Record<string, Record<string, number>> = {
     'RTH':  { 'RTH': 0,   'NAH': 0,   'KHCC': 141,   'BRH': 439,   'AZAM': 876,   'VFRH': 876,   'MRC': 250 },
     'NAH':  { 'RTH': 0, 'NAH': 0, 'KHCC': 141,     'BRH': 439,   'AZAM': 876,   'VFRH': 876,   'MRC': 250 },
     'KHCC': { 'RTH': 141, 'NAH': 141, 'KHCC': 0,     'BRH': 298,   'AZAM': 735,   'VFRH': 735,   'MRC': 400 },
-    'BRH':  { 'RTH': 439, 'NAH': 439, 'KHCC': 298,   'BRH': 0,     'AZAM': 437,   'VFRH': 437,   'MRC': 102 },
+    'BRH':  { 'RTH': 439, 'NAH': 439, 'KHCC': 298,   'BRH': 0,     'AZAM': 437,   'VFRH': 437,   'MRC': 686 },
     'AZAM': { 'RTH': 876, 'NAH': 876, 'KHCC': 735,   'BRH': 437,   'AZAM': 0,     'VFRH': 0,     'MRC': 1123 },
     'VFRH': { 'RTH': 876, 'NAH': 876, 'KHCC': 735,   'BRH': 437,   'AZAM': 0,     'VFRH': 0,     'MRC': 1123 },
-    'MRC':  { 'RTH': 250, 'NAH': 250, 'KHCC': 400,   'BRH': 102,   'AZAM': 1123,   'VFRH': 1123,   'MRC': 0 },
+    'MRC':  { 'RTH': 250, 'NAH': 250, 'KHCC': 400,   'BRH': 686,   'AZAM': 1123,   'VFRH': 1123,   'MRC': 0 },
 };
 
 // Get distance between two locations
