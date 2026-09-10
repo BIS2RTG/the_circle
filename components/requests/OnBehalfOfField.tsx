@@ -30,12 +30,16 @@ type Mode = 'self' | 'employee' | 'external';
 /**
  * "Filing on behalf of" selector.
  *
- * Two kinds of filer see this field:
+ * Two rights feed it, and they ADD UP rather than replace one another:
  *
- *   - Assistants pick from the specific people a systems admin assigned them
- *     to support — a plain dropdown, unchanged.
- *   - HR admins (`requests.file_on_behalf_any`) instead search the whole
- *     directory, and can name a guest who has no account here at all.
+ *   - An assistant picks from the specific people a systems admin assigned
+ *     them to support — a plain dropdown.
+ *   - An HR admin (`requests.file_on_behalf_any`) additionally searches the
+ *     whole directory, and can name a guest with no account here at all.
+ *
+ * Someone holding both sees their assigned principals as quick picks inside
+ * the employee search, so gaining the HR right never costs them the shortcut
+ * to their own boss.
  *
  * It renders nothing for everyone else. Whatever is chosen is re-verified
  * server-side on submit (lib/onBehalf.ts) — this field is convenience, not
@@ -161,7 +165,9 @@ export function OnBehalfOfField({ value, onChange, disabled }: OnBehalfOfFieldPr
         <h3 className="text-sm font-semibold text-text-primary">Filing on behalf of</h3>
         <p className="text-xs text-text-secondary mt-0.5">
           {canFileForAnyone
-            ? 'You may file this request for any employee, or for a guest outside the organization. Leave as “Myself” to file it for yourself.'
+            ? (principals.length > 0
+                ? 'You may file this request for someone you assist, for any other employee, or for a guest outside the organization. Leave as “Myself” to file it for yourself.'
+                : 'You may file this request for any employee, or for a guest outside the organization. Leave as “Myself” to file it for yourself.')
             : 'You may file this request on behalf of someone you assist. Leave as “Myself” to file it for yourself.'}
         </p>
       </div>
@@ -200,6 +206,28 @@ export function OnBehalfOfField({ value, onChange, disabled }: OnBehalfOfFieldPr
                 </div>
               ) : (
                 <>
+                  {/* Being an HR admin ADDS the directory search; it must not
+                      take away the principals an assistant was assigned. */}
+                  {principals.length > 0 && (
+                    <div className="mb-2">
+                      <p className="text-xs font-medium text-gray-600 mb-1.5">People you assist</p>
+                      <div className="flex flex-wrap gap-2">
+                        {principals.map((p) => (
+                          <button
+                            key={p.userId}
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => selectPrincipal(p.userId)}
+                            className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-primary-50 hover:border-primary-300 hover:text-primary-700 transition-colors disabled:opacity-60"
+                          >
+                            {p.name}
+                            {p.positionTitle ? <span className="text-gray-400"> · {p.positionTitle}</span> : null}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-xs text-gray-400 mt-1.5">Or search for anyone else below.</p>
+                    </div>
+                  )}
                   <input
                     type="text"
                     autoComplete="off"
