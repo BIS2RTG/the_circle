@@ -4,7 +4,7 @@ import { authOptions } from '../auth/[...nextauth]';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { generateReferenceCode, getRequestTypeLabel } from '@/lib/requestCode';
 import { buildAndNotifySteps } from '@/lib/requestSteps';
-import { assertValidOnBehalf } from '@/lib/onBehalf';
+import { assertValidOnBehalf, isOnBehalf } from '@/lib/onBehalf';
 import { createCapexTrackerRow } from '@/lib/capexTrackerHooks';
 import { getUserRBACProfile, hasPermission, PERMISSIONS } from '@/lib/rbac';
 import { getUserAccessScope, scopeForResponse, AccessScope } from '@/lib/accessScope';
@@ -363,8 +363,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
 
       // Distinct, filterable event when this was filed on someone's behalf.
-      const beneficiary = finalMetadata.onBehalfOf as { userId?: string; name?: string } | null;
-      if (beneficiary?.userId) {
+      const beneficiary = finalMetadata.onBehalfOf as { userId?: string; name?: string; external?: boolean; company?: string } | null;
+      if (isOnBehalf(beneficiary)) {
         await audit(req, session.user, {
           category: 'transaction',
           action: 'request.filed_on_behalf',
@@ -373,8 +373,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           targetLabel: title,
           requestId: data.id,
           details: {
-            principalId: beneficiary.userId,
-            principalName: beneficiary.name || null,
+            principalId: beneficiary?.userId || null,
+            principalName: beneficiary?.name || null,
+            // External beneficiaries have no account, so the audit trail is the
+            // only record of who the request was actually for.
+            principalExternal: beneficiary?.external === true,
+            principalCompany: beneficiary?.company || null,
             requestType: requestType || null,
           },
         });

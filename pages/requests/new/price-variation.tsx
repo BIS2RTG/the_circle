@@ -6,6 +6,7 @@ import { AppLayout } from '../../../components/layout';
 import { Card, Button, Input } from '../../../components/ui';
 import { useToast } from '../../../components/ui/ToastProvider';
 import { OnBehalfOfField, type OnBehalfOf } from '../../../components/requests/OnBehalfOfField';
+import { approverResolutionEmail } from '../../../lib/onBehalfResolution';
 import ApproverSectionLoader from '../../../components/requests/ApproverSectionLoader';
 
 /**
@@ -68,6 +69,10 @@ export default function PriceVariationPage() {
   const [selectedApprovers, setSelectedApprovers] = useState<Record<string, string>>({});
   const [autoResolvedRoles, setAutoResolvedRoles] = useState<Record<string, boolean>>({});
   const [onBehalfOf, setOnBehalfOf] = useState<OnBehalfOf | null>(null);
+  // Approvers are resolved from the person the request is FOR, not the filer.
+  // null for an external beneficiary — they have no reporting line, so the
+  // filer chooses the approvers by hand.
+  const resolutionEmail = approverResolutionEmail(session?.user?.email, onBehalfOf);
   const [approverSearch, setApproverSearch] = useState<Record<string, string>>({});
   const [showApproverDropdown, setShowApproverDropdown] = useState<string | null>(null);
   const [loadingApproverResolution, setLoadingApproverResolution] = useState(true);
@@ -135,11 +140,13 @@ export default function PriceVariationPage() {
   // maps onto the CAPEX resolver roles, so we reuse formType=capex.
   useEffect(() => {
     const resolveApprovers = async () => {
-      if (!session?.user?.email) return;
+      // Approvers belong to the person the request is FOR (lib/onBehalfResolution).
+      // External beneficiaries have no reporting line — the filer picks manually.
+      if (!resolutionEmail) return;
       setLoadingApproverResolution(true);
       try {
         const resp = await fetch(
-          `/api/hrims/resolve-approvers?email=${encodeURIComponent(session.user.email)}&formType=capex`
+          `/api/hrims/resolve-approvers?email=${encodeURIComponent(resolutionEmail)}&formType=capex`
         );
         const data = await resp.json();
         if (resp.ok && data.approvers) {
@@ -164,7 +171,7 @@ export default function PriceVariationPage() {
       }
     };
     if (status === 'authenticated') resolveApprovers();
-  }, [status, session?.user?.email]);
+  }, [status, resolutionEmail]);
 
   // Directory search for the currently-open approver picker (Azure AD in prod).
   const activeTerm = showApproverDropdown ? approverSearch[showApproverDropdown] || '' : '';

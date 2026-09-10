@@ -14,21 +14,32 @@ export interface AssignedPrincipal {
  * assignments), so a short TTL is plenty and keeps the field instant across
  * forms within a session.
  */
-const TTL_MS = 5 * 60 * 1000;
-let cache: { at: number; principals: AssignedPrincipal[] } | null = null;
-let inflight: Promise<AssignedPrincipal[]> | null = null;
+export interface OnBehalfScope {
+  principals: AssignedPrincipal[];
+  /** HR-admin right: search the whole directory and name external guests. */
+  canFileForAnyone: boolean;
+}
 
-function loadPrincipals(): Promise<AssignedPrincipal[]> {
-  if (cache && Date.now() - cache.at < TTL_MS) return Promise.resolve(cache.principals);
+const EMPTY_SCOPE: OnBehalfScope = { principals: [], canFileForAnyone: false };
+
+const TTL_MS = 5 * 60 * 1000;
+let cache: { at: number; scope: OnBehalfScope } | null = null;
+let inflight: Promise<OnBehalfScope> | null = null;
+
+function loadPrincipals(): Promise<OnBehalfScope> {
+  if (cache && Date.now() - cache.at < TTL_MS) return Promise.resolve(cache.scope);
   if (inflight) return inflight;
   inflight = fetch('/api/user/assistant-principals')
-    .then((res) => (res.ok ? res.json() : { principals: [] }))
+    .then((res) => (res.ok ? res.json() : EMPTY_SCOPE))
     .then((data) => {
-      const principals: AssignedPrincipal[] = data.principals || [];
-      cache = { at: Date.now(), principals };
-      return principals;
+      const scope: OnBehalfScope = {
+        principals: data.principals || [],
+        canFileForAnyone: data.canFileForAnyone === true,
+      };
+      cache = { at: Date.now(), scope };
+      return scope;
     })
-    .catch(() => [] as AssignedPrincipal[])
+    .catch(() => EMPTY_SCOPE)
     .finally(() => {
       inflight = null;
     });
@@ -41,23 +52,24 @@ export function invalidateAssistantPrincipals() {
 }
 
 /**
- * Fetches the people the current user may file requests on behalf of — the
- * principals a systems admin has assigned them to as an assistant. Returns an
- * empty list when the user has no assignments, so the on-behalf field hides
- * itself. Backed by a session cache so it's instant after the first form.
+ * Who the current user may file requests on behalf of: their assigned
+ * principals, plus whether they hold the HR-admin right to file for anyone
+ * (including external guests). An empty list and no right means the on-behalf
+ * field hides itself. Backed by a session cache so it's instant after the
+ * first form.
  */
 export function useAssistantPrincipals() {
   const { status } = useSession();
   // Seed synchronously from cache so a warm field renders on first paint.
-  const [principals, setPrincipals] = useState<AssignedPrincipal[]>(() => cache?.principals ?? []);
+  const [scope, setScope] = useState<OnBehalfScope>(() => cache?.scope ?? EMPTY_SCOPE);
   const [loading, setLoading] = useState(() => !cache);
 
   useEffect(() => {
     if (status !== 'authenticated') return;
     let cancelled = false;
-    loadPrincipals().then((list) => {
+    loadPrincipals().then((next) => {
       if (!cancelled) {
-        setPrincipals(list);
+        setScope(next);
         setLoading(false);
       }
     });
@@ -66,5 +78,5 @@ export function useAssistantPrincipals() {
     };
   }, [status]);
 
-  return { principals, loading };
+  return { principals: scope.principals, canFileForAnyone: scope.canFileForAnyone, loading };
 }
