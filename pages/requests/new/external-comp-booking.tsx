@@ -12,6 +12,7 @@ import { useRequestorIdentity } from '../../../hooks/useRequestorIdentity';
 import { calculateTollgatesForItinerary, getTollgateRouteInfo, TollgateRouteType } from '../../../lib/formConfig';
 import { SupportingDocuments, uploadSupportingDocuments, makeSupportingDoc, type SupportingDoc } from '../../../components/requests/SupportingDocuments';
 import { OnBehalfOfField, type OnBehalfOf } from '../../../components/requests/OnBehalfOfField';
+import { approverResolutionEmail } from '../../../lib/onBehalfResolution';
 import { isApproverRowLocked } from '../../../lib/approverLocking';
 import { COMP_BOOKING_COO, resolveCompBookingCoo, BOARD_COMP_APPROVERS, resolveBoardApprover } from '../../../lib/fixedApprovers';
 import ApproverSectionLoader from '../../../components/requests/ApproverSectionLoader';
@@ -301,6 +302,10 @@ export default function ExternalCompBookingPage() {
     // Supporting documents (for the travel section) + file-on-behalf-of.
     const [supportingDocs, setSupportingDocs] = useState<SupportingDoc[]>([]);
     const [onBehalfOf, setOnBehalfOf] = useState<OnBehalfOf | null>(null);
+    // Approvers are resolved from the person the request is FOR, not the filer.
+    // null for an external beneficiary — they have no reporting line, so the
+    // filer chooses the approvers by hand.
+    const resolutionEmail = approverResolutionEmail(session?.user?.email, onBehalfOf);
     // Requestor identity shown on the form + document — the principal when filing
     // on behalf of someone (autofilled on selection), else the signed-in user.
     const requestor = useRequestorIdentity(onBehalfOf);
@@ -650,10 +655,12 @@ export default function ExternalCompBookingPage() {
         const resolveApprovers = async () => {
             // Board-member bookings resolve their own chain (see the board effect
             // above), so skip the normal HRIMS organogram resolution.
-            if (!session?.user?.email || isEditMode || isBoardMemberBooking) { setLoadingApproverResolution(false); return; }
+            // Approvers belong to the person the request is FOR (lib/onBehalfResolution).
+            // External beneficiaries have no reporting line — the filer picks manually.
+            if (!resolutionEmail || isEditMode || isBoardMemberBooking) { setLoadingApproverResolution(false); return; }
             setLoadingApproverResolution(true);
             try {
-                const response = await fetch(`/api/hrims/resolve-approvers?email=${encodeURIComponent(session.user.email)}&formType=hotel-booking`);
+                const response = await fetch(`/api/hrims/resolve-approvers?email=${encodeURIComponent(resolutionEmail)}&formType=hotel-booking`);
                 const data = await response.json();
                 if (response.ok && data.approvers) {
                     const resolved: Record<string, boolean> = {};
@@ -678,7 +685,7 @@ export default function ExternalCompBookingPage() {
             }
         };
         if (status === 'authenticated') resolveApprovers();
-    }, [status, session?.user?.email, isEditMode, isBoardMemberBooking]);
+    }, [status, resolutionEmail, isEditMode, isBoardMemberBooking]);
 
     // Filter users by search for a specific role
     const getFilteredUsersForRole = (roleKey: string) => {

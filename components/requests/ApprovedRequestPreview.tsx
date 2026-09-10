@@ -14,6 +14,7 @@ import {
 } from '../../lib/previews/capexPreview';
 import { CAPEX_APPROVAL_ROLES } from '../../lib/capexApproval';
 import { ppName } from '@/lib/delegatedSignatory';
+import { resolveVoucherAddOnLabels } from '../../lib/voucherAddOns';
 
 /**
  * ApprovedRequestPreview
@@ -589,6 +590,8 @@ function buildCompSections(request: any, metadata: any): PreviewSection[] {
         || creator.display_name
         || '—';
 
+    const voucherAddOnLabels = resolveVoucherAddOnLabels(metadata.voucherAddOns, metadata.voucherAddOnOther);
+
     // Hotel bookings store stay dates + nights; vouchers store a validity
     // period + people + room type. Render the columns the data actually
     // carries so populated fields don't show as '—'.
@@ -643,6 +646,11 @@ function buildCompSections(request: any, metadata: any): PreviewSection[] {
                 },
                 ...(metadata.percentageDiscount
                     ? [{ label: 'Percentage Discount', value: `${metadata.percentageDiscount}%` }]
+                    : []),
+                // Optional activities printed on the voucher as "plus ..." — shown
+                // here so an approver signs off the same wording the guest gets.
+                ...(voucherAddOnLabels.length > 0
+                    ? [{ label: 'Additional Activities', value: voucherAddOnLabels.join(', ') }]
                     : []),
             ],
         },

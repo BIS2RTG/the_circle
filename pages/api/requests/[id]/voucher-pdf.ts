@@ -5,6 +5,7 @@ import { supabaseAdmin } from '../../../../lib/supabaseAdmin';
 import { signatureExists, userSignaturePath, userSignatureProxyUrl } from '../../../../lib/signatureStorage';
 import { getUserRBACProfile, hasPermission, PERMISSIONS } from '@/lib/rbac';
 import { ppName, ppJobTitle } from '@/lib/delegatedSignatory';
+import { formatVoucherAddOnPhrase } from '@/lib/voucherAddOns';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') {
@@ -435,6 +436,11 @@ Kind regards`;
     ? `<div class="signatures-container" style="justify-content:center;">${signatureBlock(soleSignature, soleName, soleTitle)}</div>`
     : `<div class="signatures-container">${signatureBlock(commercialDirectorSignature, commercialDirectorName, commercialDirectorTitle)}${signatureBlock(ceoSignature, ceoName, ceoTitle)}</div>`;
   
+  // Optional activities/add-ons, appended to the entitlement sentence as
+  // "... at <hotel> plus <add-ons>." Empty when none were chosen.
+  const addOnPhrase = formatVoucherAddOnPhrase(metadata.voucherAddOns, metadata.voucherAddOnOther);
+  const addOnSuffix = addOnPhrase ? ` plus <strong>${addOnPhrase}</strong>` : '';
+
   // Generate grammatically correct entitlement text with all necessary details
   const generateEntitlementText = () => {
     const unit = firstUnit;
@@ -471,7 +477,7 @@ Kind regards`;
         'packed_lunch': 'Packed Lunch',
       };
       const mealLabel = mealTypeLabels[accType] || 'meals';
-      return `This voucher entitles the bearer to <strong>${mealCountText}</strong> (<strong>${mealLabel}</strong>) for <strong>${mealGuestText}</strong> at <strong>${hotelDisplay}</strong>.`;
+      return `This voucher entitles the bearer to <strong>${mealCountText}</strong> (<strong>${mealLabel}</strong>) for <strong>${mealGuestText}</strong> at <strong>${hotelDisplay}</strong>${addOnSuffix}.`;
     }
     
     // Accommodation types - include nights, room type, and guests
@@ -511,7 +517,7 @@ Kind regards`;
         entitlementParts.push(`for <strong>${guestText}</strong>`);
     }
     
-    return `This voucher entitles the bearer to ${entitlementParts.join(' ')} at <strong>${hotelDisplay}</strong>.`;
+    return `This voucher entitles the bearer to ${entitlementParts.join(' ')} at <strong>${hotelDisplay}</strong>${addOnSuffix}.`;
   };
 
   return `

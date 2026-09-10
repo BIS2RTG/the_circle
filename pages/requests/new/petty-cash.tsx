@@ -10,6 +10,7 @@ import { useUserHrimsProfile } from '../../../hooks/useUserHrimsProfile';
 import { useRequestorIdentity } from '../../../hooks/useRequestorIdentity';
 import SignatureSelector, { type SignatureSelection } from '../../../components/approvals/SignatureSelector';
 import { OnBehalfOfField, type OnBehalfOf } from '../../../components/requests/OnBehalfOfField';
+import { approverResolutionEmail } from '../../../lib/onBehalfResolution';
 import { isApproverRowLocked } from '../../../lib/approverLocking';
 import ApproverSectionLoader from '../../../components/requests/ApproverSectionLoader';
 
@@ -168,6 +169,10 @@ export default function PettyCashRequestPage() {
     // Watchers (reuse same pattern as voucher form).
     const [selectedWatchers, setSelectedWatchers] = useState<Array<{ id: string; display_name: string; email: string }>>([]);
     const [onBehalfOf, setOnBehalfOf] = useState<OnBehalfOf | null>(null);
+    // Approvers are resolved from the person the request is FOR, not the filer.
+    // null for an external beneficiary — they have no reporting line, so the
+    // filer chooses the approvers by hand.
+    const resolutionEmail = approverResolutionEmail(session?.user?.email, onBehalfOf);
     // Requestor identity shown on the form + document — the principal when filing
     // on behalf of someone (autofilled on selection), else the signed-in user.
     const requestor = useRequestorIdentity(onBehalfOf);
@@ -457,10 +462,12 @@ export default function PettyCashRequestPage() {
     // Auto-resolve approvers from HRIMS organogram for new requests.
     useEffect(() => {
         const resolveApprovers = async () => {
-            if (!session?.user?.email || isEditMode) { setLoadingApproverResolution(false); return; }
+            // Approvers belong to the person the request is FOR (lib/onBehalfResolution).
+            // External beneficiaries have no reporting line — the filer picks manually.
+            if (!resolutionEmail || isEditMode) { setLoadingApproverResolution(false); return; }
             setLoadingApproverResolution(true);
             try {
-                const response = await fetch(`/api/hrims/resolve-approvers?email=${encodeURIComponent(session.user.email)}&formType=petty-cash`);
+                const response = await fetch(`/api/hrims/resolve-approvers?email=${encodeURIComponent(resolutionEmail)}&formType=petty-cash`);
                 const data = await response.json();
                 if (response.ok && data.approvers) {
                     const resolved: Record<string, boolean> = {};
@@ -483,7 +490,7 @@ export default function PettyCashRequestPage() {
             }
         };
         if (status === 'authenticated') resolveApprovers();
-    }, [status, session?.user?.email, isEditMode]);
+    }, [status, resolutionEmail, isEditMode]);
 
     const getFilteredUsersForRole = (roleKey: string) => {
         const term = approverSearch[roleKey] || '';
