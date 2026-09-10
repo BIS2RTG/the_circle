@@ -9,9 +9,11 @@ import { useUnsavedChangesPrompt, useFormAutosave } from '../../../hooks';
 import { useUserHrimsProfile } from '../../../hooks/useUserHrimsProfile';
 import { useRequestorIdentity } from '../../../hooks/useRequestorIdentity';
 import { OnBehalfOfField, type OnBehalfOf } from '../../../components/requests/OnBehalfOfField';
+import { approverResolutionEmail } from '../../../lib/onBehalfResolution';
 import { isApproverRowLocked } from '../../../lib/approverLocking';
 import ApproverSectionLoader from '../../../components/requests/ApproverSectionLoader';
 import { buildPreviewForRequest } from '../../../components/requests/ApprovedRequestPreview';
+import { VOUCHER_ADD_ONS, VOUCHER_ADD_ON_OTHER } from '../../../lib/voucherAddOns';
 
 interface SelectedBusinessUnit {
     id: string;
@@ -104,7 +106,28 @@ export default function VoucherRequestPage() {
         percentageDiscount: '',
         reason: '',
         processTravelDocument: false,
+        // Optional activities/add-ons printed on the voucher as "plus ...".
+        voucherAddOns: [] as string[],
+        voucherAddOnOther: '',
     });
+
+    // Add-ons are optional; ticking "Other" reveals a free-text field whose
+    // wording is what actually prints on the voucher.
+    const toggleAddOn = (value: string) => {
+        setFormData(prev => {
+            const chosen = prev.voucherAddOns.includes(value)
+                ? prev.voucherAddOns.filter(v => v !== value)
+                : [...prev.voucherAddOns, value];
+            return {
+                ...prev,
+                voucherAddOns: chosen,
+                // Drop the free text when "Other" is unticked so a stale note
+                // can't reappear on the voucher later.
+                voucherAddOnOther: chosen.includes(VOUCHER_ADD_ON_OTHER) ? prev.voucherAddOnOther : '',
+            };
+        });
+        setIsDirty(true);
+    };
 
     // Unsaved-changes tracking — flipped true on first real user interaction via form onChange.
     const [isDirty, setIsDirty] = useState(false);
@@ -135,6 +158,10 @@ export default function VoucherRequestPage() {
     const [selectedWatchers, setSelectedWatchers] = useState<Array<{ id: string; display_name: string; email: string }>>([]);
     const [watcherSearch, setWatcherSearch] = useState('');
     const [onBehalfOf, setOnBehalfOf] = useState<OnBehalfOf | null>(null);
+    // Approvers are resolved from the person the request is FOR, not the filer.
+    // null for an external beneficiary — they have no reporting line, so the
+    // filer chooses the approvers by hand.
+    const resolutionEmail = approverResolutionEmail(session?.user?.email, onBehalfOf);
     // Requestor identity shown on the form + document — the principal when filing
     // on behalf of someone (autofilled on selection), else the signed-in user.
     const requestor = useRequestorIdentity(onBehalfOf);
@@ -272,6 +299,8 @@ export default function VoucherRequestPage() {
                     percentageDiscount: metadata.percentageDiscount || '',
                     reason: metadata.reason || request.description || '',
                     processTravelDocument: metadata.processTravelDocument || false,
+                    voucherAddOns: Array.isArray(metadata.voucherAddOns) ? metadata.voucherAddOns : [],
+                    voucherAddOnOther: metadata.voucherAddOnOther || '',
                 });
 
                 // Pre-fill form with existing data
@@ -286,6 +315,8 @@ export default function VoucherRequestPage() {
                     percentageDiscount: metadata.percentageDiscount || '',
                     reason: metadata.reason || request.description || '',
                     processTravelDocument: metadata.processTravelDocument || false,
+                    voucherAddOns: Array.isArray(metadata.voucherAddOns) ? metadata.voucherAddOns : [],
+                    voucherAddOnOther: metadata.voucherAddOnOther || '',
                 });
 
                 // Set business units. Normalise older records that predate the
@@ -393,10 +424,12 @@ export default function VoucherRequestPage() {
     // Auto-resolve approvers from HRIMS organogram (only on new requests, not edits)
     useEffect(() => {
         const resolveApprovers = async () => {
-            if (!session?.user?.email || isEditMode) { setLoadingApproverResolution(false); return; }
+            // Approvers belong to the person the request is FOR (lib/onBehalfResolution).
+            // External beneficiaries have no reporting line — the filer picks manually.
+            if (!resolutionEmail || isEditMode) { setLoadingApproverResolution(false); return; }
             setLoadingApproverResolution(true);
             try {
-                const response = await fetch(`/api/hrims/resolve-approvers?email=${encodeURIComponent(session.user.email)}&formType=voucher`);
+                const response = await fetch(`/api/hrims/resolve-approvers?email=${encodeURIComponent(resolutionEmail)}&formType=voucher`);
                 const data = await response.json();
                 if (response.ok && data.approvers) {
                     const resolved: Record<string, boolean> = {};
@@ -421,7 +454,7 @@ export default function VoucherRequestPage() {
             }
         };
         if (status === 'authenticated') resolveApprovers();
-    }, [status, session?.user?.email, isEditMode]);
+    }, [status, resolutionEmail, isEditMode]);
 
     // Filter users by search for a specific role
     const getFilteredUsersForRole = (roleKey: string) => {
@@ -629,6 +662,8 @@ export default function VoucherRequestPage() {
                         percentageDiscount: formData.percentageDiscount,
                         reason: formData.reason,
                         processTravelDocument: formData.processTravelDocument,
+                        voucherAddOns: formData.voucherAddOns,
+                        voucherAddOnOther: formData.voucherAddOnOther,
                         ...(formData.processTravelDocument && { travelDocument: travelData }),
                         approvers: approversArray,
                         approverRoles: selectedApprovers,
@@ -727,6 +762,8 @@ export default function VoucherRequestPage() {
                         percentageDiscount: formData.percentageDiscount,
                         reason: formData.reason,
                         processTravelDocument: formData.processTravelDocument,
+                        voucherAddOns: formData.voucherAddOns,
+                        voucherAddOnOther: formData.voucherAddOnOther,
                         ...(formData.processTravelDocument && { travelDocument: travelData }),
                         approvers: approversArray,
                         approverRoles: selectedApprovers,
@@ -837,6 +874,8 @@ export default function VoucherRequestPage() {
             percentageDiscount: formData.percentageDiscount,
             reason: formData.reason,
             processTravelDocument: formData.processTravelDocument,
+            voucherAddOns: formData.voucherAddOns,
+            voucherAddOnOther: formData.voucherAddOnOther,
             ...(formData.processTravelDocument && { travelDocument: travelData }),
             approverRoles: selectedApprovers,
             watchers: selectedWatchers,
@@ -910,6 +949,12 @@ export default function VoucherRequestPage() {
 
         if (!formData.allocationType) {
             errors.push('Please select a Charge To / Allocation option');
+        }
+
+        // Add-ons are optional, but "Other" has to say what it is — it is
+        // printed on the voucher verbatim.
+        if (formData.voucherAddOns.includes(VOUCHER_ADD_ON_OTHER) && !formData.voucherAddOnOther.trim()) {
+            errors.push('Please specify the "Other" add-on, or untick it');
         }
 
         // Required: Business unit fields
@@ -1060,6 +1105,8 @@ export default function VoucherRequestPage() {
                         percentageDiscount: formData.percentageDiscount,
                         reason: formData.reason,
                         processTravelDocument: formData.processTravelDocument,
+                        voucherAddOns: formData.voucherAddOns,
+                        voucherAddOnOther: formData.voucherAddOnOther,
                         ...(formData.processTravelDocument && { travelDocument: travelData }),
                         approvers: approversArray, // Sequential array of approver IDs
                         approverRoles: selectedApprovers, // Keep original object for reference
@@ -1155,6 +1202,8 @@ export default function VoucherRequestPage() {
                         percentageDiscount: formData.percentageDiscount,
                         reason: formData.reason,
                         processTravelDocument: formData.processTravelDocument,
+                        voucherAddOns: formData.voucherAddOns,
+                        voucherAddOnOther: formData.voucherAddOnOther,
                         ...(formData.processTravelDocument && { travelDocument: travelData }),
                         approvers: approversArray,
                         approverRoles: selectedApprovers,
@@ -1737,6 +1786,50 @@ export default function VoucherRequestPage() {
                         </div>
                     </Card>
 
+                    {/* Additional Activities / Add-ons (optional) */}
+                    <Card className="p-6">
+                        <h3 className="text-sm font-semibold text-gray-700 mb-1 uppercase border-b pb-2">Additional Activities / Add-ons (Optional)</h3>
+                        <p className="text-sm text-gray-600 mb-4">
+                            Tick anything included on top of the accommodation or meals. These print on the voucher
+                            as &ldquo;&hellip; plus Game Drive and Airport Transfer&rdquo;. Leave them all unticked if there are none.
+                        </p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            {[...VOUCHER_ADD_ONS, { value: VOUCHER_ADD_ON_OTHER, label: 'Other' }].map(addOn => {
+                                const checked = formData.voucherAddOns.includes(addOn.value);
+                                return (
+                                    <label
+                                        key={addOn.value}
+                                        className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all ${checked ? 'bg-primary-50 border-primary-200' : 'bg-white border-gray-200 hover:border-gray-300'}`}
+                                    >
+                                        <input
+                                            type="checkbox"
+                                            className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                                            checked={checked}
+                                            onChange={() => toggleAddOn(addOn.value)}
+                                        />
+                                        <span className="text-sm font-medium text-gray-800">{addOn.label}</span>
+                                    </label>
+                                );
+                            })}
+                        </div>
+
+                        {formData.voucherAddOns.includes(VOUCHER_ADD_ON_OTHER) && (
+                            <div className="mt-4">
+                                <label className="block text-sm font-semibold text-gray-700 mb-1 uppercase">
+                                    Specify the other add-on <span className="text-danger-500">*</span>
+                                </label>
+                                <Input
+                                    value={formData.voucherAddOnOther}
+                                    onChange={(e) => setFormData({ ...formData, voucherAddOnOther: e.target.value })}
+                                    placeholder="e.g. Sunset Helicopter Flight"
+                                />
+                                <p className="mt-1 text-xs text-gray-500">
+                                    Printed on the voucher word for word, so write it as it should appear.
+                                </p>
+                            </div>
+                        )}
+                    </Card>
+
                     {/* Allocation */}
                     <Card className="p-6">
                         <label className="block text-sm font-semibold text-gray-700 mb-3 uppercase">Charge to: <span className="text-danger-500">*</span></label>
@@ -1950,11 +2043,12 @@ export default function VoucherRequestPage() {
                                                         <button
                                                             type="button"
                                                             onClick={() => { handleRemoveApprover(role.key); setAutoResolvedRoles(prev => ({ ...prev, [role.key]: false })); }}
-                                                            className="p-1.5 rounded-lg hover:bg-danger-50 text-gray-400 hover:text-danger-500 transition-colors"
+                                                            className="flex-shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-full border border-danger-100 bg-danger-50 text-danger-600 shadow-sm hover:bg-danger-500 hover:border-danger-500 hover:text-white focus:outline-none focus:ring-2 focus:ring-danger-500 focus:ring-offset-1 transition-all"
                                                             title="Remove approver"
+                                                            aria-label="Remove approver"
                                                         >
                                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" />
+                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
                                                             </svg>
                                                         </button>
                                                         )}

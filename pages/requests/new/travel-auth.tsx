@@ -11,6 +11,7 @@ import { useUserHrimsProfile } from '../../../hooks/useUserHrimsProfile';
 import { calculateTollgatesForItinerary, getTollgateRouteInfo, TollgateRouteType } from '../../../lib/formConfig';
 import { SupportingDocuments, uploadSupportingDocuments, makeSupportingDoc, type SupportingDoc } from '../../../components/requests/SupportingDocuments';
 import { OnBehalfOfField, type OnBehalfOf } from '../../../components/requests/OnBehalfOfField';
+import { approverResolutionEmail } from '../../../lib/onBehalfResolution';
 import ApproverSectionLoader from '../../../components/requests/ApproverSectionLoader';
 import { isApproverRowLocked } from '../../../lib/approverLocking';
 
@@ -40,7 +41,7 @@ const TRAVEL_LOCATIONS = [
     { code: 'MRC', name: 'Montclair Resort and Conferencing (MRC)', city: 'Nyanga' },
     { code: 'NAH', name: 'New Ambassador Hotel (NAH)', city: 'Harare' },
     { code: 'RTH', name: 'Rainbow Towers Hotel (RTH)', city: 'Harare' },
-    { code: 'KHCC', name: 'KHCC Conference Centre', city: 'Kadoma' },
+    { code: 'KHCC', name: 'Kadoma Hotel and Conference Centre', city: 'Kadoma' },
     { code: 'BRH', name: 'Bulawayo Rainbow Hotel (BRH)', city: 'Bulawayo' },
     { code: 'VFRH', name: 'Victoria Falls Rainbow Hotel (VFRH)', city: 'Victoria Falls' },
     { code: 'AZAM', name: 'A\'Zambezi River Lodge (AZAM)', city: 'Victoria Falls' },
@@ -60,13 +61,13 @@ const TRAVEL_LOCATIONS = [
 
 // These are from the distance table shared by THE DISTANCE TABLE
 const DISTANCE_MATRIX: Record<string, Record<string, number>> = {
-    'RTH':  { 'RTH': 0,   'NAH': 0,   'KHCC': 134,   'BRH': 439,   'AZAM': 876,   'VFRH': 876,   'MRC': 250 },
-    'NAH':  { 'RTH': 0, 'NAH': 0, 'KHCC': 134,     'BRH': 439,   'AZAM': 876,   'VFRH': 876,   'MRC': 250 },
+    'RTH':  { 'RTH': 0,   'NAH': 0,   'KHCC': 141,   'BRH': 439,   'AZAM': 876,   'VFRH': 876,   'MRC': 250 },
+    'NAH':  { 'RTH': 0, 'NAH': 0, 'KHCC': 141,     'BRH': 439,   'AZAM': 876,   'VFRH': 876,   'MRC': 250 },
     'KHCC': { 'RTH': 141, 'NAH': 141, 'KHCC': 0,     'BRH': 298,   'AZAM': 735,   'VFRH': 735,   'MRC': 400 },
-    'BRH':  { 'RTH': 439, 'NAH': 439, 'KHCC': 298,   'BRH': 0,     'AZAM': 437,   'VFRH': 437,   'MRC': 102 },
+    'BRH':  { 'RTH': 439, 'NAH': 439, 'KHCC': 298,   'BRH': 0,     'AZAM': 437,   'VFRH': 437,   'MRC': 686 },
     'AZAM': { 'RTH': 876, 'NAH': 876, 'KHCC': 735,   'BRH': 437,   'AZAM': 0,     'VFRH': 0,     'MRC': 1123 },
     'VFRH': { 'RTH': 876, 'NAH': 876, 'KHCC': 735,   'BRH': 437,   'AZAM': 0,     'VFRH': 0,     'MRC': 1123 },
-    'MRC':  { 'RTH': 250, 'NAH': 250, 'KHCC': 400,   'BRH': 102,   'AZAM': 1123,   'VFRH': 1123,   'MRC': 0 },
+    'MRC':  { 'RTH': 250, 'NAH': 250, 'KHCC': 400,   'BRH': 686,   'AZAM': 1123,   'VFRH': 1123,   'MRC': 0 },
 };
 
 // Get distance between two locations
@@ -157,6 +158,10 @@ export default function TravelAuthPage() {
     // Supporting documents (file + label + description) and file-on-behalf-of.
     const [supportingDocs, setSupportingDocs] = useState<SupportingDoc[]>([]);
     const [onBehalfOf, setOnBehalfOf] = useState<OnBehalfOf | null>(null);
+    // Approvers are resolved from the person the request is FOR, not the filer.
+    // null for an external beneficiary — they have no reporting line, so the
+    // filer chooses the approvers by hand.
+    const resolutionEmail = approverResolutionEmail(session?.user?.email, onBehalfOf);
 
     // When filing on behalf of a principal, the document must read as if THEY
     // filled it — so the preview needs the principal's department/business unit,
@@ -164,7 +169,8 @@ export default function TravelAuthPage() {
     const [onBehalfProfile, setOnBehalfProfile] = useState<{ department?: string; businessUnit?: string } | null>(null);
     const [onBehalfProfileLoading, setOnBehalfProfileLoading] = useState(false);
     useEffect(() => {
-        const email = onBehalfOf?.email;
+        // External guests aren't in HRIMS, so there is no profile to fetch.
+        const email = onBehalfOf?.external ? undefined : onBehalfOf?.email;
         if (!email) { setOnBehalfProfile(null); setOnBehalfProfileLoading(false); return; }
         let cancelled = false;
         setOnBehalfProfileLoading(true);
@@ -184,13 +190,13 @@ export default function TravelAuthPage() {
             }
         })();
         return () => { cancelled = true; };
-    }, [onBehalfOf?.email]);
+    }, [onBehalfOf?.email, onBehalfOf?.external]);
 
     // Requestor identity shown on the form + document. When filing on behalf of a
     // principal, these resolve to the PRINCIPAL (autofilled on selection) so the
     // form reads as if they filled it themselves; otherwise they resolve to the
     // signed-in user's own HRIMS profile.
-    const isOnBehalf = !!onBehalfOf?.userId;
+    const isOnBehalf = !!onBehalfOf?.userId || !!onBehalfOf?.external;
     const requestorName = isOnBehalf
         ? (onBehalfOf?.name || undefined)
         : (user?.display_name || session?.user?.name || undefined);
@@ -656,7 +662,7 @@ export default function TravelAuthPage() {
                 }
 
                 // Preserve the on-behalf beneficiary across edits.
-                if (metadata.onBehalfOf?.userId) setOnBehalfOf(metadata.onBehalfOf);
+                if (metadata.onBehalfOf?.userId || metadata.onBehalfOf?.external) setOnBehalfOf(metadata.onBehalfOf);
 
                 // Set approvers and store original for change tracking
                 const approverRolesData = metadata.approverRoles || {};
@@ -718,11 +724,13 @@ export default function TravelAuthPage() {
     // Auto-resolve approvers from HRIMS organogram (only on new requests, not edits)
     useEffect(() => {
         const resolveApprovers = async () => {
-            if (!session?.user?.email || isEditMode) { setLoadingApproverResolution(false); return; }
+            // Approvers belong to the person the request is FOR (lib/onBehalfResolution).
+            // External beneficiaries have no reporting line — the filer picks manually.
+            if (!resolutionEmail || isEditMode) { setLoadingApproverResolution(false); return; }
             setLoadingApproverResolution(true);
             try {
-                console.log('[travel-auth] Resolving approvers for email:', session.user.email);
-                const response = await fetch(`/api/hrims/resolve-approvers?email=${encodeURIComponent(session.user.email)}&formType=travel`);
+                console.log('[travel-auth] Resolving approvers for email:', resolutionEmail);
+                const response = await fetch(`/api/hrims/resolve-approvers?email=${encodeURIComponent(resolutionEmail)}&formType=travel`);
                 const data = await response.json();
                 console.log('[travel-auth] Approver resolution response:', JSON.stringify(data, null, 2));
                 if (response.ok && data.approvers) {
@@ -748,7 +756,7 @@ export default function TravelAuthPage() {
             }
         };
         if (status === 'authenticated') resolveApprovers();
-    }, [status, session?.user?.email, isEditMode]);
+    }, [status, resolutionEmail, isEditMode]);
 
     const getFilteredUsersForRole = (roleKey: string) => {
         const searchTerm = approverSearch[roleKey] || '';
@@ -1803,7 +1811,17 @@ export default function TravelAuthPage() {
                                                         {/* Senior fixed approvers (CEO, HRD, directors) are locked once
                                                             auto-resolved; departmental/managerial rows stay changeable. */}
                                                         {!isLocked && (
-                                                            <button type="button" onClick={() => { handleRemoveApprover(role.key); setAutoResolvedRoles(prev => ({ ...prev, [role.key]: false })); }} className="p-1.5 rounded-lg hover:bg-danger-50 text-gray-400 hover:text-danger-500 transition-colors" title="Remove approver"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" /></svg></button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => { handleRemoveApprover(role.key); setAutoResolvedRoles(prev => ({ ...prev, [role.key]: false })); }}
+                                                                className="flex-shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-full border border-danger-100 bg-danger-50 text-danger-600 shadow-sm hover:bg-danger-500 hover:border-danger-500 hover:text-white focus:outline-none focus:ring-2 focus:ring-danger-500 focus:ring-offset-1 transition-all"
+                                                                title="Remove approver"
+                                                                aria-label="Remove approver"
+                                                            >
+                                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                                                                </svg>
+                                                            </button>
                                                         )}
                                                     </div>
                                                 ) : (

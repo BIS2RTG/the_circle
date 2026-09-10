@@ -13,6 +13,7 @@ import {
   userSignatureProxyUrl,
   resolveSignatureSignedUrl,
 } from '@/lib/signatureStorage';
+import { ppName } from '@/lib/delegatedSignatory';
 
 // This API generates and stores a PDF archive for a fully approved request
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -857,7 +858,9 @@ function renderCapex(
       String(i + 1),
       q.supplierName || q.supplier || '',
       q.description || '',
-      q.amount ? `${cur} ${q.amount}` : '',
+      // Each quotation carries its own currency (legacy rows fall back to the
+      // CAPEX currency).
+      q.amount ? `${q.currency || cur} ${q.amount}` : '',
     ]);
     yPos = oTable(doc, ['#', 'Supplier', 'Description', 'Amount'], rows, [0.07, 0.28, 0.43, 0.22], yPos, pw);
   }
@@ -1217,13 +1220,18 @@ async function generatePdfBuffer(
       const approvalSlots: OfficialApprovalSlot[] = (request.request_steps || []).map((step: any, index: number) => {
         const approval = step.approvals?.[0];
         const nm = step.approver?.display_name || approval?.approver?.display_name || '';
-        const roleKey = step.approver_role || roleByUserId[step.approver_user_id] || '';
+        // Delegated steps carry the DELEGATE in approver_user_id, but approverRoles is
+        // keyed on whoever formally holds the role — look the original approver up first,
+        // otherwise a delegated step misses the map and prints as "Approver N" instead of
+        // its real role (e.g. CEO). Matches lib/previews/travelAuthPreview.tsx.
+        const roleLookupId = (step.is_redirected && step.original_approver_id) || step.approver_user_id;
+        const roleKey = step.approver_role || roleByUserId[roleLookupId] || '';
         const role = (isCompBooking && roleKey === 'functional_head')
           ? 'Chief Operating Officer'
           : (ROLE_LABELS[roleKey] || humanizeRole(roleKey) || `Approver ${index + 1}`);
         return {
           role,
-          name: step.is_redirected ? `pp ${nm}` : nm,
+          name: ppName(nm, step),
           date: approval?.signed_at || null,
           sig: signatureBuffers.get(index) || null,
           redirected: step.is_redirected === true,

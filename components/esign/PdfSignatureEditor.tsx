@@ -26,15 +26,24 @@ import { useSignatureCanvasAutosize } from '../../hooks/useSignatureCanvasAutosi
 // =============================================================================
 
 interface PdfJsLib {
-  getDocument: (src: { data: Uint8Array } | { url: string }) => { promise: Promise<PdfJsDocument> };
+  getDocument: (src: { data: Uint8Array } | { url: string }) => PdfJsLoadingTask;
   GlobalWorkerOptions: { workerSrc: string };
   version: string;
+}
+
+/**
+ * pdf.js v6 removed `destroy()` from the document proxy — tearing a document
+ * down goes through its loading task instead (which has carried `destroy()`
+ * since v2, so this works on either version).
+ */
+interface PdfJsLoadingTask {
+  promise: Promise<PdfJsDocument>;
+  destroy: () => Promise<void>;
 }
 
 interface PdfJsDocument {
   numPages: number;
   getPage: (n: number) => Promise<PdfJsPage>;
-  destroy: () => Promise<void>;
 }
 
 interface PdfJsPage {
@@ -202,7 +211,7 @@ export default function PdfSignatureEditor({ pdfUrl, onSave, onCancel }: PdfSign
   // ---------------------------------------------------------------------------
   useEffect(() => {
     let cancelled = false;
-    let loadedDoc: PdfJsDocument | null = null;
+    let loadingTask: PdfJsLoadingTask | null = null;
 
     log('info', 'mounted', { pdfUrl });
 
@@ -259,12 +268,12 @@ export default function PdfSignatureEditor({ pdfUrl, onSave, onCancel }: PdfSign
 
         // pdf.js transfers (detaches) the TypedArray we hand it, so clone.
         const docTask = pdfjsLib.getDocument({ data: new Uint8Array(bytes.slice(0)) });
+        loadingTask = docTask;
         const doc = await docTask.promise;
         if (cancelled) {
-          await doc.destroy();
+          await docTask.destroy();
           return;
         }
-        loadedDoc = doc;
         log('info', 'document parsed', { numPages: doc.numPages });
         setPdfDoc(doc);
         setNumPages(doc.numPages);
@@ -279,8 +288,8 @@ export default function PdfSignatureEditor({ pdfUrl, onSave, onCancel }: PdfSign
 
     return () => {
       cancelled = true;
-      if (loadedDoc) {
-        loadedDoc.destroy().catch(() => {});
+      if (loadingTask) {
+        loadingTask.destroy().catch(() => {});
       }
     };
   }, [pdfUrl, log]);

@@ -18,6 +18,7 @@
 
 import type { ReactNode } from 'react';
 import type { PreviewSection, DocumentHeader } from '../../components/ui';
+import { ppName } from '@/lib/delegatedSignatory';
 
 // ──────────────────────────────────────────────────────────────────────
 // Shared inline styles — copied verbatim from the form so the visual
@@ -37,7 +38,7 @@ const TRAVEL_LOCATIONS: Record<string, string> = {
     MRC: 'Montclair Resort and Conferencing (MRC)',
     NAH: 'New Ambassador Hotel (NAH)',
     RTH: 'Rainbow Towers Hotel (RTH)',
-    KHCC: 'KHCC Conference Centre',
+    KHCC: 'Kadoma Hotel and Conference Centre',
     BRH: 'Bulawayo Rainbow Hotel (BRH)',
     VFRH: 'Victoria Falls Rainbow Hotel (VFRH)',
     AZAM: "A'Zambezi River Lodge (AZAM)",
@@ -182,6 +183,7 @@ export interface TravelAuthPreviewInput {
     approvers?: {
         [roleKey: string]: {
             name?: string;
+            jobTitle?: string;
             signatureUrl?: string | null;
             signedAt?: string | null;
             decision?: 'approved' | 'rejected' | null;
@@ -498,7 +500,8 @@ export function buildTravelAuthPreviewSections(input: TravelAuthPreviewInput): P
                                 return (
                                     <td key={r.key} style={{ ...cellStyle, width: '25%' }}>
                                         <div style={{ fontSize: 9, fontWeight: 700, color: '#555', textTransform: 'uppercase' }}>Name</div>
-                                        <div style={{ fontSize: 11, marginBottom: 8 }}>{a?.name || '—'}</div>
+                                        <div style={{ fontSize: 11 }}>{a?.name || '—'}</div>
+                                        <div style={{ fontSize: 9, color: '#7C5A33', marginBottom: 8 }}>{a?.jobTitle || ''}</div>
                                         <div style={{ fontSize: 9, fontWeight: 700, color: '#555', textTransform: 'uppercase' }}>Signature</div>
                                         <div style={{ borderBottom: '1px solid #666', minHeight: 56, marginTop: 4, marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                                             {a?.signatureUrl ? (
@@ -588,16 +591,41 @@ export function travelAuthInputFromRequest(request: any, travelMeta?: any): Trav
         const approval = Array.isArray(step.approvals) ? step.approvals[0] : (step.approvals || null);
         const approverId =
             step.approver?.id || step.approver_user_id || approval?.approver?.id || approval?.approver_id || null;
+        // Delegation: the step's approver_user_id is swapped to the delegate so
+        // they can actually act on it (see lib/delegations.ts). metadata.approverRoles
+        // is keyed on whoever formally HOLDS the role, so a delegated step has to be
+        // looked up by its ORIGINAL approver id — looking it up by the delegate's id
+        // misses the map entirely and drops the step onto the positional fallback,
+        // which is how a CEO→CFO delegation ended up printed in the Functional Head
+        // slot. The request-detail timeline already matches on original_approver_id.
+        const isDelegated = !!(step.is_redirected && step.original_approver_id);
+        const roleLookupId = (isDelegated ? step.original_approver_id : null) || approverId;
+        // Positional fallback is a last resort — never let it drop a step into a role
+        // the request explicitly left unassigned (approverRoles stores '' for those),
+        // which would print an approver under a heading they don't hold.
+        const positionalRole = ROLE_ORDER[idx];
+        const positionalIsUnassigned =
+            !!positionalRole &&
+            Object.prototype.hasOwnProperty.call(roleMap, positionalRole) &&
+            !roleMap[positionalRole];
         const role =
             String(step.approver_role || '').toLowerCase() ||
-            (approverId ? userIdToRole[approverId] : '') ||
-            ROLE_ORDER[idx] ||
+            (roleLookupId ? userIdToRole[roleLookupId] : '') ||
+            (positionalIsUnassigned ? '' : positionalRole) ||
             '';
         if (!role) return;
-        const approverName =
-            step.approver?.display_name || approval?.approver?.display_name || null;
+        // The document names the person who actually authorises the step: on a
+        // delegated step that is the delegate, since they are the one who signs it.
+        // Delegated signatures are prefixed "pp" (per procurationem — signed on
+        // behalf of the role holder) via the shared rule in
+        // lib/delegatedSignatory, so every request type reads alike.
+        const signatory = step.approver || (!isDelegated ? approval?.approver : null);
+        const signatoryName = signatory?.display_name || null;
+        const approverName = ppName(signatoryName, step);
+        const approverJobTitle = signatory?.job_title || null;
         approvers[role] = {
             name: approverName || undefined,
+            jobTitle: approverJobTitle || undefined,
             signatureUrl: approval?.signed_at ? sigUrlFor(approverId) : null,
             signedAt: approval?.signed_at || null,
             decision: approval?.decision || null,

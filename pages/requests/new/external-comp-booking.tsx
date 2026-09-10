@@ -12,6 +12,7 @@ import { useRequestorIdentity } from '../../../hooks/useRequestorIdentity';
 import { calculateTollgatesForItinerary, getTollgateRouteInfo, TollgateRouteType } from '../../../lib/formConfig';
 import { SupportingDocuments, uploadSupportingDocuments, makeSupportingDoc, type SupportingDoc } from '../../../components/requests/SupportingDocuments';
 import { OnBehalfOfField, type OnBehalfOf } from '../../../components/requests/OnBehalfOfField';
+import { approverResolutionEmail } from '../../../lib/onBehalfResolution';
 import { isApproverRowLocked } from '../../../lib/approverLocking';
 import { COMP_BOOKING_COO, resolveCompBookingCoo, BOARD_COMP_APPROVERS, resolveBoardApprover } from '../../../lib/fixedApprovers';
 import ApproverSectionLoader from '../../../components/requests/ApproverSectionLoader';
@@ -26,8 +27,32 @@ interface SelectedBusinessUnit {
     numberOfNights: string;
     numberOfRooms: string;
     accommodationType: string;
+    numberOfMeals: string;
+    mealPeopleCount: string;
     specialArrangements: string;
 }
+
+const ACCOMMODATION_TYPE_LABELS: Record<string, string> = {
+    accommodation_only: 'Accommodation Only (Bed only)',
+    accommodation_and_breakfast: 'Bed & Breakfast Only',
+    dinner_bed_breakfast: 'DBB (Dinner, Bed and Breakfast)',
+    accommodation_and_meals: 'Accommodation & Meals (Breakfast, Lunch, and Dinner)',
+    accommodation_meals_drink: 'Accommodation, Meals plus a Soft Drink / Juice',
+    meals_all: 'Meals (Breakfast, Lunch and Dinner Only)',
+    rainbow_delights: 'Rainbow Delights Meal(s) Only',
+    breakfast_only: 'Breakfast meal(s) only',
+    lunch_only: 'Lunch meal(s) only',
+    dinner_only: 'Dinner meal(s) only',
+    packed_breakfast: 'Packed breakfast',
+    packed_lunch: 'Packed lunch',
+};
+
+// Accommodation types that include one or more meals — these show the Meal
+// Details block (Number of Meals / Number of People for Meals).
+const MEAL_INCLUSIVE_ACCOMMODATION_TYPES = [
+    'meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only',
+    'packed_breakfast', 'packed_lunch', 'accommodation_and_meals', 'accommodation_meals_drink',
+];
 
 interface AACalculatorData {
     engineCapacity: string;
@@ -67,7 +92,7 @@ const TRAVEL_LOCATIONS = [
     { code: 'MRC', name: 'Montclair Resort and Conferencing (MRC)', city: 'Nyanga' },
     { code: 'NAH', name: 'New Ambassador Hotel (NAH)', city: 'Harare' },
     { code: 'RTH', name: 'Rainbow Towers Hotel (RTH)', city: 'Harare' },
-    { code: 'KHCC', name: 'KHCC Conference Centre', city: 'Kadoma' },
+    { code: 'KHCC', name: 'Kadoma Hotel and Conference Centre', city: 'Kadoma' },
     { code: 'BRH', name: 'Bulawayo Rainbow Hotel (BRH)', city: 'Bulawayo' },
     { code: 'VFRH', name: 'Victoria Falls Rainbow Hotel (VFRH)', city: 'Victoria Falls' },
     { code: 'AZAM', name: 'A\'Zambezi River Lodge (AZAM)', city: 'Victoria Falls' },
@@ -76,13 +101,13 @@ const TRAVEL_LOCATIONS = [
 
 // Inter-business unit distances in KM (exact values from distance matrix)
 const DISTANCE_MATRIX: Record<string, Record<string, number>> = {
-    'RTH':  { 'RTH': 0,   'NAH': 2.1,   'KHCC': 139,   'BRH': 440,   'AZAM': 713,   'VFRH': 709,   'MRC': 272 },
-    'NAH':  { 'RTH': 2.1, 'NAH': 0,     'KHCC': 136.9, 'BRH': 437.9, 'AZAM': 710.9, 'VFRH': 706.9, 'MRC': 269.9 },
-    'KHCC': { 'RTH': 139, 'NAH': 140, 'KHCC': 0,     'BRH': 301,   'AZAM': 574,   'VFRH': 570,   'MRC': 133 },
-    'BRH':  { 'RTH': 440, 'NAH': 437.9, 'KHCC': 301,   'BRH': 0,     'AZAM': 273,   'VFRH': 269,   'MRC': 168 },
-    'AZAM': { 'RTH': 713, 'NAH': 710.9, 'KHCC': 574,   'BRH': 273,   'AZAM': 0,     'VFRH': 4,     'MRC': 441 },
-    'VFRH': { 'RTH': 709, 'NAH': 706.9, 'KHCC': 570,   'BRH': 269,   'AZAM': 4,     'VFRH': 0,     'MRC': 437 },
-    'MRC':  { 'RTH': 272, 'NAH': 269.9, 'KHCC': 133,   'BRH': 168,   'AZAM': 441,   'VFRH': 437,   'MRC': 0 },
+    'RTH':  { 'RTH': 0,   'NAH': 0,   'KHCC': 141,   'BRH': 439,   'AZAM': 876,   'VFRH': 876,   'MRC': 250 },
+    'NAH':  { 'RTH': 0, 'NAH': 0, 'KHCC': 141,     'BRH': 439,   'AZAM': 876,   'VFRH': 876,   'MRC': 250 },
+    'KHCC': { 'RTH': 141, 'NAH': 141, 'KHCC': 0,     'BRH': 298,   'AZAM': 735,   'VFRH': 735,   'MRC': 400 },
+    'BRH':  { 'RTH': 439, 'NAH': 439, 'KHCC': 298,   'BRH': 0,     'AZAM': 437,   'VFRH': 437,   'MRC': 686 },
+    'AZAM': { 'RTH': 876, 'NAH': 876, 'KHCC': 735,   'BRH': 437,   'AZAM': 0,     'VFRH': 0,     'MRC': 1123 },
+    'VFRH': { 'RTH': 876, 'NAH': 876, 'KHCC': 735,   'BRH': 437,   'AZAM': 0,     'VFRH': 0,     'MRC': 1123 },
+    'MRC':  { 'RTH': 250, 'NAH': 250, 'KHCC': 400,   'BRH': 686,   'AZAM': 1123,   'VFRH': 1123,   'MRC': 0 },
 };
 
 // Get distance between two locations
@@ -277,6 +302,10 @@ export default function ExternalCompBookingPage() {
     // Supporting documents (for the travel section) + file-on-behalf-of.
     const [supportingDocs, setSupportingDocs] = useState<SupportingDoc[]>([]);
     const [onBehalfOf, setOnBehalfOf] = useState<OnBehalfOf | null>(null);
+    // Approvers are resolved from the person the request is FOR, not the filer.
+    // null for an external beneficiary — they have no reporting line, so the
+    // filer chooses the approvers by hand.
+    const resolutionEmail = approverResolutionEmail(session?.user?.email, onBehalfOf);
     // Requestor identity shown on the form + document — the principal when filing
     // on behalf of someone (autofilled on selection), else the signed-in user.
     const requestor = useRequestorIdentity(onBehalfOf);
@@ -626,10 +655,12 @@ export default function ExternalCompBookingPage() {
         const resolveApprovers = async () => {
             // Board-member bookings resolve their own chain (see the board effect
             // above), so skip the normal HRIMS organogram resolution.
-            if (!session?.user?.email || isEditMode || isBoardMemberBooking) { setLoadingApproverResolution(false); return; }
+            // Approvers belong to the person the request is FOR (lib/onBehalfResolution).
+            // External beneficiaries have no reporting line — the filer picks manually.
+            if (!resolutionEmail || isEditMode || isBoardMemberBooking) { setLoadingApproverResolution(false); return; }
             setLoadingApproverResolution(true);
             try {
-                const response = await fetch(`/api/hrims/resolve-approvers?email=${encodeURIComponent(session.user.email)}&formType=hotel-booking`);
+                const response = await fetch(`/api/hrims/resolve-approvers?email=${encodeURIComponent(resolutionEmail)}&formType=hotel-booking`);
                 const data = await response.json();
                 if (response.ok && data.approvers) {
                     const resolved: Record<string, boolean> = {};
@@ -654,7 +685,7 @@ export default function ExternalCompBookingPage() {
             }
         };
         if (status === 'authenticated') resolveApprovers();
-    }, [status, session?.user?.email, isEditMode, isBoardMemberBooking]);
+    }, [status, resolutionEmail, isEditMode, isBoardMemberBooking]);
 
     // Filter users by search for a specific role
     const getFilteredUsersForRole = (roleKey: string) => {
@@ -695,6 +726,8 @@ export default function ExternalCompBookingPage() {
             numberOfNights: '',
             numberOfRooms: '',
             accommodationType: 'accommodation_only',
+            numberOfMeals: '',
+            mealPeopleCount: '',
             specialArrangements: 'N/A',
         }]);
     };
@@ -962,7 +995,7 @@ export default function ExternalCompBookingPage() {
                     ? [{ label: 'Hotels', value: 'None selected', fullWidth: true }]
                     : selectedBusinessUnits.map((u, i) => ({
                         label: `${i + 1}. ${u.name}`,
-                        value: `${u.arrivalDate || '—'} → ${u.departureDate || '—'} · ${u.numberOfNights || '0'} night(s) · ${u.numberOfRooms || '0'} room(s) · ${u.accommodationType || '—'}${u.specialArrangements ? `\nSpecial: ${u.specialArrangements}` : ''}`,
+                        value: `${u.arrivalDate || '—'} → ${u.departureDate || '—'} · ${u.numberOfNights || '0'} night(s) · ${u.numberOfRooms || '0'} room(s) · ${ACCOMMODATION_TYPE_LABELS[u.accommodationType] || u.accommodationType || '—'}${MEAL_INCLUSIVE_ACCOMMODATION_TYPES.includes(u.accommodationType) ? ` · ${u.numberOfMeals || '0'} meal(s) for ${u.mealPeopleCount || '0'} people` : ''}${u.specialArrangements ? `\nSpecial: ${u.specialArrangements}` : ''}`,
                         fullWidth: true,
                     })),
             },
@@ -1083,6 +1116,14 @@ export default function ExternalCompBookingPage() {
             }
             if (!unit.accommodationType) {
                 errors.push(`Accommodation type is required for ${unit.name}`);
+            }
+            if (MEAL_INCLUSIVE_ACCOMMODATION_TYPES.includes(unit.accommodationType)) {
+                if (!unit.numberOfMeals) {
+                    errors.push(`Number of meals is required for ${unit.name}`);
+                }
+                if (!unit.mealPeopleCount) {
+                    errors.push(`Number of people for meals is required for ${unit.name}`);
+                }
             }
         }
 
@@ -1504,52 +1545,47 @@ export default function ExternalCompBookingPage() {
                                             <div>
                                                 <label className="block text-sm font-semibold text-gray-700 mb-2 uppercase">Accommodation Type <span className="text-danger-500">*</span></label>
                                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                                                    <label className="flex items-center gap-2 cursor-pointer p-2 rounded-lg hover:bg-gray-50 border border-transparent hover:border-gray-200">
-                                                        <input
-                                                            type="radio"
-                                                            name={`accommodationType_${selectedUnit.instanceId}`}
-                                                            value="accommodation_only"
-                                                            checked={selectedUnit.accommodationType === 'accommodation_only'}
-                                                            onChange={(e) => handleBusinessUnitFieldChange(selectedUnit.instanceId, 'accommodationType', e.target.value)}
-                                                            className="w-4 h-4 text-primary-600 focus:ring-primary-500 border-gray-300"
-                                                        />
-                                                        <span className="text-sm text-gray-700">Accommodation Only (Bed only)</span>
-                                                    </label>
-                                                    <label className="flex items-center gap-2 cursor-pointer p-2 rounded-lg hover:bg-gray-50 border border-transparent hover:border-gray-200">
-                                                        <input
-                                                            type="radio"
-                                                            name={`accommodationType_${selectedUnit.instanceId}`}
-                                                            value="accommodation_and_breakfast"
-                                                            checked={selectedUnit.accommodationType === 'accommodation_and_breakfast'}
-                                                            onChange={(e) => handleBusinessUnitFieldChange(selectedUnit.instanceId, 'accommodationType', e.target.value)}
-                                                            className="w-4 h-4 text-primary-600 focus:ring-primary-500 border-gray-300"
-                                                        />
-                                                        <span className="text-sm text-gray-700">Bed & Breakfast</span>
-                                                    </label>
-                                                    <label className="flex items-center gap-2 cursor-pointer p-2 rounded-lg hover:bg-gray-50 border border-transparent hover:border-gray-200">
-                                                        <input
-                                                            type="radio"
-                                                            name={`accommodationType_${selectedUnit.instanceId}`}
-                                                            value="accommodation_and_meals"
-                                                            checked={selectedUnit.accommodationType === 'accommodation_and_meals'}
-                                                            onChange={(e) => handleBusinessUnitFieldChange(selectedUnit.instanceId, 'accommodationType', e.target.value)}
-                                                            className="w-4 h-4 text-primary-600 focus:ring-primary-500 border-gray-300"
-                                                        />
-                                                        <span className="text-sm text-gray-700">Accommodation & Meals</span>
-                                                    </label>
-                                                    <label className="flex items-center gap-2 cursor-pointer p-2 rounded-lg hover:bg-gray-50 border border-transparent hover:border-gray-200">
-                                                        <input
-                                                            type="radio"
-                                                            name={`accommodationType_${selectedUnit.instanceId}`}
-                                                            value="accommodation_meals_drink"
-                                                            checked={selectedUnit.accommodationType === 'accommodation_meals_drink'}
-                                                            onChange={(e) => handleBusinessUnitFieldChange(selectedUnit.instanceId, 'accommodationType', e.target.value)}
-                                                            className="w-4 h-4 text-primary-600 focus:ring-primary-500 border-gray-300"
-                                                        />
-                                                        <span className="text-sm text-gray-700">Accommodation, Meals & Soft Drink</span>
-                                                    </label>
+                                                    {Object.entries(ACCOMMODATION_TYPE_LABELS).map(([value, label]) => (
+                                                        <label key={value} className="flex items-center gap-2 cursor-pointer p-2 rounded-lg hover:bg-gray-50 border border-transparent hover:border-gray-200">
+                                                            <input
+                                                                type="radio"
+                                                                name={`accommodationType_${selectedUnit.instanceId}`}
+                                                                value={value}
+                                                                checked={selectedUnit.accommodationType === value}
+                                                                onChange={(e) => handleBusinessUnitFieldChange(selectedUnit.instanceId, 'accommodationType', e.target.value)}
+                                                                className="w-4 h-4 text-primary-600 focus:ring-primary-500 border-gray-300"
+                                                            />
+                                                            <span className="text-sm text-gray-700">{label}</span>
+                                                        </label>
+                                                    ))}
                                                 </div>
                                             </div>
+
+                                            {MEAL_INCLUSIVE_ACCOMMODATION_TYPES.includes(selectedUnit.accommodationType) && (
+                                                <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl">
+                                                    <h4 className="text-sm font-semibold text-gray-700 mb-3 uppercase">Meal Details</h4>
+                                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                                        <Input
+                                                            type="number"
+                                                            label="Number of Meals *"
+                                                            placeholder="e.g. 2"
+                                                            value={selectedUnit.numberOfMeals}
+                                                            onChange={(e) => handleBusinessUnitFieldChange(selectedUnit.instanceId, 'numberOfMeals', e.target.value)}
+                                                            required
+                                                            min="1"
+                                                        />
+                                                        <Input
+                                                            type="number"
+                                                            label="Number of People for Meals *"
+                                                            placeholder="e.g. 4"
+                                                            value={selectedUnit.mealPeopleCount}
+                                                            onChange={(e) => handleBusinessUnitFieldChange(selectedUnit.instanceId, 'mealPeopleCount', e.target.value)}
+                                                            required
+                                                            min="1"
+                                                        />
+                                                    </div>
+                                                </div>
+                                            )}
 
                                             <div>
                                                 <label className="block text-sm font-semibold text-gray-700 mb-1 uppercase">Special Arrangements</label>
@@ -2358,11 +2394,12 @@ export default function ExternalCompBookingPage() {
                                                         <button
                                                             type="button"
                                                             onClick={() => { handleRemoveApprover(role.key); setAutoResolvedRoles(prev => ({ ...prev, [role.key]: false })); }}
-                                                            className="p-1.5 rounded-lg hover:bg-danger-50 text-gray-400 hover:text-danger-500 transition-colors"
+                                                            className="flex-shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-full border border-danger-100 bg-danger-50 text-danger-600 shadow-sm hover:bg-danger-500 hover:border-danger-500 hover:text-white focus:outline-none focus:ring-2 focus:ring-danger-500 focus:ring-offset-1 transition-all"
                                                             title="Remove approver"
+                                                            aria-label="Remove approver"
                                                         >
                                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" />
+                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
                                                             </svg>
                                                         </button>
                                                         )}

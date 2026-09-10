@@ -65,6 +65,9 @@ export const PERMISSIONS = {
   REQUESTS_EDIT_OWN: 'requests.edit_own',
   REQUESTS_WITHDRAW: 'requests.withdraw',
   REQUESTS_DELETE: 'requests.delete',
+  /** File on behalf of ANY employee or an external guest (HR admins), without
+   *  needing a per-person assistant assignment. See lib/onBehalf.ts. */
+  REQUESTS_FILE_ON_BEHALF_ANY: 'requests.file_on_behalf_any',
   // Approvals
   APPROVALS_VIEW: 'approvals.view',
   APPROVALS_APPROVE: 'approvals.approve',
@@ -120,6 +123,8 @@ export const ROLE_SLUGS = {
   SYSTEM_ADMIN: 'system_admin',
   AUDITOR: 'auditor',
   EMPLOYEE: 'employee',
+  APPROVER: 'approver',
+  HR_ADMIN: 'hr_admin',
 } as const;
 
 // ============================================================

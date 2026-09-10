@@ -671,6 +671,16 @@ export default function ApprovalsPage({ initialPendingApprovals, initialWatching
     }
   }, [router.query.tab]);
 
+  // Honour ?decision=approved|rejected deep links into the history tab (e.g.
+  // from the dashboard's "My Approvals" stat cards).
+  const [decisionFilter, setDecisionFilter] = useState<'all' | 'approved' | 'rejected'>('all');
+  useEffect(() => {
+    const d = router.query.decision;
+    if (d === 'approved' || d === 'rejected') {
+      setDecisionFilter(d);
+    }
+  }, [router.query.decision]);
+
   const getActiveData = () => {
     switch (activeTab) {
       case 'pending': return displayPendingApprovals;
@@ -690,6 +700,9 @@ export default function ApprovalsPage({ initialPendingApprovals, initialWatching
 
     const matchesStatus = statusFilter === 'all' || request.status === statusFilter;
 
+    const matchesDecision =
+      activeTab !== 'history' || decisionFilter === 'all' || request.user_action === decisionFilter;
+
     const priority = request.metadata?.priority || 'normal';
     const matchesPriority = priorityFilter === 'all' || priority === priorityFilter;
 
@@ -704,7 +717,7 @@ export default function ApprovalsPage({ initialPendingApprovals, initialWatching
       else if (dateFilter === 'month') matchesDate = diffDays <= 30;
     }
 
-    return matchesSearch && matchesStatus && matchesPriority && matchesDate;
+    return matchesSearch && matchesStatus && matchesDecision && matchesPriority && matchesDate;
   });
 
   // Folder counts for the type rail (over the search/status/date-filtered set,
@@ -748,6 +761,7 @@ export default function ApprovalsPage({ initialPendingApprovals, initialWatching
   const clearAllFilters = () => {
     setSearchQuery('');
     setStatusFilter('all');
+    setDecisionFilter('all');
     setPriorityFilter('all');
     setDateFilter('all');
     setTypeFilter('all');

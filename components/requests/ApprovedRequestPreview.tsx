@@ -13,6 +13,8 @@ import {
     capexPreviewDocumentHeader,
 } from '../../lib/previews/capexPreview';
 import { CAPEX_APPROVAL_ROLES } from '../../lib/capexApproval';
+import { ppName } from '@/lib/delegatedSignatory';
+import { resolveVoucherAddOnLabels } from '../../lib/voucherAddOns';
 
 /**
  * ApprovedRequestPreview
@@ -160,7 +162,11 @@ function buildApprovalSignaturesSection(request: any): PreviewSection {
                     ) : (
                         steps.map((step: any, i: number) => {
                             const approval = Array.isArray(step.approvals) ? step.approvals[0] : null;
-                            const approverName = step.approver?.display_name || approval?.approver?.display_name || '—';
+                            // "pp <name>" when a stand-in signed for the named approver.
+                            const approverName = ppName(
+                                step.approver?.display_name || approval?.approver?.display_name || '—',
+                                step,
+                            );
                             const role = step.approver_role || step.step_definition?.name || `Step ${i + 1}`;
                             const decision = approval?.decision
                                 ? approval.decision.charAt(0).toUpperCase() + approval.decision.slice(1)
@@ -534,14 +540,17 @@ const COMP_ALLOCATION_LABELS: Record<string, string> = {
 
 const COMP_ACCOMMODATION_LABELS: Record<string, string> = {
     accommodation_only: 'Accommodation Only (Bed only)',
-    accommodation_and_breakfast: 'Bed & Breakfast',
-    accommodation_and_meals: 'Accommodation & Meals',
-    accommodation_meals_drink: 'Accommodation, Meals & Soft Drink',
-    meals_all: 'Meals (Breakfast, Lunch and Dinner)',
-    rainbow_delights: 'Rainbow Delights Meal',
-    breakfast_only: 'Breakfast only',
-    lunch_only: 'Lunch only',
-    dinner_only: 'Dinner only',
+    accommodation_and_breakfast: 'Bed & Breakfast Only',
+    dinner_bed_breakfast: 'DBB (Dinner, Bed and Breakfast)',
+    accommodation_and_meals: 'Accommodation & Meals (Breakfast, Lunch, and Dinner)',
+    accommodation_meals_drink: 'Accommodation, Meals plus a Soft Drink / Juice',
+    meals_all: 'Meals (Breakfast, Lunch and Dinner Only)',
+    rainbow_delights: 'Rainbow Delights Meal(s) Only',
+    breakfast_only: 'Breakfast meal(s) only',
+    lunch_only: 'Lunch meal(s) only',
+    dinner_only: 'Dinner meal(s) only',
+    packed_breakfast: 'Packed breakfast',
+    packed_lunch: 'Packed lunch',
 };
 
 function buildCompSections(request: any, metadata: any): PreviewSection[] {
@@ -572,7 +581,7 @@ function buildCompSections(request: any, metadata: any): PreviewSection[] {
         return [];
     })();
 
-    const isMealOnly = (t?: string) => ['meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only'].includes(t || '');
+    const isMealOnly = (t?: string) => ['meals_all', 'rainbow_delights', 'breakfast_only', 'lunch_only', 'dinner_only', 'packed_breakfast', 'packed_lunch'].includes(t || '');
 
     // A comp requester is usually the guest themselves — fall back to the
     // requestor's name when no explicit guest was entered.
@@ -580,6 +589,8 @@ function buildCompSections(request: any, metadata: any): PreviewSection[] {
         || [metadata.guestTitle, metadata.guestFirstName].filter(Boolean).join(' ')
         || creator.display_name
         || '—';
+
+    const voucherAddOnLabels = resolveVoucherAddOnLabels(metadata.voucherAddOns, metadata.voucherAddOnOther);
 
     // Hotel bookings store stay dates + nights; vouchers store a validity
     // period + people + room type. Render the columns the data actually
@@ -636,6 +647,11 @@ function buildCompSections(request: any, metadata: any): PreviewSection[] {
                 ...(metadata.percentageDiscount
                     ? [{ label: 'Percentage Discount', value: `${metadata.percentageDiscount}%` }]
                     : []),
+                // Optional activities printed on the voucher as "plus ..." — shown
+                // here so an approver signs off the same wording the guest gets.
+                ...(voucherAddOnLabels.length > 0
+                    ? [{ label: 'Additional Activities', value: voucherAddOnLabels.join(', ') }]
+                    : []),
             ],
         },
         ...(onBehalf
@@ -687,7 +703,12 @@ function buildCompSections(request: any, metadata: any): PreviewSection[] {
                                 <td style={cellStyle}>{unit.departureDate ? formatDate(unit.departureDate) : '—'}</td>
                                 <td style={{ ...cellStyle, textAlign: 'right' }}>{unit.numberOfNights || '—'}</td>
                                 <td style={{ ...cellStyle, textAlign: 'right' }}>{unit.numberOfRooms || '—'}</td>
-                                <td style={cellStyle}>{unit.specialArrangements || '—'}</td>
+                                <td style={cellStyle}>{[
+                                    (unit.numberOfMeals || unit.mealPeopleCount)
+                                        ? `${unit.numberOfMeals || '?'} meal(s) for ${unit.mealPeopleCount || '?'} people`
+                                        : '',
+                                    unit.specialArrangements && unit.specialArrangements !== 'N/A' ? unit.specialArrangements : '',
+                                ].filter(Boolean).join(' · ') || '—'}</td>
                             </tr>
                         ))}
                     </tbody>
@@ -798,7 +819,19 @@ function buildCapexSections(request: any, metadata: any): PreviewSection[] {
     const approverNameByRole: Record<string, string> = {};
     for (const role of CAPEX_APPROVAL_ROLES) {
         const uid = roleMap[role.key];
-        approverNameByRole[role.key] = uid ? nameById.get(uid) || '' : '';
+        if (!uid) { approverNameByRole[role.key] = ''; continue; }
+        // A delegated step no longer carries the role holder's id in
+        // approver_user_id — it moved to original_approver_id — so match both
+        // and name whoever actually signed, prefixed "pp".
+        const step =
+            steps.find((s) => s.approver_user_id === uid) ||
+            steps.find((s) => s.original_approver_id === uid);
+        if (step?.is_redirected) {
+            const signer = Array.isArray(step.approver) ? step.approver[0] : step.approver;
+            const signerName = signer?.display_name || nameById.get(step.approver_user_id) || '';
+            if (signerName) { approverNameByRole[role.key] = ppName(signerName, step) as string; continue; }
+        }
+        approverNameByRole[role.key] = nameById.get(uid) || '';
     }
 
     // Recorded signature per role: the signature IMAGE of each approver who has
@@ -809,7 +842,8 @@ function buildCapexSections(request: any, metadata: any): PreviewSection[] {
         const uid = roleMap[role.key];
         const step =
             steps.find((s) => s.approver_role === role.key) ||
-            (uid ? steps.find((s) => s.approver_user_id === uid) : null);
+            (uid ? steps.find((s) => s.approver_user_id === uid) : null) ||
+            (uid ? steps.find((s) => s.original_approver_id === uid) : null);
         if (!step) continue;
         const approval = Array.isArray(step.approvals) ? step.approvals[0] : null;
         if (!approval?.signed_at || approval.decision !== 'approved') continue;
@@ -831,6 +865,7 @@ function buildCapexSections(request: any, metadata: any): PreviewSection[] {
             supplier: q.supplierName || '',
             quoteAmount: q.amount || '',
             orderValue: q.sourcedAmount && String(q.sourcedAmount).trim() ? q.sourcedAmount : (q.amount || ''),
+            currency: q.currency || data.currency || 'USD',
         }))
         : [];
 
@@ -856,7 +891,9 @@ function buildCapexSections(request: any, metadata: any): PreviewSection[] {
         npv: data.npv || '',
         irr: data.irr || '',
         evaluation: data.evaluation || '',
-        quotations: quotes.map((q) => ({ supplier: q.supplierName || '', amount: q.amount || '' })),
+        // Per-quotation currency; legacy records without one were priced in the
+        // CAPEX's own currency.
+        quotations: quotes.map((q) => ({ supplier: q.supplierName || '', amount: q.amount || '', currency: q.currency || data.currency || 'USD' })),
         multiSupplier,
         selectedSuppliers,
         preferredSupplier: preferred?.supplierName || '',

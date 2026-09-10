@@ -38,6 +38,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     // Keep only executives who have delegated to the current user right now.
+    // Only a full ('all') delegation confers the right to file on their behalf:
+    // a delegation scoped to a handful of named approvals hands over exactly
+    // those signatures, not the authority to raise new requests as that person.
     const nowIso = new Date().toISOString();
     const { data: delegations, error } = await supabaseAdmin
       .from('approval_delegations')
@@ -45,6 +48,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       .eq('organization_id', organizationId)
       .eq('delegate_id', userId)
       .eq('status', 'active')
+      .eq('scope', 'all')
       .lte('starts_at', nowIso)
       .gte('ends_at', nowIso);
 

@@ -8,11 +8,13 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '../api/auth/[...nextauth]';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { computeViewerStatus, type ViewerStatusBucket } from '@/lib/recentActivityStatus';
+import { getUserRBACProfile, hasRole, ROLE_SLUGS } from '@/lib/rbac';
+import { getApproverStats, type ApproverStats } from '@/lib/approverStats';
 import { AppLayout } from '@/components/layout';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { useState, useEffect } from 'react';
-import { Clock, CheckCircle2, XCircle, FileText, ArrowRight, TrendingUp } from 'lucide-react';
+import { Clock, CheckCircle2, XCircle, FileText, ArrowRight, TrendingUp, ClipboardCheck } from 'lucide-react';
 import Lottie from 'lottie-react';
 import dashboardAnimation from '@/lotties/Dashboard.json';
 
@@ -82,6 +84,8 @@ interface DashboardProps {
   initialRecentActivity: RecentActivity[];
   initialPendingForUser: number;
   userName: string;
+  isApprover: boolean;
+  initialApproverStats: ApproverStats;
 }
 
 export const getServerSideProps: GetServerSideProps<DashboardProps> = async (context) => {
@@ -110,6 +114,8 @@ export const getServerSideProps: GetServerSideProps<DashboardProps> = async (con
   };
   let recentActivity: RecentActivity[] = [];
   let pendingForUser = 0;
+  let isApprover = false;
+  let approverStats: ApproverStats = { pending: 0, approved: 0, rejected: 0, total: 0, completionRate: 0 };
 
   try {
     if (organizationId) {
@@ -143,15 +149,23 @@ export const getServerSideProps: GetServerSideProps<DashboardProps> = async (con
       const completed = stats.approved + stats.rejected;
       stats.completionRate = completed > 0 ? Math.round((stats.approved / completed) * 100) : 0;
 
-      // Fetch pending approvals for the current user
+      // Fetch pending approvals for the current user, and — if they're tagged
+      // with the Approver role — their approval-activity stats for the
+      // approver-focused stat cards (see lib/approverStats.ts).
       if (userId) {
         const { data: pendingSteps } = await supabaseAdmin
           .from('request_steps')
           .select('id')
           .eq('approver_user_id', userId)
           .eq('status', 'pending');
-        
+
         pendingForUser = pendingSteps?.length || 0;
+
+        const rbacProfile = await getUserRBACProfile(userId);
+        isApprover = hasRole(rbacProfile, ROLE_SLUGS.APPROVER);
+        if (isApprover) {
+          approverStats = await getApproverStats(userId);
+        }
       }
 
       // Fetch recent activity with request_steps for visibility filtering
@@ -221,15 +235,19 @@ export const getServerSideProps: GetServerSideProps<DashboardProps> = async (con
       initialRecentActivity: recentActivity,
       initialPendingForUser: pendingForUser,
       userName: user.name || 'User',
+      isApprover,
+      initialApproverStats: approverStats,
     },
   };
 };
 
-export default function Dashboard({ 
-  initialStats, 
-  initialRecentActivity, 
+export default function Dashboard({
+  initialStats,
+  initialRecentActivity,
   initialPendingForUser,
-  userName 
+  userName,
+  isApprover,
+  initialApproverStats,
 }: DashboardProps) {
   const { data: session } = useSession();
   const router = useRouter();
@@ -239,6 +257,7 @@ export default function Dashboard({
   // counts reflect the latest approvals/submissions instead of a stale snapshot.
   const [stats, setStats] = useState<DashboardStats>(initialStats);
   const [pendingForUser, setPendingForUser] = useState<number>(initialPendingForUser);
+  const [approverStats, setApproverStats] = useState<ApproverStats>(initialApproverStats);
   const recentActivity = initialRecentActivity;
   const statsLoading = false;
 
@@ -252,6 +271,7 @@ export default function Dashboard({
         if (cancelled) return;
         if (data.stats) setStats(data.stats);
         if (typeof data.pendingForUser === 'number') setPendingForUser(data.pendingForUser);
+        if (data.approverStats) setApproverStats(data.approverStats);
       } catch {
         /* keep SSR values on failure */
       }
@@ -271,12 +291,23 @@ export default function Dashboard({
     return 'Good evening';
   };
 
-  const statsCards = [
-    { label: 'Pending', value: stats.pending.toString(), Icon: Clock, trend: 'Awaiting action' },
-    { label: 'Approved', value: stats.approved.toString(), Icon: CheckCircle2, trend: `${stats.completionRate}% approval rate` },
-    { label: 'Rejected', value: stats.rejected.toString(), Icon: XCircle, trend: 'Declined requests' },
-    { label: 'Total', value: stats.total.toString(), Icon: FileText, trend: 'All time' },
+  const requestStatsCards = [
+    { label: 'Pending', value: stats.pending.toString(), Icon: Clock, trend: 'Awaiting action', href: '/requests/all?status=pending' },
+    { label: 'Approved', value: stats.approved.toString(), Icon: CheckCircle2, trend: `${stats.completionRate}% approval rate`, href: '/requests/all?status=approved' },
+    { label: 'Rejected', value: stats.rejected.toString(), Icon: XCircle, trend: 'Declined requests', href: '/requests/all?status=rejected' },
+    { label: 'Total', value: stats.total.toString(), Icon: FileText, trend: 'All time', href: '/requests/all' },
   ];
+
+  const approvalStatsCards = [
+    { label: 'Pending', value: approverStats.pending.toString(), Icon: Clock, trend: 'Awaiting your review', href: '/approvals?tab=pending' },
+    { label: 'Approved', value: approverStats.approved.toString(), Icon: CheckCircle2, trend: `${approverStats.completionRate}% approval rate`, href: '/approvals?tab=history&decision=approved' },
+    { label: 'Rejected', value: approverStats.rejected.toString(), Icon: XCircle, trend: 'Declined by you', href: '/approvals?tab=history&decision=rejected' },
+    { label: 'Total', value: approverStats.total.toString(), Icon: ClipboardCheck, trend: 'All time', href: '/approvals?tab=history' },
+  ];
+
+  // Approvers get an approval-focused dashboard — their own request stats
+  // would mostly read zero anyway, since approving isn't the same as creating.
+  const activeStatsCards = isApprover ? approvalStatsCards : requestStatsCards;
 
   return (
     <>
@@ -353,11 +384,12 @@ export default function Dashboard({
             ` }} />
           </section>
 
-          {/* Stats Grid — minimal monochrome icons */}
+          {/* Stats Grid — minimal monochrome icons, each card links to its filtered list */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {statsCards.map(({ label, value, Icon, trend }) => (
-              <div
+            {activeStatsCards.map(({ label, value, Icon, trend, href }) => (
+              <Link
                 key={label}
+                href={href}
                 className="group relative bg-white rounded-xl p-5 border border-[#C9B896] hover:border-[#9A7545] hover:shadow-sm transition-all"
               >
                 <div className="flex items-start justify-between mb-4">
@@ -368,7 +400,7 @@ export default function Dashboard({
                 <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</p>
                 <h3 className="text-3xl font-semibold text-gray-900 mt-1 tabular-nums">{value}</h3>
                 <p className="mt-3 text-xs text-gray-400">{trend}</p>
-              </div>
+              </Link>
             ))}
           </div>
 

@@ -51,7 +51,9 @@ export async function recordCapexSuppliers(
     const quotations = Array.isArray(metadata?.quotations) ? metadata.quotations : [];
     if (quotations.length === 0) return;
 
-    const currency =
+    // Fallback currency for quotations saved before per-quotation currencies
+    // existed — those were priced in the CAPEX's own currency.
+    const fallbackCurrency =
       typeof metadata?.currency === 'string' && metadata.currency.trim()
         ? metadata.currency.trim()
         : 'USD';
@@ -65,6 +67,10 @@ export async function recordCapexSuppliers(
       const key = name.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
+
+      // The supplier quotes in ITS own currency, not necessarily the CAPEX's.
+      const currency =
+        typeof q?.currency === 'string' && q.currency.trim() ? q.currency.trim() : fallbackCurrency;
 
       // Escape LIKE wildcards before the case-insensitive exact-match lookup.
       const safe = name.replace(/[%_]/g, (m: string) => `\\${m}`);

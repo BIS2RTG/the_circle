@@ -4,6 +4,8 @@ import { authOptions } from '../../auth/[...nextauth]';
 import { supabaseAdmin } from '../../../../lib/supabaseAdmin';
 import { signatureExists, userSignaturePath, userSignatureProxyUrl } from '../../../../lib/signatureStorage';
 import { getUserRBACProfile, hasPermission, PERMISSIONS } from '@/lib/rbac';
+import { ppName, ppJobTitle } from '@/lib/delegatedSignatory';
+import { formatVoucherAddOnPhrase } from '@/lib/voucherAddOns';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') {
@@ -59,6 +61,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           status,
           due_at,
           created_at,
+          is_redirected,
+          original_approver_id,
+          redirect_job_title,
           approver:app_users!request_steps_approver_user_id_fkey (
             id,
             display_name,
@@ -376,11 +381,18 @@ Kind regards`;
     commercialDirectorStep = ceoStep;
   }
   
-  const commercialDirectorName = getApproverField(commercialDirectorStep, 'display_name') || "Commercial Director";
+  // Delegated steps print as "pp <name>" / "pp <title>" so the voucher shows
+  // plainly that a stand-in signed for the role holder (lib/delegatedSignatory).
+  const commercialDirectorName = ppName(
+    getApproverField(commercialDirectorStep, 'display_name') || "Commercial Director",
+    commercialDirectorStep,
+  );
   // The first approver is a generic "Approver" — its title on the voucher is the
   // selected user's own job title (falls back to "Approver" when unknown).
-  const commercialDirectorTitle = getApproverField(commercialDirectorStep, 'job_title') || "Approver";
-  const ceoName = getApproverField(ceoStep, 'display_name') || "CEO";
+  const commercialDirectorTitle =
+    ppJobTitle(getApproverField(commercialDirectorStep, 'job_title') || "Approver", commercialDirectorStep) || "Approver";
+  const ceoName = ppName(getApproverField(ceoStep, 'display_name') || "CEO", ceoStep);
+  const ceoTitle = ppJobTitle('Chief Executive Officer', ceoStep) || 'Chief Executive Officer';
   
   // Signature actually applied AT APPROVAL (the drawn/manual one, or the saved
   // one if that's what the approver chose) — read from the approval row, NOT the
@@ -406,8 +418,8 @@ Kind regards`;
   });
   const singleApprover = distinctApprovedSteps.length <= 1;
   const soleStep = distinctApprovedSteps[0] || ceoStep || commercialDirectorStep;
-  const soleName = getApproverField(soleStep, 'display_name') || 'Approver';
-  const soleTitle = getApproverField(soleStep, 'job_title') || 'Approver';
+  const soleName = ppName(getApproverField(soleStep, 'display_name') || 'Approver', soleStep);
+  const soleTitle = ppJobTitle(getApproverField(soleStep, 'job_title') || 'Approver', soleStep) || 'Approver';
   const soleSignature = stepSignature(soleStep);
 
   const signatureBlock = (sig: string | null, name: string, title: string) => `
@@ -422,8 +434,13 @@ Kind regards`;
 
   const signaturesHtml = singleApprover
     ? `<div class="signatures-container" style="justify-content:center;">${signatureBlock(soleSignature, soleName, soleTitle)}</div>`
-    : `<div class="signatures-container">${signatureBlock(commercialDirectorSignature, commercialDirectorName, commercialDirectorTitle)}${signatureBlock(ceoSignature, ceoName, 'Chief Executive Officer')}</div>`;
+    : `<div class="signatures-container">${signatureBlock(commercialDirectorSignature, commercialDirectorName, commercialDirectorTitle)}${signatureBlock(ceoSignature, ceoName, ceoTitle)}</div>`;
   
+  // Optional activities/add-ons, appended to the entitlement sentence as
+  // "... at <hotel> plus <add-ons>." Empty when none were chosen.
+  const addOnPhrase = formatVoucherAddOnPhrase(metadata.voucherAddOns, metadata.voucherAddOnOther);
+  const addOnSuffix = addOnPhrase ? ` plus <strong>${addOnPhrase}</strong>` : '';
+
   // Generate grammatically correct entitlement text with all necessary details
   const generateEntitlementText = () => {
     const unit = firstUnit;
@@ -460,7 +477,7 @@ Kind regards`;
         'packed_lunch': 'Packed Lunch',
       };
       const mealLabel = mealTypeLabels[accType] || 'meals';
-      return `This voucher entitles the bearer to <strong>${mealCountText}</strong> (<strong>${mealLabel}</strong>) for <strong>${mealGuestText}</strong> at <strong>${hotelDisplay}</strong>.`;
+      return `This voucher entitles the bearer to <strong>${mealCountText}</strong> (<strong>${mealLabel}</strong>) for <strong>${mealGuestText}</strong> at <strong>${hotelDisplay}</strong>${addOnSuffix}.`;
     }
     
     // Accommodation types - include nights, room type, and guests
@@ -500,7 +517,7 @@ Kind regards`;
         entitlementParts.push(`for <strong>${guestText}</strong>`);
     }
     
-    return `This voucher entitles the bearer to ${entitlementParts.join(' ')} at <strong>${hotelDisplay}</strong>.`;
+    return `This voucher entitles the bearer to ${entitlementParts.join(' ')} at <strong>${hotelDisplay}</strong>${addOnSuffix}.`;
   };
 
   return `

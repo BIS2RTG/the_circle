@@ -1,6 +1,6 @@
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/router';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { GetServerSideProps } from 'next';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '../api/auth/[...nextauth]';
@@ -544,6 +544,14 @@ export default function AllRequestsPage({ initialRequests }: AllRequestsPageProp
   const [showFilters, setShowFilters] = useState(false);
   const [viewMode, setViewMode] = useState<'list' | 'compact'>('list');
   const [error, setError] = useState<string | null>(null);
+
+  // Deep-link support — e.g. a dashboard stat card linking to /requests/all?status=approved.
+  useEffect(() => {
+    const s = router.query.status;
+    if (typeof s === 'string' && ['all', 'pending', 'in_review', 'approved', 'rejected', 'withdrawn', 'draft'].includes(s)) {
+      setStatusFilter(s as StatusFilter);
+    }
+  }, [router.query.status]);
 
   const filteredRequests = requests
     .filter((req) => {
