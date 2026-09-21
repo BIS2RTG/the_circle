@@ -293,12 +293,15 @@ export function generateVoucherHtml(request: any, voucherNumberOverride?: string
   const allocationType = metadata.allocationType || 'N/A';
   const rtgLogoUrl = '/images/RTG_LOGO.png';
   
-  // Check if RTG South Africa is selected
-  const isRTGSouthAfrica = selectedBusinessUnits.some((u: any) => 
-    u.name?.toLowerCase().includes('south africa') || 
-    u.name?.toLowerCase().includes('rsa') ||
-    u.id?.toLowerCase().includes('south-africa')
-  );
+  // Check if RTG South Africa is selected. Unit names come from HRIMS, so match
+  // "South Africa" or a standalone "SA"/"RSA" word (e.g. "RTG SA") — not a bare
+  // "rsa" substring, which would also hit names like "Universal".
+  const isRTGSouthAfrica = selectedBusinessUnits.some((u: any) => {
+    const name = String(u?.name || '').toLowerCase();
+    return /south\s*africa/.test(name) ||
+      /\b(r)?sa\b/.test(name) ||
+      String(u?.id || '').toLowerCase().includes('south-africa');
+  });
   
   // Contact details based on region
   const emailSubject = `Voucher Reservation - ${voucherNumber}`;
@@ -921,8 +924,10 @@ Kind regards`;
     </div>
 
     <div class="footer">
-      May you kindly make your reservation through our Central Reservations Office on <strong>${contactDetails.phone}</strong><br>
-      Email: <strong>${contactDetails.email}</strong><br><br>
+      ${isRTGSouthAfrica
+        ? `May you kindly make your reservation through our office at <strong>${contactDetails.email}</strong> or call <strong>${contactDetails.phone}</strong><br><br>`
+        : `May you kindly make your reservation through our Central Reservations Office on <strong>${contactDetails.phone}</strong><br>
+      Email: <strong>${contactDetails.email}</strong><br><br>`}
       <em>We look forward to hosting you soon.</em>
     </div>
   </div>

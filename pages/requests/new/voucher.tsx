@@ -1857,6 +1857,7 @@ export default function VoucherRequestPage() {
                                 <optgroup label="Business Units">
                                     <option value="Gateway Stream">Gateway Stream</option>
                                     <option value="Heritage Expeditions">Heritage Expeditions</option>
+                                    <option value="RTG SA">RTG SA</option>
                                 </optgroup>
                             </select>
                             <div className="absolute inset-y-0 right-0 flex items-center px-4 pointer-events-none text-gray-500">

@@ -21,13 +21,20 @@ DECLARE
     v_org_id UUID;
     v_role_id UUID;
 BEGIN
-    -- Resolve the RTG organization (fall back to any org).
-    SELECT id INTO v_org_id FROM organizations WHERE name ILIKE '%rainbow%' OR name ILIKE '%RTG%' LIMIT 1;
+    -- Resolve the RTG organization. Deliberately does NOT fall back to "any
+    -- org": these databases carry more than one organization row, and silently
+    -- attaching the role to the wrong one creates a role that never appears
+    -- for anybody — a failure that looks exactly like nothing happening. Better
+    -- to stop and make the caller name the organization.
+    SELECT id INTO v_org_id
+    FROM organizations
+    WHERE name ILIKE '%rainbow%' OR name ILIKE '%RTG%'
+    ORDER BY created_at
+    LIMIT 1;
+
     IF v_org_id IS NULL THEN
-        SELECT id INTO v_org_id FROM organizations LIMIT 1;
-    END IF;
-    IF v_org_id IS NULL THEN
-        RAISE EXCEPTION 'No organization found. Please create an organization first.';
+        RAISE EXCEPTION
+            'No organization matching Rainbow/RTG found. Refusing to guess — set v_org_id explicitly to the correct organizations.id and re-run.';
     END IF;
 
     INSERT INTO permissions (code, name, description, category) VALUES
