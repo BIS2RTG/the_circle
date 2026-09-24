@@ -188,24 +188,107 @@ export function generateCombinedVouchersHtml(request: any, numbers: string[]): s
   const bodyIdx = first.indexOf('<body>');
   const headPart = first.slice(0, bodyIdx); // doctype + <html> + <head> (styles)
 
+  // Slice out the whole A4 sheet, not just its contents — .voucher-page is what
+  // carries the one-page box, the page break and the scaling wrapper.
   const extractContainer = (fullHtml: string): string => {
-    const s = fullHtml.indexOf('<div class="voucher-container">');
+    const s = fullHtml.indexOf('<div class="voucher-page">');
     const e = fullHtml.indexOf('</body>');
-    return s >= 0 && e > s ? fullHtml.slice(s, e) : '';
+    if (s < 0 || e <= s) return '';
+    const body = fullHtml.slice(s, e);
+    // Drop the per-voucher copy of the fit script; one copy is added below and
+    // it already walks every .voucher-page on the document.
+    const scriptAt = body.indexOf('<script>');
+    return scriptAt >= 0 ? body.slice(0, scriptAt) : body;
   };
 
-  const containers = numbers.map((num, i) => {
-    const html = i === 0 ? first : generateVoucherHtml(request, num);
-    const container = extractContainer(html);
-    // Force each voucher onto its own printed page.
-    return i === 0
-      ? container
-      : `<div style="page-break-before: always; break-before: page;"></div>\n${container}`;
-  });
+  // Each sheet breaks after itself (see the print CSS), so no separators here.
+  const containers = numbers.map((num, i) =>
+    extractContainer(i === 0 ? first : generateVoucherHtml(request, num))
+  );
 
   const printBtn = `<button class="print-btn no-print" onclick="window.print()">Print / Save as PDF (${numbers.length} vouchers)</button>`;
-  return `${headPart}<body>\n${printBtn}\n${containers.join('\n')}\n</body>\n</html>`;
+  return `${headPart}<body>\n${printBtn}\n${containers.join('\n')}\n${FIT_TO_PAGE_SCRIPT}\n</body>\n</html>`;
 }
+
+/**
+ * Scales each voucher down until it fits its A4 sheet, so a long voucher is
+ * never split across two pages.
+ *
+ * Why scaling rather than tighter margins: voucher length is driven by content
+ * we don't control (number of business units, add-ons, guest names, special
+ * arrangements). Any fixed set of margins fits some vouchers and splits others.
+ * Measuring the real height and scaling to fit works for every length.
+ *
+ * Measurement is only trustworthy once webfonts and the logo have loaded —
+ * both change the height — so the fit runs after those settle, and again on
+ * `beforeprint` in case the user prints before that.
+ */
+const FIT_TO_PAGE_SCRIPT = `<script>
+(function () {
+  var PX_PER_MM = 96 / 25.4;              // CSS px per mm at the 96dpi print base
+  var AVAILABLE = (297 - 20) * PX_PER_MM; // A4 height less the sheet's 10mm padding
+
+  function fitOne(page) {
+    var inner = page.querySelector('.voucher-fit');
+    if (!inner) return;
+
+    // Always measure from a clean slate so repeated runs don't compound.
+    inner.style.transform = 'none';
+    inner.style.width = '100%';
+
+    var height = inner.scrollHeight;
+    if (!height || height <= AVAILABLE) return;   // already fits — leave it alone
+
+    // Widening by 1/k before scaling by k keeps the voucher spanning the full
+    // sheet instead of shrinking away from the edges. Re-measure between passes
+    // because a wider box reflows the text and changes the height.
+    var k = AVAILABLE / height;
+    for (var pass = 0; pass < 2; pass++) {
+      inner.style.width = (100 / k) + '%';
+      height = inner.scrollHeight;
+      if (!height) return;
+      k = Math.min(1, AVAILABLE / height);
+    }
+
+    inner.style.width = (100 / k) + '%';
+    inner.style.transform = 'scale(' + k + ')';
+  }
+
+  function markFitted(page) { page.classList.add('fitted'); }
+
+  function fit() {
+    var pages = document.querySelectorAll('.voucher-page');
+    for (var i = 0; i < pages.length; i++) { fitOne(pages[i]); markFitted(pages[i]); }
+  }
+
+  // Resolves once fonts and images have settled and the fit has been applied.
+  var settled = null;
+  function ready(cb) {
+    if (settled) { settled.then(cb); return; }
+    var waits = [];
+    if (document.fonts && document.fonts.ready) waits.push(document.fonts.ready);
+    var imgs = document.images;
+    for (var i = 0; i < imgs.length; i++) {
+      if (!imgs[i].complete) {
+        waits.push(new Promise(function (res) {
+          imgs[i].addEventListener('load', res);
+          imgs[i].addEventListener('error', res);   // a broken logo must not hang printing
+        }));
+      }
+    }
+    settled = Promise.all(waits).then(function () { fit(); });
+    settled.then(cb);
+  }
+
+  window.__voucherFit = { fit: fit, ready: ready };
+
+  if (document.readyState === 'complete') ready(function () {});
+  else window.addEventListener('load', function () { ready(function () {}); });
+
+  // Printing before the fonts settle would otherwise print an unscaled sheet.
+  window.addEventListener('beforeprint', fit);
+})();
+</script>`;
 
 export function generateVoucherHtml(request: any, voucherNumberOverride?: string, autoPrint?: boolean): string {
   const metadata = request.metadata || {};
@@ -293,12 +376,15 @@ export function generateVoucherHtml(request: any, voucherNumberOverride?: string
   const allocationType = metadata.allocationType || 'N/A';
   const rtgLogoUrl = '/images/RTG_LOGO.png';
   
-  // Check if RTG South Africa is selected
-  const isRTGSouthAfrica = selectedBusinessUnits.some((u: any) => 
-    u.name?.toLowerCase().includes('south africa') || 
-    u.name?.toLowerCase().includes('rsa') ||
-    u.id?.toLowerCase().includes('south-africa')
-  );
+  // Check if RTG South Africa is selected. Unit names come from HRIMS, so match
+  // "South Africa" or a standalone "SA"/"RSA" word (e.g. "RTG SA") — not a bare
+  // "rsa" substring, which would also hit names like "Universal".
+  const isRTGSouthAfrica = selectedBusinessUnits.some((u: any) => {
+    const name = String(u?.name || '').toLowerCase();
+    return /south\s*africa/.test(name) ||
+      /\b(r)?sa\b/.test(name) ||
+      String(u?.id || '').toLowerCase().includes('south-africa');
+  });
   
   // Contact details based on region
   const emailSubject = `Voucher Reservation - ${voucherNumber}`;
@@ -528,35 +614,61 @@ Kind regards`;
   <title>Complimentary Voucher - ${voucherNumber}</title>
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=Lato:wght@300;400;700&display=swap" rel="stylesheet">
   <style>
+    /* ---------------------------------------------------------------------
+       One voucher = exactly one A4 page.
+
+       The page box is the SAME on screen and in print, so what is measured is
+       what prints. A voucher's content varies a lot (several business units,
+       add-ons, long guest names, special arrangements), so instead of trying to
+       tune margins until it happens to fit — which silently breaks again on the
+       next long voucher — .voucher-fit is scaled down by script until it fits
+       the printable area. The hidden overflow is the backstop: a residual pixel
+       or two can never bleed into a second sheet.
+       --------------------------------------------------------------------- */
+    .voucher-page {
+      width: 210mm;
+      height: 297mm;
+      padding: 10mm;
+      margin: 0 auto 24px;
+      background: #ffffff;
+      box-sizing: border-box;
+      position: relative;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.08);
+    }
+    .voucher-fit {
+      transform-origin: top left;
+      width: 100%;
+    }
+    /* Clipping is only safe once the script has actually scaled the content to
+       fit. If it never runs, an over-long voucher spills (and may split) rather
+       than silently losing its footer — a visible fault beats a silent one. */
+    .voucher-page.fitted { overflow: hidden; }
+
     @media print {
+      @page { size: A4 portrait; margin: 0; }
       body {
         -webkit-print-color-adjust: exact;
         print-color-adjust: exact;
         background: #ffffff;
-        /* Compact the page so the whole voucher — signatures included — fits on
-           a single A4 sheet instead of the signature block spilling onto page 2. */
         padding: 0 !important;
+        margin: 0 !important;
         max-width: none !important;
       }
       .no-print { display: none !important; }
-      @page { size: A4 portrait; margin: 10mm; }
-      .voucher-container {
+      .voucher-page {
+        margin: 0;
         box-shadow: none !important;
-        padding: 24px 34px !important;
-        /* Keep the whole voucher together on one page. */
+        page-break-after: always;
+        break-after: page;
         page-break-inside: avoid;
         break-inside: avoid;
       }
-      /* Trim the generous on-screen vertical rhythm for print. */
-      .header { margin-bottom: 20px !important; }
-      .main-title { margin-bottom: 14px !important; }
-      .guest-section { margin-bottom: 18px !important; }
-      .congratulations { margin-bottom: 12px !important; }
-      .entitlement-box { margin-bottom: 18px !important; padding: 16px 24px !important; }
-      .terms-section { margin-bottom: 18px !important; }
-      .terms-list li { margin-bottom: 7px !important; }
-      .signatures-container { margin-top: 26px !important; margin-bottom: 22px !important; }
-      .footer { margin-top: 18px !important; padding-top: 12px !important; }
+      /* No trailing blank sheet after the last voucher. */
+      .voucher-page:last-of-type {
+        page-break-after: auto;
+        break-after: auto;
+      }
+      .voucher-container { box-shadow: none !important; }
     }
     * {
       margin: 0;
@@ -567,7 +679,6 @@ Kind regards`;
       font-family: 'Lato', sans-serif;
       line-height: 1.6;
       color: #333;
-      max-width: 850px;
       margin: 0 auto;
       padding: 40px 20px;
       background: #f7f9fc;
@@ -577,7 +688,8 @@ Kind regards`;
       border-radius: 2px;
       padding: 50px 60px;
       position: relative;
-      box-shadow: 0 10px 40px rgba(0,0,0,0.08);
+      /* The shadow lives on .voucher-page (the sheet); the container is its
+         content and must stay flat so the two don't stack. */
       overflow: hidden;
     }
     /* Elegant inner border */
@@ -867,6 +979,8 @@ Kind regards`;
 <body>
   <button class="print-btn no-print" onclick="window.print()">Print / Save as PDF</button>
   
+  <div class="voucher-page">
+   <div class="voucher-fit">
   <div class="voucher-container">
     <div class="header">
       <img src="${rtgLogoUrl}" alt="RTG Logo" class="logo" onerror="this.style.display='none';">
@@ -921,12 +1035,17 @@ Kind regards`;
     </div>
 
     <div class="footer">
-      May you kindly make your reservation through our Central Reservations Office on <strong>${contactDetails.phone}</strong><br>
-      Email: <strong>${contactDetails.email}</strong><br><br>
+      ${isRTGSouthAfrica
+        ? `May you kindly make your reservation through our office at <strong>${contactDetails.email}</strong> or call <strong>${contactDetails.phone}</strong><br><br>`
+        : `May you kindly make your reservation through our Central Reservations Office on <strong>${contactDetails.phone}</strong><br>
+      Email: <strong>${contactDetails.email}</strong><br><br>`}
       <em>We look forward to hosting you soon.</em>
     </div>
   </div>
-  ${autoPrint ? `<script>window.addEventListener('load',function(){setTimeout(function(){window.print();},400);});</script>` : ''}
+   </div>
+  </div>
+  ${FIT_TO_PAGE_SCRIPT}
+  ${autoPrint ? `<script>window.addEventListener('load',function(){__voucherFit.ready(function(){window.print();});});</script>` : ''}
 </body>
 </html>
   `;
