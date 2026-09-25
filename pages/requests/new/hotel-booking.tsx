@@ -32,8 +32,33 @@ interface SelectedBusinessUnit {
     numberOfNights: string;
     numberOfRooms: string;
     accommodationType: string;
+    /** Only meaningful for the meal-only accommodation types below. */
+    numberOfMeals: string;
+    mealPeopleCount: string;
     specialArrangements: string;
 }
+
+/**
+ * Meal-only complimentaries — food with no stay attached. Kept as its own map
+ * (rather than folded into the four accommodation radios above it) because
+ * these are the types that carry meal counts instead of nights and rooms, and
+ * the voucher renders them down a completely separate branch.
+ *
+ * The labels match external-comp-booking exactly, so a given type reads the
+ * same wherever it is approved or printed.
+ */
+const MEAL_ONLY_ACCOMMODATION_TYPES: Record<string, string> = {
+    meals_all: 'Meals (Breakfast, Lunch and Dinner Only)',
+    rainbow_delights: 'Rainbow Delights Meal(s) Only',
+    breakfast_only: 'Breakfast meal(s) only',
+    lunch_only: 'Lunch meal(s) only',
+    dinner_only: 'Dinner meal(s) only',
+    packed_breakfast: 'Packed breakfast',
+    packed_lunch: 'Packed lunch',
+};
+
+const isMealOnlyType = (type: string) =>
+    Object.prototype.hasOwnProperty.call(MEAL_ONLY_ACCOMMODATION_TYPES, type);
 
 interface AACalculatorData {
     engineCapacity: string;
@@ -792,6 +817,8 @@ export default function HotelBookingPage() {
             numberOfNights: '',
             numberOfRooms: '',
             accommodationType: 'accommodation_only',
+            numberOfMeals: '',
+            mealPeopleCount: '',
             specialArrangements: 'N/A',
         }]);
     };
@@ -1021,6 +1048,8 @@ export default function HotelBookingPage() {
         accommodation_and_breakfast: 'Accommodation + Breakfast',
         accommodation_and_meals: 'Accommodation + Meals',
         accommodation_meals_drink: 'Accommodation + Meals + 1 Soft Drink/Meal',
+        // Without these the preview falls through to the raw value ("meals_all").
+        ...MEAL_ONLY_ACCOMMODATION_TYPES,
     };
     const ALLOCATION_LABELS_HB: Record<string, string> = {
         marketing_domestic: 'Marketing – Domestic',
@@ -1314,6 +1343,14 @@ export default function HotelBookingPage() {
             }
             if (!unit.accommodationType) {
                 errors.push(`Accommodation type is required for ${unit.name}`);
+            }
+            if (isMealOnlyType(unit.accommodationType)) {
+                if (!unit.numberOfMeals) {
+                    errors.push(`Number of meals is required for ${unit.name}`);
+                }
+                if (!unit.mealPeopleCount) {
+                    errors.push(`Number of people for meals is required for ${unit.name}`);
+                }
             }
         }
 
@@ -1735,13 +1772,15 @@ export default function HotelBookingPage() {
                                                     readOnly
                                                     className="bg-gray-50"
                                                 />
+                                                {/* Food-only complimentaries book no rooms and stay no nights,
+                                                    so 0 is a real answer here, not a missing one. */}
                                                 <Input
                                                     type="number"
                                                     label="No. Of Rooms *"
                                                     value={selectedUnit.numberOfRooms}
                                                     onChange={(e) => handleBusinessUnitFieldChange(selectedUnit.instanceId, 'numberOfRooms', e.target.value)}
                                                     required
-                                                    min="1"
+                                                    min="0"
                                                 />
                                             </div>
 
@@ -1792,8 +1831,50 @@ export default function HotelBookingPage() {
                                                         />
                                                         <span className="text-sm text-gray-700">Accommodation, Meals & Soft Drink</span>
                                                     </label>
+                                                    {Object.entries(MEAL_ONLY_ACCOMMODATION_TYPES).map(([value, label]) => (
+                                                        <label key={value} className="flex items-center gap-2 cursor-pointer p-2 rounded-lg hover:bg-gray-50 border border-transparent hover:border-gray-200">
+                                                            <input
+                                                                type="radio"
+                                                                name={`accommodationType_${selectedUnit.instanceId}`}
+                                                                value={value}
+                                                                checked={selectedUnit.accommodationType === value}
+                                                                onChange={(e) => handleBusinessUnitFieldChange(selectedUnit.instanceId, 'accommodationType', e.target.value)}
+                                                                className="w-4 h-4 text-primary-600 focus:ring-primary-500 border-gray-300"
+                                                            />
+                                                            <span className="text-sm text-gray-700">{label}</span>
+                                                        </label>
+                                                    ))}
                                                 </div>
                                             </div>
+
+                                            {isMealOnlyType(selectedUnit.accommodationType) && (
+                                                <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl">
+                                                    <h4 className="text-sm font-semibold text-gray-700 mb-3 uppercase">Meal Details</h4>
+                                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                                        <Input
+                                                            type="number"
+                                                            label="Number of Meals *"
+                                                            placeholder="e.g. 2"
+                                                            value={selectedUnit.numberOfMeals}
+                                                            onChange={(e) => handleBusinessUnitFieldChange(selectedUnit.instanceId, 'numberOfMeals', e.target.value)}
+                                                            required
+                                                            min="1"
+                                                        />
+                                                        <Input
+                                                            type="number"
+                                                            label="Number of People for Meals *"
+                                                            placeholder="e.g. 4"
+                                                            value={selectedUnit.mealPeopleCount}
+                                                            onChange={(e) => handleBusinessUnitFieldChange(selectedUnit.instanceId, 'mealPeopleCount', e.target.value)}
+                                                            required
+                                                            min="1"
+                                                        />
+                                                    </div>
+                                                    <p className="mt-3 text-xs text-gray-500">
+                                                        This is a food-only complimentary, so leave nights and rooms at 0.
+                                                    </p>
+                                                </div>
+                                            )}
 
                                             <div>
                                                 <label className="block text-sm font-semibold text-gray-700 mb-1 uppercase">Special Arrangements</label>

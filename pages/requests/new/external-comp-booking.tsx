@@ -1532,13 +1532,15 @@ export default function ExternalCompBookingPage() {
                                                     readOnly
                                                     className="bg-gray-50"
                                                 />
+                                                {/* Food-only complimentaries book no rooms and stay no nights,
+                                                    so 0 is a real answer here, not a missing one. */}
                                                 <Input
                                                     type="number"
                                                     label="No. Of Rooms *"
                                                     value={selectedUnit.numberOfRooms}
                                                     onChange={(e) => handleBusinessUnitFieldChange(selectedUnit.instanceId, 'numberOfRooms', e.target.value)}
                                                     required
-                                                    min="1"
+                                                    min="0"
                                                 />
                                             </div>
 
