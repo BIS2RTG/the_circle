@@ -68,6 +68,9 @@ export const PERMISSIONS = {
   /** File on behalf of ANY employee or an external guest (HR admins), without
    *  needing a per-person assistant assignment. See lib/onBehalf.ts. */
   REQUESTS_FILE_ON_BEHALF_ANY: 'requests.file_on_behalf_any',
+  /** Choose which business unit a request is for, from the units an admin
+   *  assigned (user_request_business_units). See lib/requestBusinessUnits.ts. */
+  REQUESTS_MULTI_BUSINESS_UNIT: 'requests.multi_business_unit',
   // Approvals
   APPROVALS_VIEW: 'approvals.view',
   APPROVALS_APPROVE: 'approvals.approve',

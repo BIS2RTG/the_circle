@@ -6,6 +6,7 @@ import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { getDirectoryUserByEmail, isGraphDirectoryConfigured } from '@/lib/graphDirectory';
 import { getValidMsAccessToken } from '@/lib/msTokenStore';
 import { CAPEX_PROCUREMENT_MANAGER } from '@/lib/fixedApprovers';
+import { canFileForBusinessUnit } from '@/lib/requestBusinessUnits';
 
 interface ResolvedApprover {
   userId: string;
@@ -208,6 +209,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(200).json({ approvers });
     }
 
+    // Multi-unit staff (lib/requestBusinessUnits) may file for a unit other than
+    // their HRIMS home unit. Honour the requested unit only if an admin assigned
+    // it to this requestor; otherwise fall back to the HRIMS unit.
+    let businessUnitOverride: string | null = null;
+    const requestedBuId = typeof req.query.businessUnitId === 'string' ? req.query.businessUnitId.trim() : '';
+    if (requestedBuId) {
+      const { data: requestedBu } = await hrimsClient
+        .from('business_units')
+        .select('id, code')
+        .eq('id', requestedBuId)
+        .maybeSingle();
+      if (requestedBu && await canFileForBusinessUnit(email, organizationId, requestedBu.code)) {
+        businessUnitOverride = requestedBu.id;
+        debug.push(`OK: business unit override → ${requestedBu.code}`);
+      }
+    }
+
     debug.push(`Resolving approvers for email="${email}", formType="${formType}"`);
 
     if (formType === 'travel' || formType === 'hotel-booking') {
@@ -364,7 +382,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           .eq('employment_status', 'active')
           .single();
 
-        const buId = requestorEmp?.business_unit_id;
+        const buId = businessUnitOverride || requestorEmp?.business_unit_id;
         // Scope strictly to the requestor's OWN business unit — this is the
         // "General Manager (Unit)" slot, so a GM from a different hotel/unit must
         // never be pre-filled. If the unit has no GM position the role is left
@@ -553,7 +571,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         .eq('employment_status', 'active')
         .single();
 
-      const fromBuId = requestorEmp?.business_unit_id;
+      const fromBuId = businessUnitOverride || requestorEmp?.business_unit_id;
 
       const tryFromTitles = ['Finance Manager', 'Head of Finance', 'Finance Director'];
       for (const title of tryFromTitles) {

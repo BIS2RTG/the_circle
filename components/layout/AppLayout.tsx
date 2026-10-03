@@ -4,6 +4,7 @@ import AppHeader from './AppHeader';
 import Sidebar from './Sidebar';
 import OnboardingFlow from '../onboarding/OnboardingFlow';
 import FeatureTour, { TourStep } from '../onboarding/FeatureTour';
+import BusinessUnitSwitcher from '../requests/BusinessUnitSwitcher';
 import { useSignatureCheck, useCurrentUser } from '@/hooks';
 
 // Post-onboarding walkthrough of the everyday features. Each step anchors to a
@@ -238,6 +239,8 @@ export default function AppLayout({
         />
 
         <main className={`flex-1 pb-4 max-w-8xl mx-auto w-full`}>
+          {/* Multi-unit staff choose which business unit a new request is for */}
+          {router.pathname.startsWith('/requests/new/') && !['/requests/new/form', '/requests/new/workflow', '/requests/new/template'].includes(router.pathname) && <BusinessUnitSwitcher />}
           {children}
         </main>
       </div>

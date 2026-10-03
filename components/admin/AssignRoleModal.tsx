@@ -60,11 +60,18 @@ export default function AssignRoleModal({ isOpen, onClose, roles, permissions = 
   // Data-access scope: how much of the org's data this user can see.
   const [scopeLevel, setScopeLevel] = useState<string>('business_unit');
   const [scopeBUNames, setScopeBUNames] = useState<Set<string>>(new Set());
-  const [businessUnits, setBusinessUnits] = useState<Array<{ id: string; name: string }>>([]);
+  const [businessUnits, setBusinessUnits] = useState<Array<{ id: string; name: string; code: string }>>([]);
   const [buSearch, setBuSearch] = useState('');
   const [showScope, setShowScope] = useState(false);
   const [loadingScope, setLoadingScope] = useState(false);
   const [savingScope, setSavingScope] = useState(false);
+
+  // Multi-Unit Requester: business units this user may file requests for
+  // (on top of their HRIMS home unit). Keyed by HRIMS code → display name.
+  const [requestUnits, setRequestUnits] = useState<Map<string, string>>(new Map());
+  const [requestUnitSearch, setRequestUnitSearch] = useState('');
+  const [loadingRequestUnits, setLoadingRequestUnits] = useState(false);
+  const [savingRequestUnits, setSavingRequestUnits] = useState(false);
 
   // Load users + business units when the modal opens
   useEffect(() => {
@@ -76,6 +83,7 @@ export default function AssignRoleModal({ isOpen, onClose, roles, permissions = 
     setShowOverrides(false);
     setShowScope(false);
     setBuSearch('');
+    setRequestUnitSearch('');
     setLoadingUsers(true);
     fetch('/api/users')
       .then((r) => r.json())
@@ -87,7 +95,7 @@ export default function AssignRoleModal({ isOpen, onClose, roles, permissions = 
       .then((r) => r.json())
       .then((d) => setBusinessUnits(
         (d.businessUnits || [])
-          .map((b: any) => ({ id: b.id, name: b.name }))
+          .map((b: any) => ({ id: b.id, name: b.name, code: b.code || '' }))
           .filter((b: any) => b.name)
           .sort((a: any, b: any) => a.name.localeCompare(b.name))
       ))
@@ -139,11 +147,22 @@ export default function AssignRoleModal({ isOpen, onClose, roles, permissions = 
       .finally(() => setLoadingScope(false));
   }, [addToast]);
 
+  const loadUserRequestUnits = useCallback((userId: string) => {
+    if (!userId) { setRequestUnits(new Map()); return; }
+    setLoadingRequestUnits(true);
+    fetch(`/api/rbac/request-units?user_id=${userId}`)
+      .then((r) => r.json())
+      .then((d) => setRequestUnits(new Map((d.units || []).map((u: any) => [String(u.code).toUpperCase(), u.name]))))
+      .catch(() => addToast({ type: 'error', message: 'Failed to load request business units' }))
+      .finally(() => setLoadingRequestUnits(false));
+  }, [addToast]);
+
   useEffect(() => {
     loadUserRoles(selectedUserId);
     loadUserOverrides(selectedUserId);
     loadUserScope(selectedUserId);
-  }, [selectedUserId, loadUserRoles, loadUserOverrides, loadUserScope]);
+    loadUserRequestUnits(selectedUserId);
+  }, [selectedUserId, loadUserRoles, loadUserOverrides, loadUserScope, loadUserRequestUnits]);
 
   const filteredUsers = useMemo(() => {
     const q = search.toLowerCase();
@@ -173,6 +192,14 @@ export default function AssignRoleModal({ isOpen, onClose, roles, permissions = 
   }, [permissions]);
 
   const overrideCount = overrides.size;
+
+  // The business-unit checkboxes apply only while the user can actually use
+  // them: via a role (e.g. Multi-Unit Requester) or a grant override, and not denied.
+  const MULTI_UNIT_PERMISSION = 'requests.multi_business_unit';
+  const multiUnitOverride = overrides.get(MULTI_UNIT_PERMISSION);
+  const canRequestMultiUnit = multiUnitOverride === undefined
+    ? rolePermCodes.has(MULTI_UNIT_PERMISSION)
+    : multiUnitOverride;
 
   const handleAssign = async () => {
     if (!selectedUserId || !roleToAdd) return;
@@ -237,6 +264,37 @@ export default function AssignRoleModal({ isOpen, onClose, roles, permissions = 
       if (next.has(name)) next.delete(name); else next.add(name);
       return next;
     });
+  };
+
+  const toggleRequestUnit = (code: string, name: string) => {
+    setRequestUnits((prev) => {
+      const next = new Map(prev);
+      const key = code.toUpperCase();
+      if (next.has(key)) next.delete(key); else next.set(key, name);
+      return next;
+    });
+  };
+
+  const handleSaveRequestUnits = async () => {
+    if (!selectedUserId) return;
+    setSavingRequestUnits(true);
+    try {
+      const res = await fetch('/api/rbac/request-units', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: selectedUserId,
+          units: Array.from(requestUnits.entries()).map(([code, name]) => ({ code, name })),
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || 'Failed to save business units');
+      addToast({ type: 'success', message: 'Request business units saved' });
+    } catch (err: any) {
+      addToast({ type: 'error', message: err.message || 'Failed to save business units' });
+    } finally {
+      setSavingRequestUnits(false);
+    }
   };
 
   const handleSaveScope = async () => {
@@ -368,6 +426,77 @@ export default function AssignRoleModal({ isOpen, onClose, roles, permissions = 
               </div>
             </div>
 
+
+            {/* ---- Multi-Unit Requester: business units they can file for ---- */}
+            {canRequestMultiUnit && (
+              <div className="border-t border-gray-100 pt-4">
+                <h4 className="text-sm font-semibold text-gray-800">
+                  Business units they can request for
+                  <span className="ml-2 px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-brand-700">
+                    {requestUnits.size} selected
+                  </span>
+                </h4>
+                <p className="text-xs text-gray-500 mt-1">
+                  On each request form they choose which of these units the request is for, and unit-based approvers
+                  follow that choice. Their HRIMS home unit is always available, so it doesn&apos;t need ticking.
+                </p>
+
+                {loadingRequestUnits ? (
+                  <p className="text-sm text-gray-400 mt-3">Loading…</p>
+                ) : (
+                  <div className="mt-3 space-y-3">
+                    <div className="border border-gray-200 rounded-xl p-3">
+                      <input
+                        type="text"
+                        placeholder="Filter business units…"
+                        value={requestUnitSearch}
+                        onChange={(e) => setRequestUnitSearch(e.target.value)}
+                        className="w-full px-3 py-1.5 mb-2 text-sm rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                      />
+                      <div className="max-h-48 overflow-y-auto space-y-1">
+                        {businessUnits.filter((b) => b.code).length === 0 ? (
+                          <p className="text-sm text-gray-400 py-2">No business units available.</p>
+                        ) : (
+                          businessUnits
+                            .filter((b) => b.code)
+                            .filter((b) => !requestUnitSearch || b.name.toLowerCase().includes(requestUnitSearch.toLowerCase()))
+                            .map((b) => (
+                              <label key={b.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-gray-50 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  className="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500"
+                                  checked={requestUnits.has(b.code.toUpperCase())}
+                                  onChange={() => toggleRequestUnit(b.code, b.name)}
+                                />
+                                <span className="text-sm text-gray-700">{b.name}</span>
+                              </label>
+                            ))
+                        )}
+                      </div>
+                      {/* Saved units no longer in the HRIMS list — kept so they aren't silently dropped. */}
+                      {Array.from(requestUnits.entries())
+                        .filter(([code]) => !businessUnits.some((b) => b.code.toUpperCase() === code))
+                        .map(([code, name]) => (
+                          <label key={code} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-gray-50 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              className="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500"
+                              checked
+                              onChange={() => toggleRequestUnit(code, name)}
+                            />
+                            <span className="text-sm text-gray-700">{name} <span className="text-xs text-gray-400">(saved)</span></span>
+                          </label>
+                        ))}
+                    </div>
+                    <div className="flex justify-end">
+                      <Button variant="primary" onClick={handleSaveRequestUnits} disabled={savingRequestUnits}>
+                        {savingRequestUnits ? 'Saving…' : 'Save business units'}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* ---- Data-access scope ---- */}
             <div className="border-t border-gray-100 pt-4">
