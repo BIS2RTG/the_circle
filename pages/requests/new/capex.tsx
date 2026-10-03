@@ -123,7 +123,7 @@ function DragHandle({
 export default function NewCapexRequestPage() {
   const { data: session, status } = useSession();
   const { user } = useCurrentUser();
-  const { departmentName, businessUnitName } = useUserHrimsProfile();
+  const { departmentName, businessUnitName, businessUnitId } = useUserHrimsProfile();
   const router = useRouter();
   const { addToast } = useToast();
   const [loading, setLoading] = useState(false);
@@ -789,8 +789,13 @@ export default function NewCapexRequestPage() {
             if (!resolutionEmail || isEditMode) { setLoadingApproverResolution(false); return; }
       setLoadingApproverResolution(true);
       try {
+        // Filing for oneself: scope the unit GM to the business unit being filed
+        // for (differs from HRIMS for multi-unit staff; ignored server-side otherwise).
+        const buParam = businessUnitId && resolutionEmail.toLowerCase() === (session?.user?.email || '').toLowerCase()
+          ? `&businessUnitId=${encodeURIComponent(businessUnitId)}`
+          : '';
         const response = await fetch(
-          `/api/hrims/resolve-approvers?email=${encodeURIComponent(resolutionEmail)}&formType=capex`
+          `/api/hrims/resolve-approvers?email=${encodeURIComponent(resolutionEmail)}&formType=capex${buParam}`
         );
         const data = await response.json();
         if (response.ok && data.approvers) {
@@ -816,7 +821,7 @@ export default function NewCapexRequestPage() {
       }
     };
     if (status === 'authenticated') resolveApprovers();
-  }, [status, resolutionEmail, isEditMode]);
+  }, [status, resolutionEmail, isEditMode, businessUnitId]);
 
   const [showPreview, setShowPreview] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);

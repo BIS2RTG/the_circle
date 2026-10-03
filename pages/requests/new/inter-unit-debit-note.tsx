@@ -25,6 +25,9 @@ const UNIT_OPTIONS: Array<{ code: string; label: string }> = [
     { code: 'AZAM', label: "A'Zambezi River Lodge (AZAM)" },
 ];
 
+/** HRIMS business_units.code → UNIT_OPTIONS code, where the two differ. */
+const HRIMS_UNIT_ALIASES: Record<string, string> = { ARL: 'AZAM', VFH: 'VFRH' };
+
 const CURRENCY_OPTIONS = ['USD', 'ZWG', 'ZAR'];
 
 interface DebitNoteLineItem {
@@ -46,7 +49,7 @@ export default function InterUnitDebitNoteRequestPage() {
     const { data: session, status } = useSession();
     const router = useRouter();
     const { user } = useCurrentUser();
-    const { departmentName, businessUnitName, businessUnitCode } = useUserHrimsProfile();
+    const { departmentName, businessUnitName, businessUnitCode, businessUnitId } = useUserHrimsProfile();
 
     const { edit: editRequestId, approver: isApproverEdit } = router.query;
     const isEditMode = !!editRequestId;
@@ -207,15 +210,16 @@ export default function InterUnitDebitNoteRequestPage() {
     // Match the HRIMS code against the local UNIT_OPTIONS so the dropdown picks the
     // right entry. If the requestor's unit isn't in the local list (e.g. a unit
     // outside the standard hotel set) we fall through and let the user pick.
+    // Follows the unit selection for multi-unit staff, so it re-derives whenever
+    // the HRIMS code changes. HRIMS codes that differ from the local list are
+    // aliased (HRIMS ARL/VFH → AZAM/VFRH).
     useEffect(() => {
-        if (isEditMode || formData.fromUnit) return;
+        if (isEditMode) return;
         if (!businessUnitCode) return;
-        const upper = businessUnitCode.toUpperCase();
+        const upper = (HRIMS_UNIT_ALIASES[businessUnitCode.toUpperCase()] || businessUnitCode).toUpperCase();
         const match = UNIT_OPTIONS.find(o => o.code.toUpperCase() === upper);
-        if (match) {
-            setFormData(prev => ({ ...prev, fromUnit: match.code }));
-        }
-    }, [businessUnitCode, isEditMode, formData.fromUnit]);
+        if (match) setFormData(prev => (prev.fromUnit === match.code ? prev : { ...prev, fromUnit: match.code }));
+    }, [businessUnitCode, isEditMode]);
 
     // Auto-fill the From-Unit Accountant approver row with the requestor — they're
     // signing the debit note themselves, so this step is implicit.
@@ -241,6 +245,7 @@ export default function InterUnitDebitNoteRequestPage() {
                     formType: 'inter-unit-debit-note',
                 });
                 if (formData.toUnit) params.set('toUnit', formData.toUnit);
+                if (businessUnitId) params.set('businessUnitId', businessUnitId);
 
                 const response = await fetch(`/api/hrims/resolve-approvers?${params.toString()}`);
                 const data = await response.json();
@@ -270,7 +275,7 @@ export default function InterUnitDebitNoteRequestPage() {
             }
         };
         if (status === 'authenticated') resolveApprovers();
-    }, [status, session?.user?.email, isEditMode, formData.toUnit]);
+    }, [status, session?.user?.email, isEditMode, formData.toUnit, businessUnitId]);
 
     // Keep the parties' Receiving Accountant name in sync with the chosen user.
     useEffect(() => {
