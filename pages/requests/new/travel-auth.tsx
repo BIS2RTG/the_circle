@@ -102,7 +102,7 @@ interface AACalculatorData {
 // /api/settings/rates at runtime.
 type AARateTable = Record<string, { petrol: number; diesel: number }>;
 const AA_RATES_DEFAULTS: AARateTable = {
-    '1.1L-1.5L': { petrol: 0.30, diesel: 0.28 },
+    '1.1L-1.5L': { petrol: 0.31, diesel: 0.28 },
     '1.6L-2.0L': { petrol: 0.38, diesel: 0.34 },
     '2.1L-3.0L': { petrol: 0.52, diesel: 0.48 },
     'Above 3.0L': { petrol: 0.64, diesel: 0.59 },
