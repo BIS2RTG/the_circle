@@ -97,15 +97,15 @@ interface AACalculatorData {
 
 // AA Rate table based on engine capacity and fuel type (USD per km).
 // Defaults mirror the AA Zimbabwe "Estimated Vehicle Operating Costs" schedule
-// (wet rate, "JULY 2026 V2" / version V319.1). Administrators can override these
+// (wet rate, "OCTOBER 2026" / version V322). Administrators can override these
 // in Admin → Financial Rates; the live values are loaded from
 // /api/settings/rates at runtime.
 type AARateTable = Record<string, { petrol: number; diesel: number }>;
 const AA_RATES_DEFAULTS: AARateTable = {
-    '1.1L-1.5L': { petrol: 0.31, diesel: 0.28 },
-    '1.6L-2.0L': { petrol: 0.38, diesel: 0.34 },
-    '2.1L-3.0L': { petrol: 0.52, diesel: 0.48 },
-    'Above 3.0L': { petrol: 0.64, diesel: 0.59 },
+    '1.1L-1.5L': { petrol: 0.31, diesel: 0.29 },
+    '1.6L-2.0L': { petrol: 0.40, diesel: 0.36 },
+    '2.1L-3.0L': { petrol: 0.54, diesel: 0.50 },
+    'Above 3.0L': { petrol: 0.66, diesel: 0.62 },
 };
 
 interface TravelData {
@@ -247,7 +247,7 @@ export default function TravelAuthPage() {
         itinerary: [{ date: '', from: '', to: '', km: '', justification: '' }],
         budget: {
             fuel: { quantity: '', unitCost: '', totalCost: '' },
-            aaRates: { quantity: '', unitCost: '0.30', totalCost: '' },
+            aaRates: { quantity: '', unitCost: '0.31', totalCost: '' },
             airBusTickets: { quantity: '', unitCost: '', totalCost: '' },
             conferencingCost: { quantity: '', unitCost: '', totalCost: '' },
             tollgates: [{ road: '', quantity: '1', unitCost: '', totalCost: '' }],
@@ -604,7 +604,7 @@ export default function TravelAuthPage() {
                 // Default budget structure
                 const defaultBudget = {
                     fuel: { quantity: '', unitCost: '', totalCost: '' },
-                    aaRates: { quantity: '', unitCost: '0.30', totalCost: '' },
+                    aaRates: { quantity: '', unitCost: '0.31', totalCost: '' },
                     airBusTickets: { quantity: '', unitCost: '', totalCost: '' },
                     conferencingCost: { quantity: '', unitCost: '', totalCost: '' },
                     tollgates: [{ road: '', quantity: '1', unitCost: '', totalCost: '' }] as TollgateEntry[],
@@ -1566,7 +1566,7 @@ export default function TravelAuthPage() {
                                                 <input type="number" value={travelData.budget.aaRates.quantity} readOnly className="w-full px-2 py-1 rounded border border-[#C9B896] bg-[#F3EADC]/40 text-[#5E4426] font-medium outline-none text-sm" placeholder="0" />
                                             </td>
                                             <td className="px-2 py-2">
-                                                <input type="number" value={travelData.budget.aaRates.unitCost} readOnly className="w-full px-2 py-1 rounded border border-[#C9B896] bg-[#F3EADC]/40 text-[#5E4426] font-medium outline-none text-sm" placeholder="0.30" />
+                                                <input type="number" value={travelData.budget.aaRates.unitCost} readOnly className="w-full px-2 py-1 rounded border border-[#C9B896] bg-[#F3EADC]/40 text-[#5E4426] font-medium outline-none text-sm" placeholder="0.31" />
                                             </td>
                                             <td className="px-2 py-2">
                                                 <input type="number" value={travelData.budget.aaRates.totalCost} readOnly className="w-full px-2 py-1 rounded border border-[#C9B896] bg-[#F3EADC]/40 text-[#5E4426] font-medium outline-none text-sm" placeholder="0.00" />
