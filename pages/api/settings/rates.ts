@@ -14,13 +14,13 @@ import { supabaseAdmin } from '@/lib/supabaseAdmin';
 // overridden a given key. Engine-size buckets map to the AA vehicle classes:
 //   1.1L–1.5L → Light (up to 1500cc)   1.6L–2.0L → Medium (1501–2000cc)
 //   2.1L–3.0L → Large (2001–3000cc)    Above 3.0L → Luxury (over 3000cc)
-// Source: AA Zimbabwe schedule "JULY 2026 V2" (version V319.1), wet rates.
+// Source: AA Zimbabwe schedule "OCTOBER 2026" (version V322), wet rates.
 const DEFAULTS: Record<string, number> = {
-  aa_petrol_1500: 0.30, aa_diesel_1500: 0.28,
-  aa_petrol_2000: 0.38, aa_diesel_2000: 0.34,
-  aa_petrol_3000: 0.52, aa_diesel_3000: 0.48,
-  aa_petrol_above3000: 0.64, aa_diesel_above3000: 0.59,
-  fuel_petrol: 1.93, fuel_diesel: 1.87,
+  aa_petrol_1500: 0.31, aa_diesel_1500: 0.29,
+  aa_petrol_2000: 0.40, aa_diesel_2000: 0.36,
+  aa_petrol_3000: 0.54, aa_diesel_3000: 0.50,
+  aa_petrol_above3000: 0.66, aa_diesel_above3000: 0.62,
+  fuel_petrol: 2.06, fuel_diesel: 2.08,
 };
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {

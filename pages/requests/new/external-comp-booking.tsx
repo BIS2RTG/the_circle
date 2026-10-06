@@ -67,13 +67,13 @@ interface TollgateEntry {
 }
 
 // AA Rate table based on engine capacity and fuel type (USD per km).
-// AA Zimbabwe schedule "JULY 2026 V2" (version V319.1), wet rates — kept in
+// AA Zimbabwe schedule "OCTOBER 2026" (version V322), wet rates — kept in
 // sync with /api/settings/rates DEFAULTS and the other travel/booking forms.
 const AA_RATES: Record<string, { petrol: number; diesel: number }> = {
-    '1.1L-1.5L': { petrol: 0.30, diesel: 0.28 },
-    '1.6L-2.0L': { petrol: 0.38, diesel: 0.34 },
-    '2.1L-3.0L': { petrol: 0.52, diesel: 0.48 },
-    'Above 3.0L': { petrol: 0.64, diesel: 0.59 },
+    '1.1L-1.5L': { petrol: 0.31, diesel: 0.29 },
+    '1.6L-2.0L': { petrol: 0.40, diesel: 0.36 },
+    '2.1L-3.0L': { petrol: 0.54, diesel: 0.50 },
+    'Above 3.0L': { petrol: 0.66, diesel: 0.62 },
 };
 
 interface CostAllocation {
@@ -2029,7 +2029,7 @@ export default function ExternalCompBookingPage() {
                                                             <input type="number" value={travelData.budget.aaRates.quantity} onChange={(e) => !aaRatesLocked && updateBudgetItem('aaRates', 'quantity', e.target.value)} readOnly={aaRatesLocked} className={`w-full px-2 py-1 rounded border outline-none text-sm ${aaRatesLocked ? 'border-green-200 bg-green-50 text-green-800 font-medium' : 'border-gray-300 focus:ring-1 focus:ring-primary-500'}`} placeholder="0" min="0" />
                                                         </td>
                                                         <td className="px-2 py-2">
-                                                            <input type="number" value={travelData.budget.aaRates.unitCost} onChange={(e) => !aaRatesLocked && updateBudgetItem('aaRates', 'unitCost', e.target.value)} readOnly={aaRatesLocked} className={`w-full px-2 py-1 rounded border outline-none text-sm ${aaRatesLocked ? 'border-green-200 bg-green-50 text-green-800 font-medium' : 'border-gray-300 focus:ring-1 focus:ring-primary-500'}`} placeholder="0.28" step="0.01" min="0" />
+                                                            <input type="number" value={travelData.budget.aaRates.unitCost} onChange={(e) => !aaRatesLocked && updateBudgetItem('aaRates', 'unitCost', e.target.value)} readOnly={aaRatesLocked} className={`w-full px-2 py-1 rounded border outline-none text-sm ${aaRatesLocked ? 'border-green-200 bg-green-50 text-green-800 font-medium' : 'border-gray-300 focus:ring-1 focus:ring-primary-500'}`} placeholder="0.29" step="0.01" min="0" />
                                                         </td>
                                                         <td className="px-2 py-2">
                                                             <input type="number" value={travelData.budget.aaRates.totalCost} readOnly className={`w-full px-2 py-1 rounded border outline-none text-sm ${aaRatesLocked ? 'border-green-200 bg-green-50 text-green-800 font-medium' : 'border-gray-200 bg-gray-50'}`} placeholder="0.00" />
